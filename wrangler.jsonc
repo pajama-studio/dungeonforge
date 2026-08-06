@@ -1,0 +1,7 @@
+{
+  // Static deploy of the built diorama. Usage:
+  //   npm run build && npx wrangler deploy
+  "name": "dungeonforge",
+  "compatibility_date": "2026-08-01",
+  "assets": { "directory": "./dist" }
+}

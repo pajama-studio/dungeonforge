@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dungeonforge</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏰</text></svg>" />
+  <style>
+    html, body { margin: 0; height: 100%; background: #0a0e1c; overflow: hidden; }
+    #app { position: fixed; inset: 0; }
+    #hud {
+      position: fixed; top: 18px; left: 20px; color: #d8c9a3; z-index: 10;
+      font-family: Georgia, 'Times New Roman', serif; user-select: none;
+      text-shadow: 0 2px 8px rgba(0,0,0,.8);
+    }
+    #hud h1 {
+      margin: 0; font-size: 13px; letter-spacing: .42em; font-weight: 400;
+      color: #8f7f5c; text-transform: uppercase;
+    }
+    #hud .name { font-size: 22px; font-style: italic; margin: 6px 0 2px; color: #e8dcc0; }
+    #hud .seed { font-size: 12px; color: #7d7460; letter-spacing: .08em; }
+    #controls {
+      position: fixed; bottom: 18px; left: 20px; z-index: 10; display: flex; gap: 8px;
+      font-family: Georgia, serif;
+    }
+    #controls button, #controls input {
+      background: rgba(20, 24, 40, .72); color: #d8c9a3;
+      border: 1px solid #3a3a52; border-radius: 6px; padding: 7px 14px;
+      font-family: inherit; font-size: 13px; letter-spacing: .05em; outline: none;
+    }
+    #controls button { cursor: pointer; }
+    #controls button:hover { background: rgba(46, 52, 82, .85); color: #ffe9b8; }
+    #controls input { width: 90px; }
+    #tip {
+      position: fixed; bottom: 20px; right: 22px; z-index: 10;
+      color: #6b634f; font: 11px Georgia, serif; letter-spacing: .1em;
+      text-shadow: 0 1px 6px rgba(0,0,0,.8);
+    }
+    #loading {
+      position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+      background: #0a0e1c; color: #8f7f5c; z-index: 20;
+      font: italic 15px Georgia, serif; letter-spacing: .2em;
+      transition: opacity .8s; pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="hud">
+    <h1>Dungeonforge</h1>
+    <div class="name" id="dungeonName"></div>
+    <div class="seed" id="seedLabel"></div>
+  </div>
+  <div id="controls">
+    <button id="btnNew">⚄ New dungeon</button>
+    <input id="seedInput" placeholder="seed…" inputmode="numeric" />
+    <button id="btnGo">Forge</button>
+  </div>
+  <div id="tip">drag to orbit · scroll to zoom</div>
+  <div id="loading">raising the old stones…</div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

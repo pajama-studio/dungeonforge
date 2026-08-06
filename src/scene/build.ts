@@ -22,8 +22,14 @@ import { TH, CELL } from "./env";
 const COURSE = TH / 2; // one masonry course = half a tier
 const BRIDGE_SPAN = 3.2 * CELL; // ravine is always 3 cells + 2×0.4-cell setback
 
+export interface LightSpec { x: number; y: number; z: number; color: number; base: number; dist: number; ph: number }
+
 export interface WorldHandle {
   group: THREE.Group;
+  /** point-light requests in island-LOCAL coords — the orchestrator feeds them
+   *  into a FIXED global pool (a changing scene light count recompiles every
+   *  pipeline in three's WebGPU forward renderer) */
+  lights: LightSpec[];
   tick: (t: number) => void;
   dispose: () => void;
 }
@@ -35,22 +41,103 @@ const _quat = new THREE.Quaternion();
 const _scale = new THREE.Vector3();
 const _axisY = new THREE.Vector3(0, 1, 0);
 
-function makeInstanced(
-  geom: THREE.BufferGeometry, mat: THREE.Material, items: Inst[],
-  shadows = true,
-): THREE.InstancedMesh {
-  const mesh = new THREE.InstancedMesh(geom, mat, Math.max(items.length, 1));
+function fillInstanced(mesh: THREE.InstancedMesh, items: Inst[]): void {
   for (let i = 0; i < items.length; i++) {
     mesh.setMatrixAt(i, items[i].m);
     mesh.setColorAt(i, items[i].c);
   }
   mesh.count = items.length;
-  mesh.castShadow = shadows;
-  mesh.receiveShadow = shadows;
-  // real per-mesh bounds → the renderer culls whole islands when off-screen
-  mesh.computeBoundingSphere();
+  mesh.instanceMatrix.needsUpdate = true;
+  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  // manual bounds from the matrices' translation columns — computeBoundingSphere
+  // decomposes every instance matrix and costs 100ms+ on big islands
+  if (items.length > 0) {
+    let nx = Infinity, ny = Infinity, nz = Infinity, px = -Infinity, py = -Infinity, pz = -Infinity;
+    for (const it of items) {
+      const e = it.m.elements;
+      nx = Math.min(nx, e[12]); px = Math.max(px, e[12]);
+      ny = Math.min(ny, e[13]); py = Math.max(py, e[13]);
+      nz = Math.min(nz, e[14]); pz = Math.max(pz, e[14]);
+    }
+    const cx2 = (nx + px) / 2, cy2 = (ny + py) / 2, cz2 = (nz + pz) / 2;
+    const r = Math.hypot(px - nx, py - ny, pz - nz) / 2 + 4; // pad for geometry size/scale
+    mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(cx2, cy2, cz2), r);
+  }
   mesh.frustumCulled = true;
-  return mesh;
+}
+
+// Per-slot pools. three's WebGPU renderer builds a node graph PER RENDER
+// OBJECT on first sight (~7ms × ~35 meshes × passes ≈ 0.5s per island) —
+// render objects are created once per slot; re-forges just rewrite instance
+// buffers. This is also the streaming foundation: a slot can be refilled with
+// any block as the camera roams.
+interface SlotPool {
+  group: THREE.Group;
+  meshes: Map<string, THREE.InstancedMesh>;
+  perBuild: THREE.Object3D[];
+  perBuildGeos: THREE.BufferGeometry[];
+}
+const slotPools = new Map<number, SlotPool>();
+
+function getSlot(slot: number, scene?: THREE.Object3D): SlotPool {
+  let p = slotPools.get(slot);
+  if (!p) {
+    p = { group: new THREE.Group(), meshes: new Map(), perBuild: [], perBuildGeos: [] };
+    p.group.name = `slot-${slot}`;
+    slotPools.set(slot, p);
+  }
+  if (scene && !p.group.parent) scene.add(p.group);
+  // clear the previous build's unique objects; pooled meshes stay alive
+  for (const o of p.perBuild) o.removeFromParent();
+  p.perBuild = [];
+  for (const g of p.perBuildGeos) g.dispose();
+  p.perBuildGeos = [];
+  p.group.visible = true;
+  return p;
+}
+
+function putInstanced(
+  pool: SlotPool, key: string,
+  geom: THREE.BufferGeometry, mat: THREE.Material, items: Inst[], shadows = true,
+): void {
+  let mesh = pool.meshes.get(key);
+  if (mesh && (mesh.instanceMatrix.count < items.length || mesh.geometry !== geom || mesh.material !== mat)) {
+    pool.group.remove(mesh);
+    mesh.dispose();
+    mesh = undefined;
+  }
+  if (!mesh) {
+    const capacity = Math.max(256, Math.ceil(items.length * 1.6));
+    mesh = new THREE.InstancedMesh(geom, mat, capacity);
+    mesh.castShadow = shadows;
+    mesh.receiveShadow = shadows;
+    pool.meshes.set(key, mesh);
+    pool.group.add(mesh);
+  }
+  fillInstanced(mesh, items);
+}
+
+const DETAIL_KEYS = ["merlons", "rubble", "moss", "vines", "leaves", "creepers", "bramblesA", "bramblesB", "wisps", "links", "brackets", "cheeks", "wallGlows", "embers"];
+
+/** distance LOD: hide the small-detail layers of a far-away slot */
+export function setSlotDetail(slot: number, visible: boolean): void {
+  const p = slotPools.get(slot);
+  if (!p) return;
+  for (const k of DETAIL_KEYS) {
+    const m = p.meshes.get(k);
+    if (m) m.visible = visible;
+  }
+}
+
+/** hide pools that the current forge doesn't use */
+export function pruneSlots(active: Set<number>): void {
+  for (const [slot, p] of slotPools) {
+    if (!active.has(slot)) {
+      p.group.visible = false;
+      for (const o of p.perBuild) o.removeFromParent();
+      p.perBuild = [];
+    }
+  }
 }
 
 function inst(x: number, y: number, z: number, rotY = 0, sx = 1, sy = 1, sz = sx, c = 0xffffff): Inst {
@@ -113,6 +200,8 @@ interface SharedRes {
   leafMat: THREE.MeshLambertNodeMaterial;
   wispGeo: THREE.BufferGeometry;
   runeGeo: THREE.BufferGeometry;
+  plugGeo: THREE.BufferGeometry;
+  plugMat: THREE.MeshLambertNodeMaterial;
   emberGeo: THREE.BufferGeometry;
   emberMat: THREE.MeshBasicNodeMaterial;
   beamGeo: THREE.BufferGeometry;
@@ -188,10 +277,14 @@ function makeStoneMat(): THREE.MeshLambertNodeMaterial {
   const vseam = smoothstep(0.06, 0.015, abs(pl.x.sub(off)))
     .add(smoothstep(0.06, 0.015, abs(pl.z.sub(off.mul(-0.7)))))
     .mul(sideMask);
-  const mortar = ex.add(ez).add(line).add(vseam).clamp(0, 1);
-  // weathered grain: static tri-noise, two scales
-  const grain = triNoise3D(positionWorld.mul(0.13), 0, 0).mul(0.34)
-    .add(triNoise3D(positionWorld.mul(0.55), 0, 0).mul(0.22));
+  // hand-cut seams: modulate the mortar so joints vary in depth along their run
+  const cut = triNoise3D(positionWorld.mul(2.2), 0, 0).mul(0.5).add(0.65);
+  const mortar = ex.add(ez).add(line).add(vseam).clamp(0, 1).mul(cut);
+  // weathered grain: three FINE scales only — a macro (low-frequency) term just
+  // smears meaningless light/dark clouds across whole walls
+  const grain = triNoise3D(positionWorld.mul(0.6), 0, 0).mul(0.16)
+    .add(triNoise3D(positionWorld.mul(1.8), 0, 0).mul(0.13))
+    .add(triNoise3D(positionWorld.mul(4.6), 0, 0).mul(0.09));
   // Carved relief — pure math, no textures. An analytic height field whose
   // gradient perturbs the normal: a chiselled egg-crate frieze band every 5th
   // course + a faint tool-mark ripple everywhere. h is differentiable, so the
@@ -558,6 +651,24 @@ function getShared(): SharedRes {
     creeperGeo,
     emberGeo,
     emberMat,
+    // craggy root spike under each island — nobody should see a flat underside
+    plugGeo: (() => {
+      const g = new THREE.CylinderGeometry(1, 0.06, 1, 8, 4);
+      const pos = g.getAttribute("position");
+      const rng2 = mulberry32(0x9e0c4);
+      for (let i = 0; i < pos.count; i++) {
+        const px2 = pos.getX(i), pz2 = pos.getZ(i);
+        const r2 = Math.hypot(px2, pz2);
+        if (r2 > 0.01) {
+          const j = 0.78 + rng2() * 0.42;
+          pos.setX(i, px2 * j);
+          pos.setZ(i, pz2 * j);
+        }
+      }
+      g.computeVertexNormals();
+      return g;
+    })(),
+    plugMat: new THREE.MeshLambertNodeMaterial({ color: 0x10141f }),
     beamGeo,
     beamMatBlue: makeBeamMat(0x3e7bff, 0.9),
     beamMatWarm: makeBeamMat(0xffc26a, 0.7),
@@ -599,11 +710,12 @@ function getShared(): SharedRes {
 
 /** A free-spanning rope bridge between two islands' gates. Shares the kit's
  *  geometries/materials; only per-span rope tubes are owned (and disposed). */
-export function buildBridgeLink(a: THREE.Vector3, b: THREE.Vector3): WorldHandle {
+export function buildBridgeLink(a: THREE.Vector3, b: THREE.Vector3, slot: number, sceneRoot: THREE.Object3D): WorldHandle {
   const R = getShared();
-  const group = new THREE.Group();
+  const pool = getSlot(slot, sceneRoot);
+  const group = pool.group;
   group.name = "bridge-link";
-  const ownGeos: THREE.BufferGeometry[] = [];
+  const ownGeos = pool.perBuildGeos;
   const delta = new THREE.Vector3().subVectors(b, a);
   const dist = delta.length();
   const dirN = delta.clone().normalize();
@@ -623,7 +735,7 @@ export function buildBridgeLink(a: THREE.Vector3, b: THREE.Vector3): WorldHandle
       rotY + (h1 - 0.5) * 0.07, (dist / nP / plankW) * 0.82, 1.2, 1.45, 0x4a3624,
     ));
   }
-  group.add(makeInstanced(R.plankGeo, R.woodMat, planks, true));
+  putInstanced(pool, "bridgePlanks", R.plankGeo, R.woodMat, planks, true);
 
   for (const side of [-0.8, 0.8]) {
     const pts: THREE.Vector3[] = [];
@@ -636,7 +748,9 @@ export function buildBridgeLink(a: THREE.Vector3, b: THREE.Vector3): WorldHandle
     }
     const geo = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 24, 0.05, 5);
     ownGeos.push(geo);
-    group.add(new THREE.Mesh(geo, R.woodMat));
+    const rope = new THREE.Mesh(geo, R.woodMat);
+    group.add(rope);
+    pool.perBuild.push(rope);
   }
 
   const posts: Inst[] = [];
@@ -651,22 +765,19 @@ export function buildBridgeLink(a: THREE.Vector3, b: THREE.Vector3): WorldHandle
     stones.push(inst(end.x + dirN.x * sgn * 0.4, end.y - 0.4, end.z + dirN.z * sgn * 0.4, rotY, 0.85, 1.2, 1.9, c.getHex()));
     flames.push(inst(end.x + perp.x * 0.8, end.y + 1.6, end.z + perp.z * 0.8, 0, 0.8, 0.85, 0.8, 0xffffff));
   }
-  group.add(makeInstanced(R.postGeo, R.woodMat, posts, true));
-  group.add(makeInstanced(R.blockGeo, R.stoneMat, stones, true));
-  group.add(makeInstanced(R.flameGeo, R.flameWarm, flames, false));
+  putInstanced(pool, "bridgePosts", R.postGeo, R.woodMat, posts, true);
+  putInstanced(pool, "linkStones", R.blockGeo, R.stoneMat, stones, true);
+  putInstanced(pool, "linkFlames", R.flameGeo, R.flameWarm, flames, false);
 
   return {
     group,
+    lights: [],
     tick() {},
-    dispose() {
-      group.removeFromParent();
-      for (const g of ownGeos) g.dispose();
-      group.traverse((o) => { if (o instanceof THREE.InstancedMesh) o.dispose(); });
-    },
+    dispose() { /* slots persist — pruneSlots() hides unused ones */ },
   };
 }
 
-export function buildWorld(l: Layout): WorldHandle {
+export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D): WorldHandle {
   const R = getShared();
   const { N, kind, tier, wallTop, wallBase, support } = l;
   const gi = (x: number, y: number) => y * N + x;
@@ -674,10 +785,12 @@ export function buildWorld(l: Layout): WorldHandle {
   const wz = (gy: number) => (gy - (N - 1) / 2) * CELL;
   const seed = l.seed;
 
-  const group = new THREE.Group();
+  const pool = getSlot(slot, sceneRoot);
+  const group = pool.group;
   group.name = "fortress";
+  const addUnique = (o: THREE.Object3D) => { group.add(o); pool.perBuild.push(o); };
   // geometries unique to this layout (bridge ropes) — everything else is shared
-  const perBuildGeos: THREE.BufferGeometry[] = [];
+  const perBuildGeos = pool.perBuildGeos;
 
   // ---------------------------------------------------------------- masonry
   const blocks: Inst[] = [];
@@ -938,8 +1051,8 @@ export function buildWorld(l: Layout): WorldHandle {
     flameAnchors.push({ x: px, y: py + 1.1, z: pz });
   }
 
-  group.add(makeInstanced(R.bracketGeo, R.woodMat, brackets, false));
-  group.add(makeInstanced(R.bowlGeo, R.woodMat, bowls, true));
+  putInstanced(pool, "brackets", R.bracketGeo, R.woodMat, brackets, false);
+  putInstanced(pool, "bowls", R.bowlGeo, R.woodMat, bowls, true);
 
   // fake local torchlight: wall glow + a pool of light on the floor beneath
   {
@@ -953,7 +1066,7 @@ export function buildWorld(l: Layout): WorldHandle {
         rot, 1, 1, 1, 0xffffff,
       ));
     }
-    group.add(makeInstanced(R.wallGlowGeo, R.wallGlowMat, wallGlows, false));
+    putInstanced(pool, "wallGlows", R.wallGlowGeo, R.wallGlowMat, wallGlows, false);
 
     const floorGlows: Inst[] = [];
     const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, 0));
@@ -969,7 +1082,7 @@ export function buildWorld(l: Layout): WorldHandle {
       const sc = new THREE.Vector3(1.6, 1.6, 1.6);
       floorGlows.push({ m: new THREE.Matrix4().compose(p, q, sc), c: new THREE.Color(0xffffff) });
     }
-    group.add(makeInstanced(R.floorGlowGeo, R.floorGlowMat, floorGlows, false));
+    putInstanced(pool, "floorGlows", R.floorGlowGeo, R.floorGlowMat, floorGlows, false);
   }
 
   // ---------------------------------------------------------------- banners
@@ -985,7 +1098,7 @@ export function buildWorld(l: Layout): WorldHandle {
         rot, 1, 1, 1, 0xffffff,
       ));
     }
-    group.add(makeInstanced(R.bannerGeo, R.bannerMat, items, false));
+    putInstanced(pool, "banners", R.bannerGeo, R.bannerMat, items, false);
   }
 
   // ---------------------------------------------------------------- medallions
@@ -995,18 +1108,18 @@ export function buildWorld(l: Layout): WorldHandle {
     mesh.scale.setScalar(m.r * CELL);
     mesh.position.set(wx(m.x), m.tier * TH + 0.17, wz(m.y));
     mesh.receiveShadow = true;
-    group.add(mesh);
+    addUnique(mesh);
   }
 
   // ---------------------------------------------------------------- temple portal
   if (l.door) {
     const mesh = new THREE.Mesh(R.portalGeo, R.portalMat);
     mesh.position.set(wx(l.door.x), l.door.tier * TH + 1.25, wz(l.door.y) + CELL / 2 - 0.18);
-    group.add(mesh);
+    addUnique(mesh);
     // glowing rune architrave carved into the lintel above the doorway
     const rune = new THREE.Mesh(R.runeGeo, R.runeMat);
     rune.position.set(wx(l.door.x), l.door.tier * TH + 2.95, wz(l.door.y) + CELL / 2 + 0.16);
-    group.add(rune);
+    addUnique(rune);
   }
 
   // ---------------------------------------------------------------- bridge
@@ -1024,7 +1137,7 @@ export function buildWorld(l: Layout): WorldHandle {
       const h1 = hash3(seed, 999, i, 7);
       planks.push(inst(x, yTop - sag, z, (h1 - 0.5) * 0.1, 1, 1.2, 1.45, 0x4a3624));
     }
-    group.add(makeInstanced(R.plankGeo, R.woodMat, planks, true));
+    putInstanced(pool, "ravinePlanks", R.plankGeo, R.woodMat, planks, true);
     for (const side of [-0.8, 0.8]) {
       const pts: THREE.Vector3[] = [];
       for (let i = 0; i <= 8; i++) {
@@ -1033,13 +1146,13 @@ export function buildWorld(l: Layout): WorldHandle {
       }
       const geo = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 16, 0.05, 5);
       perBuildGeos.push(geo);
-      group.add(new THREE.Mesh(geo, R.woodMat));
+      addUnique(new THREE.Mesh(geo, R.woodMat));
     }
     const posts: Inst[] = [];
     for (const px of [x0, x1]) for (const side of [-0.8, 0.8]) {
       posts.push(inst(px, yTop + 0.7, z + side, 0, 1.25, 1.45, 1.25, 0x3a2c1c));
     }
-    group.add(makeInstanced(R.postGeo, R.woodMat, posts, true));
+    putInstanced(pool, "ravinePosts", R.postGeo, R.woodMat, posts, true);
     // stone abutments anchoring both ends + a lantern flame on each near post
     for (const [ax, sgn] of [[x0, -1], [x1, 1]] as const) {
       stoneColor.setHSL(0.09, 0.3, 0.4);
@@ -1054,7 +1167,7 @@ export function buildWorld(l: Layout): WorldHandle {
     if (!t.beacon) continue;
     const mesh = new THREE.Mesh(R.beaconGeo, R.beaconMat);
     mesh.position.set(wx(t.x), t.top * TH + 1.0, wz(t.y));
-    group.add(mesh);
+    addUnique(mesh);
     flameAnchors.push({ x: wx(t.x), y: t.top * TH + 1.2, z: wz(t.y) });
   }
 
@@ -1074,7 +1187,7 @@ export function buildWorld(l: Layout): WorldHandle {
     (s.userData as { ph: number }).ph = hash2(seed, k, 48) * Math.PI * 2;
     (s.userData as { bx: number }).bx = s.position.x;
     smokes.push(s);
-    group.add(s);
+    addUnique(s);
   }
 
   // ---------------------------------------------- weathering & clutter pass
@@ -1307,27 +1420,37 @@ export function buildWorld(l: Layout): WorldHandle {
     }
   }
 
+  // underside root spike: hides the flat bottoms of the abyss columns
+  {
+    const halfW = (N * CELL) / 2;
+    const depth = 26 + halfW * 0.5;
+    const plug = new THREE.Mesh(R.plugGeo, R.plugMat);
+    plug.scale.set(halfW * 0.8, depth, halfW * 0.8);
+    plug.position.y = ABYSS * TH + 1.5 - depth / 2;
+    addUnique(plug);
+  }
+
   // ------------------------------------------------------- instanced meshes
   // created last so every section above could still contribute masonry/flames
-  group.add(makeInstanced(R.blockGeo, R.stoneMat, blocks));
-  group.add(makeInstanced(R.merlonGeo, R.stoneMat, merlons));
-  group.add(makeInstanced(R.tileGeo, R.stoneMat, tiles, true));
-  group.add(makeInstanced(R.tileGeo, R.redMat, redTiles, true));
-  group.add(makeInstanced(R.stepGeo, R.stoneMat, steps));
-  group.add(makeInstanced(R.cheekGeo, R.stoneMat, cheeks));
-  group.add(makeInstanced(R.flameGeo, R.flameWarm, warmFlames, false));
-  group.add(makeInstanced(R.flameGeo, R.flameBlue, blueFlames, false));
-  group.add(makeInstanced(R.flameGeo, R.flameRed, redFlames, false));
-  group.add(makeInstanced(R.rubbleGeo, R.stoneMat, rubble, true));
-  group.add(makeInstanced(R.crateGeo, R.woodMat, crates, true));
-  group.add(makeInstanced(R.vineGeo, R.vineMat, vines, false));
-  group.add(makeInstanced(R.leafGeo, R.leafMat, leaves, false));
-  group.add(makeInstanced(R.creeperGeo, R.leafMat, creepers, false));
-  group.add(makeInstanced(R.brambleGeoA, R.brambleMat, bramblesA, false));
-  group.add(makeInstanced(R.brambleGeoB, R.brambleMat, bramblesB, false));
-  group.add(makeInstanced(R.linkGeo, R.woodMat, links, false));
-  group.add(makeInstanced(R.mossGeo, R.mossMat, moss, false));
-  group.add(makeInstanced(R.colGeo, R.stoneMat, cols, true));
+  putInstanced(pool, "blocks", R.blockGeo, R.stoneMat, blocks);
+  putInstanced(pool, "merlons", R.merlonGeo, R.stoneMat, merlons);
+  putInstanced(pool, "tiles", R.tileGeo, R.stoneMat, tiles, true);
+  putInstanced(pool, "redTiles", R.tileGeo, R.redMat, redTiles, true);
+  putInstanced(pool, "steps", R.stepGeo, R.stoneMat, steps);
+  putInstanced(pool, "cheeks", R.cheekGeo, R.stoneMat, cheeks);
+  putInstanced(pool, "flamesW", R.flameGeo, R.flameWarm, warmFlames, false);
+  putInstanced(pool, "flamesB", R.flameGeo, R.flameBlue, blueFlames, false);
+  putInstanced(pool, "flamesR", R.flameGeo, R.flameRed, redFlames, false);
+  putInstanced(pool, "rubble", R.rubbleGeo, R.stoneMat, rubble, true);
+  putInstanced(pool, "crates", R.crateGeo, R.woodMat, crates, true);
+  putInstanced(pool, "vines", R.vineGeo, R.vineMat, vines, false);
+  putInstanced(pool, "leaves", R.leafGeo, R.leafMat, leaves, false);
+  putInstanced(pool, "creepers", R.creeperGeo, R.leafMat, creepers, false);
+  putInstanced(pool, "bramblesA", R.brambleGeoA, R.brambleMat, bramblesA, false);
+  putInstanced(pool, "bramblesB", R.brambleGeoB, R.brambleMat, bramblesB, false);
+  putInstanced(pool, "links", R.linkGeo, R.woodMat, links, false);
+  putInstanced(pool, "moss", R.mossGeo, R.mossMat, moss, false);
+  putInstanced(pool, "cols", R.colGeo, R.stoneMat, cols, true);
   // smoke wisps rising from every flame
   {
     const wisps: Inst[] = [];
@@ -1335,7 +1458,7 @@ export function buildWorld(l: Layout): WorldHandle {
       const h = hash2(seed, Math.round(a.x * 7 + a.z * 13), 97);
       wisps.push(inst(a.x, a.y + 0.15, a.z, h * 6.28, 0.8 + h * 0.5, 0.8 + h * 0.6, 0.8 + h * 0.5, 0xffffff));
     }
-    group.add(makeInstanced(R.wispGeo, R.wispMat, wisps, false));
+    putInstanced(pool, "wisps", R.wispGeo, R.wispMat, wisps, false);
   }
   // drifting embers: a few near every flame + strays wandering the corridors
   {
@@ -1355,24 +1478,27 @@ export function buildWorld(l: Layout): WorldHandle {
       if (kind[c2] !== FLOOR) continue;
       embers.push(inst(wx(gx2), tier[c2] * TH + 0.6, wz(gy2), 0, 0.5 + hx * 0.7, 0.5 + hx * 0.7, 0.5 + hx * 0.7, 0xffffff));
     }
-    group.add(makeInstanced(R.emberGeo, R.emberMat, embers, false));
+    putInstanced(pool, "embers", R.emberGeo, R.emberMat, embers, false);
   }
   // landmark beams: the portal breathes blue into the night, the beacon gold
   if (l.door) {
     const beam = new THREE.Mesh(R.beamGeo, R.beamMatBlue);
     beam.position.set(wx(l.door.x), l.door.tier * TH + 2.2, wz(l.door.y));
-    group.add(beam);
+    addUnique(beam);
   }
   for (const t of l.towers) {
     if (!t.beacon) continue;
     const beam = new THREE.Mesh(R.beamGeo, R.beamMatWarm);
     beam.scale.set(0.55, 0.8, 0.55);
     beam.position.set(wx(t.x), t.top * TH + 0.8, wz(t.y));
-    group.add(beam);
+    addUnique(beam);
   }
 
   // ---------------------------------------------------------------- lights
-  const lights: Array<{ light: THREE.PointLight; base: number; ph: number }> = [];
+  // collected as SPECS only — actual PointLights live in the orchestrator's
+  // fixed-size pool so the scene's light count (and thus every compiled
+  // pipeline) never changes across regenerations
+  const lights: LightSpec[] = [];
   {
     const chosen: Array<{ x: number; y: number; z: number }> = [];
     if (flameAnchors.length > 0) {
@@ -1393,44 +1519,27 @@ export function buildWorld(l: Layout): WorldHandle {
     }
     let li = 0;
     for (const c of chosen) {
-      const pl = new THREE.PointLight(0xff9a45, 50, 19, 2);
-      pl.position.set(c.x, c.y + 0.2, c.z);
-      group.add(pl);
-      lights.push({ light: pl, base: 50, ph: hash2(seed, li++, 61) * Math.PI * 2 });
+      lights.push({ x: c.x, y: c.y + 0.2, z: c.z, color: 0xff9a45, base: 50, dist: 19, ph: hash2(seed, li++, 61) * Math.PI * 2 });
     }
     if (l.door) {
-      const pl = new THREE.PointLight(0x3e7bff, 26, 16, 2);
-      pl.position.set(wx(l.door.x), l.door.tier * TH + 1.6, wz(l.door.y) + 1.6);
-      group.add(pl);
-      lights.push({ light: pl, base: 26, ph: 1.1 });
+      lights.push({ x: wx(l.door.x), y: l.door.tier * TH + 1.6, z: wz(l.door.y) + 1.6, color: 0x3e7bff, base: 26, dist: 16, ph: 1.1 });
     }
     for (const b of l.braziers) {
       if (b.kind !== "red") continue;
-      const pl = new THREE.PointLight(0xff2c10, 34, 13, 2);
-      pl.position.set(wx(b.x), b.tier * TH + 1.4, wz(b.y));
-      group.add(pl);
-      lights.push({ light: pl, base: 34, ph: 4.2 });
+      lights.push({ x: wx(b.x), y: b.tier * TH + 1.4, z: wz(b.y), color: 0xff2c10, base: 34, dist: 13, ph: 4.2 });
     }
   }
 
   // ---------------------------------------------------------------- handle
   return {
     group,
+    lights,
     tick(t: number) {
-      for (const L of lights) {
-        L.light.intensity = L.base * (0.82 + 0.12 * Math.sin(t * 7.3 + L.ph) + 0.06 * Math.sin(t * 13.1 + L.ph * 1.7));
-      }
       for (const s of smokes) {
         const ud = s.userData as { ph: number; bx: number };
         s.position.x = ud.bx + Math.sin(t * 0.07 + ud.ph) * 3.2;
       }
     },
-    dispose() {
-      group.removeFromParent();
-      for (const g of perBuildGeos) g.dispose();
-      group.traverse((o) => {
-        if (o instanceof THREE.InstancedMesh) o.dispose(); // frees instance buffers; shared geo/mat stay alive
-      });
-    },
+    dispose() { /* slots persist — pruneSlots() hides unused ones */ },
   };
 }

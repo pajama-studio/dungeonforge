@@ -168,3 +168,6 @@ async function boot(): Promise<void> {
 }
 
 void boot();
+
+// dev hook for camera scripting (screenshot verification, cinematics)
+(window as unknown as { __df: object }).__df = { camera, controls };

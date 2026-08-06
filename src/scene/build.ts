@@ -101,7 +101,9 @@ interface SharedRes {
   crateGeo: THREE.BufferGeometry;
   vineGeo: THREE.BufferGeometry;
   linkGeo: THREE.BufferGeometry;
+  mossGeo: THREE.BufferGeometry;
   vineMat: THREE.MeshLambertNodeMaterial;
+  mossMat: THREE.MeshLambertNodeMaterial;
   circleGeo: THREE.BufferGeometry;   // unit radius; scaled per medallion
   portalGeo: THREE.BufferGeometry;
   beaconGeo: THREE.BufferGeometry;
@@ -177,11 +179,14 @@ function makeStoneMat(): THREE.MeshLambertNodeMaterial {
   // course + a faint tool-mark ripple everywhere. h is differentiable, so the
   // normal offset is the exact tangential gradient (no tangent frame needed).
   const fc = fract(positionWorld.y.div(COURSE * 8));
-  const band = smoothstep(0.44, 0.5, fc).mul(float(1).sub(smoothstep(0.56, 0.62, fc)));
+  const band = smoothstep(0.44, 0.5, fc).mul(float(1).sub(smoothstep(0.56, 0.62, fc)))
+    .mul(sideMask); // carve SIDE faces only — on tops the tangential gradient
+                    // survives projection at full strength and reads as a
+                    // diagonal crosshatch smeared across walkways and floors
   const kx = 5.6, kq = 9.0;
   const sx = sin(pl.x.mul(kx)), sz = sin(pl.z.mul(kx));
   const cxn = cos(pl.x.mul(kx)), czn = cos(pl.z.mul(kx));
-  const ripple = cos(pl.x.add(pl.z).mul(kq)).mul(0.10);
+  const ripple = cos(pl.x.add(pl.z).mul(kq)).mul(0.10).mul(sideMask);
   const dhdx = band.mul(cxn.mul(sz).mul(kx * 0.13)).add(ripple.mul(-kq * 0.012));
   const dhdz = band.mul(sx.mul(czn).mul(kx * 0.13)).add(ripple.mul(-kq * 0.012));
   const g = vec3(dhdx, 0, dhdz);
@@ -301,6 +306,18 @@ function getShared(): SharedRes {
   const vineGeo = new THREE.PlaneGeometry(0.24, 1.9, 1, 6);
   vineGeo.translate(0, -0.95, 0);
 
+  // moss patches: flat blobs with noise-eaten irregular edges — the detail
+  // layer that actually reads from a top-down camera
+  const mossMat = new THREE.MeshLambertNodeMaterial({ transparent: true, depthWrite: false });
+  {
+    const r = length(uv().sub(0.5)).mul(2);
+    const n = triNoise3D(positionWorld.mul(0.85), 0, 0);
+    mossMat.colorNode = mix(color(0x2c4520), color(0x18280f), r);
+    mossMat.opacityNode = float(1).sub(smoothstep(0.45, 1.0, r.add(n.mul(0.55)))).mul(0.9);
+  }
+  const mossGeo = new THREE.CircleGeometry(0.62, 12);
+  mossGeo.rotateX(-Math.PI / 2);
+
   S = {
     blockGeo: shadeFaces(new RoundedBoxGeometry(CELL * 1.02, COURSE * 1.02, CELL * 1.02, 1, 0.06)),
     merlonGeo: shadeFaces(new RoundedBoxGeometry(0.72, 0.55, 0.72, 1, 0.05)),
@@ -320,7 +337,9 @@ function getShared(): SharedRes {
     crateGeo: shadeFaces(new THREE.BoxGeometry(0.72, 0.72, 0.72)),
     vineGeo,
     linkGeo: new THREE.BoxGeometry(0.07, 0.34, 0.16),
+    mossGeo,
     vineMat,
+    mossMat,
     portalGeo: new THREE.PlaneGeometry(1.8, 2.4),
     beaconGeo: new THREE.OctahedronGeometry(0.45),
     // Lambert = diffuse-only lighting: matte stone doesn't need GGX, and it
@@ -759,6 +778,7 @@ export function buildWorld(l: Layout): WorldHandle {
   const crates: Inst[] = [];
   const vines: Inst[] = [];
   const links: Inst[] = [];
+  const moss: Inst[] = [];
   {
     const totemCells = new Set(l.braziers.filter((b) => b.totem).map((b) => b.y * N + b.x));
     for (let y = 1; y < N - 1; y++) {
@@ -776,11 +796,29 @@ export function buildWorld(l: Layout): WorldHandle {
             }
             for (let k = 0; k < n; k++) {
               const ha = hash3(seed, c, k, 73), hb = hash3(seed, c, k, 74), hc = hash3(seed, c, k, 75);
-              stoneColor.setHSL(0.08, 0.2, 0.2 + ha * 0.16);
-              const sc = 0.55 + hb * 1.0;
+              stoneColor.setHSL(0.08, 0.22, 0.24 + ha * 0.2);
+              const sc = 0.8 + hb * 1.2;
               rubble.push(inst(
-                wx(x) + ox + (ha - 0.5) * 0.9, tier[c] * TH + 0.14 + sc * 0.06, wz(y) + oz + (hb - 0.5) * 0.9,
+                wx(x) + ox + (ha - 0.5) * 0.9, tier[c] * TH + 0.14 + sc * 0.07, wz(y) + oz + (hb - 0.5) * 0.9,
                 hc * 6.28, sc, sc * (0.5 + hc * 0.4), sc, stoneColor.getHex(),
+              ));
+            }
+          }
+          // moss creeping out of the shaded corners (top-down readable)
+          const hm = hash2(seed, c, 78);
+          if (hm < 0.2) {
+            let mx = 0, mz = 0;
+            for (let d = 0; d < 4; d++) {
+              if (kind[gi(x + DX[d], y + DY[d])] === WALL) { mx = DX[d] * 0.7; mz = DY[d] * 0.7; break; }
+            }
+            const nP2 = 1 + Math.floor(hash2(seed, c, 79) * 2);
+            for (let k = 0; k < nP2; k++) {
+              const ha = hash3(seed, c, k, 80), hb = hash3(seed, c, k, 85);
+              stoneColor.setHSL(0.25 + hb * 0.05, 0.35, 0.24 + ha * 0.1);
+              const sc = 0.7 + ha * 1.3;
+              moss.push(inst(
+                wx(x) + mx + (ha - 0.5) * 1.0, tier[c] * TH + 0.157 + k * 0.004, wz(y) + mz + (hb - 0.5) * 1.0,
+                hb * 6.28, sc, 1, sc * (0.7 + hb * 0.5), stoneColor.getHex(),
               ));
             }
           }
@@ -792,6 +830,16 @@ export function buildWorld(l: Layout): WorldHandle {
             crates.push(inst(wx(x) + (ha - 0.5) * 0.5, tier[c] * TH + 0.51, wz(y) + (ha - 0.5) * 0.4, ha * 1.5, 1, 1, 1, 0x4d3a22));
             if (ha < 0.45) crates.push(inst(wx(x) + (ha - 0.5) * 0.5 + 0.3, tier[c] * TH + 1.15, wz(y) + (ha - 0.5) * 0.4 - 0.2, ha * 4, 0.72, 0.72, 0.72, 0x423120));
           }
+        }
+        // moss on wall-top walkways too
+        if (kind[c] === WALL && hash2(seed, c, 86) < 0.1) {
+          const ha = hash2(seed, c, 87);
+          stoneColor.setHSL(0.26, 0.32, 0.22 + ha * 0.08);
+          const sc = 0.6 + ha * 0.9;
+          moss.push(inst(
+            wx(x) + (ha - 0.5) * 0.8, wallTop[c] * TH + 0.03, wz(y) + (0.5 - ha) * 0.8,
+            ha * 6.28, sc, 1, sc, stoneColor.getHex(),
+          ));
         }
         // vines draping tall wall faces
         if (kind[c] === WALL && !l.doorMask[c]) {
@@ -871,6 +919,7 @@ export function buildWorld(l: Layout): WorldHandle {
   group.add(makeInstanced(R.crateGeo, R.woodMat, crates, true));
   group.add(makeInstanced(R.vineGeo, R.vineMat, vines, false));
   group.add(makeInstanced(R.linkGeo, R.woodMat, links, false));
+  group.add(makeInstanced(R.mossGeo, R.mossMat, moss, false));
 
   // ---------------------------------------------------------------- lights
   const lights: Array<{ light: THREE.PointLight; base: number; ph: number }> = [];

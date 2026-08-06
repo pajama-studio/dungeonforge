@@ -7,7 +7,7 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { color, uv, length, smoothstep } from "three/tsl";
 
 export interface GroundHit { y: number; ok: boolean; solid?: boolean }
-export type GroundSampler = (x: number, z: number) => GroundHit;
+export type GroundSampler = (x: number, z: number, refY?: number) => GroundHit;
 
 export interface PlayerInput { f: number; s: number } // forward, strafe in [-1,1]
 
@@ -82,7 +82,7 @@ export class Player {
       const dz = (Math.cos(camYaw) * input.f - Math.sin(camYaw) * input.s) * inv;
       const step = SPEED * dt;
       const tryMove = (mx: number, mz: number): boolean => {
-        const g = ground(p.x + mx, p.z + mz);
+        const g = ground(p.x + mx, p.z + mz, p.y);
         if (!g.ok) {
           if (g.solid) return false; // a wall blocks
           p.x += mx; p.z += mz;      // open void: walk out — and drop
@@ -107,7 +107,7 @@ export class Player {
       this.setRunning(moved);
     } else {
       this.setRunning(false);
-      const g = ground(p.x, p.z);
+      const g = ground(p.x, p.z, p.y);
       if (g.ok) p.y += (g.y - p.y) * Math.min(1, dt * 14);
     }
     this.mixer?.update(dt);

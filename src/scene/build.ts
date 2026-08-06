@@ -16,7 +16,7 @@ import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.j
 import * as BufferGeometryUtils from "three/addons/utils/BufferGeometryUtils.js";
 import type { Layout, Dir } from "../gen/dungeon";
 import { FLOOR, WALL, VOID, ABYSS, DX, DY } from "../gen/dungeon";
-import { hash2, hash3 } from "../gen/rng";
+import { hash2, hash3, mulberry32 } from "../gen/rng";
 import { TH, CELL } from "./env";
 
 const COURSE = TH / 2; // one masonry course = half a tier
@@ -104,6 +104,7 @@ interface SharedRes {
   mossGeo: THREE.BufferGeometry;
   colGeo: THREE.BufferGeometry;
   leafGeo: THREE.BufferGeometry;
+  creeperGeo: THREE.BufferGeometry;
   leafMat: THREE.MeshLambertNodeMaterial;
   wispGeo: THREE.BufferGeometry;
   runeGeo: THREE.BufferGeometry;
@@ -357,6 +358,29 @@ function getShared(): SharedRes {
     for (const g of quads) g.dispose();
     return merged;
   })();
+  // creeper patch (爬山虎): a wall-hugging carpet of small leaves that climbs
+  // up from the floor — dense at the base, thinning and narrowing upward,
+  // with a few runner leaves straggling past the fringe
+  const creeperGeo = (() => {
+    const rng = mulberry32(0xc11e9e);
+    const quads: THREE.BufferGeometry[] = [];
+    for (let k = 0; k < 26; k++) {
+      const yN = Math.pow(rng(), 1.35);        // bias toward the base
+      const y = yN * 2.3;
+      const spread = 0.85 * (1 - yN * 0.65);   // narrows as it climbs
+      const u = (rng() + rng() - 1) * spread;  // clustered toward the stem line
+      const s = 0.34 - yN * 0.08 + rng() * 0.08;
+      const g = new THREE.PlaneGeometry(s, s * 0.82);
+      g.rotateZ((rng() - 0.5) * 1.6);
+      g.rotateY((rng() - 0.5) * 0.7);
+      g.translate(u, y + 0.1, 0.05 + rng() * 0.12);
+      quads.push(g);
+    }
+    const merged = BufferGeometryUtils.mergeGeometries(quads);
+    for (const g of quads) g.dispose();
+    return merged;
+  })();
+
   const leafMat = new THREE.MeshLambertNodeMaterial({
     side: THREE.DoubleSide, transparent: true, alphaTest: 0.4,
   });
@@ -373,7 +397,7 @@ function getShared(): SharedRes {
     leafMat.colorNode = mix(color(0x6f9447), color(0x3d5c2a), dv.mul(1.6).clamp(0, 1))
       .mul(vein.mul(0.2).add(0.8));
     // moonlit sheen so ivy doesn't collapse to silhouette at night
-    leafMat.emissiveNode = color(0x24361a).mul(0.35);
+    leafMat.emissive = new THREE.Color(0x101a0b);
   }
 
   // torch smoke: crossed quads, upward-thinning wisps driven by scrolling noise
@@ -435,6 +459,7 @@ function getShared(): SharedRes {
     mossGeo,
     colGeo,
     leafGeo,
+    creeperGeo,
     leafMat,
     wispGeo,
     runeGeo,
@@ -884,6 +909,7 @@ export function buildWorld(l: Layout): WorldHandle {
   const crates: Inst[] = [];
   const vines: Inst[] = [];
   const leaves: Inst[] = [];
+  const creepers: Inst[] = [];
   const links: Inst[] = [];
   const moss: Inst[] = [];
   const cols: Inst[] = [];
@@ -952,13 +978,41 @@ export function buildWorld(l: Layout): WorldHandle {
             ha * 6.28, sc, 1, sc, stoneColor.getHex(),
           ));
         }
+        // creeper patches (爬山虎) climbing the wall faces from the floor
+        if (kind[c] === WALL && !l.doorMask[c]) {
+          for (let d = 0 as Dir; d < 4; d++) {
+            const n = gi(x + DX[d], y + DY[d]);
+            if (kind[n] !== FLOOR) continue;
+            const hc2 = hash3(seed, c, d, 88);
+            if (hc2 > 0.7 * decay) continue;
+            const half = wallHalf(x, y, d as Dir);
+            const fx = DX[d], fz = DY[d];
+            const availH = (wallTop[c] - tier[n]) * TH - 0.4;
+            if (availH < 1.2) continue;
+            const rot = dirRotY(d as Dir);
+            const stack = availH > 4.2 && hash3(seed, c, d, 89) < 0.55 ? 2 : 1;
+            for (let k = 0; k < stack; k++) {
+              const ha = hash3(seed, c, d * 3 + k, 90), hb = hash3(seed, c, d * 3 + k, 92);
+              const lat = (ha - 0.5) * 1.1;
+              const sy = Math.min(1.25, (availH / stack) / 2.4) * (0.8 + hb * 0.4);
+              const sx2 = (0.85 + ha * 0.6) * (hb < 0.5 ? 1 : -1); // mirror half for variety
+              stoneColor.setHSL(0.24 + hb * 0.06, 0.44, 0.36 + ha * 0.16);
+              creepers.push(inst(
+                wx(x) + fx * (half + 0.05) + (fz !== 0 ? lat : 0),
+                tier[n] * TH + 0.15 + k * (availH / stack) * 0.92,
+                wz(y) + fz * (half + 0.05) + (fx !== 0 ? lat : 0),
+                rot, sx2, sy, 1, stoneColor.getHex(),
+              ));
+            }
+          }
+        }
         // vines draping tall wall faces
         if (kind[c] === WALL && !l.doorMask[c]) {
           for (let d = 0 as Dir; d < 4; d++) {
             const n = gi(x + DX[d], y + DY[d]);
             if (kind[n] !== FLOOR || wallTop[c] - tier[n] < 3) continue;
             const h = hash3(seed, c, d, 81);
-            if (h > 0.5 * decay) continue;
+            if (h > 0.7 * decay) continue;
             const half = wallHalf(x, y, d as Dir);
             const fx = DX[d], fz = DY[d];
             const nStrips = 1 + Math.floor(hash3(seed, c, d, 82) * 2);
@@ -1062,6 +1116,7 @@ export function buildWorld(l: Layout): WorldHandle {
   group.add(makeInstanced(R.crateGeo, R.woodMat, crates, true));
   group.add(makeInstanced(R.vineGeo, R.vineMat, vines, false));
   group.add(makeInstanced(R.leafGeo, R.leafMat, leaves, false));
+  group.add(makeInstanced(R.creeperGeo, R.leafMat, creepers, false));
   group.add(makeInstanced(R.linkGeo, R.woodMat, links, false));
   group.add(makeInstanced(R.mossGeo, R.mossMat, moss, false));
   group.add(makeInstanced(R.colGeo, R.stoneMat, cols, true));

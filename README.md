@@ -3,7 +3,7 @@
 Procedurally generated stone-labyrinth fortress diorama — three.js **WebGPU + TSL**,
 fully deterministic per seed, end-to-end in the browser.
 
-![v2](docs/shot-v2.jpeg)
+![v6](docs/shot-v6.jpeg)
 
 One integer seed reproduces the whole fortress bit-for-bit: a braided growing-tree
 maze with discrete height tiers, broad staircases climbing to a temple ziggurat,

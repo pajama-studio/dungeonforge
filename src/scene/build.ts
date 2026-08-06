@@ -8,8 +8,9 @@
 
 import * as THREE from "three/webgpu";
 import {
-  color, vec2, vec3, uv, time, sin, positionLocal, positionWorld, normalLocal,
+  color, vec2, vec3, uv, time, sin, cos, positionLocal, positionWorld, normalLocal,
   instanceIndex, hash, smoothstep, length, fract, abs, mix, float, atan, max, triNoise3D,
+  transformNormalToView,
 } from "three/tsl";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
 import * as BufferGeometryUtils from "three/addons/utils/BufferGeometryUtils.js";
@@ -96,6 +97,11 @@ interface SharedRes {
   wallGlowGeo: THREE.BufferGeometry;
   floorGlowGeo: THREE.BufferGeometry;
   bannerGeo: THREE.BufferGeometry;
+  rubbleGeo: THREE.BufferGeometry;
+  crateGeo: THREE.BufferGeometry;
+  vineGeo: THREE.BufferGeometry;
+  linkGeo: THREE.BufferGeometry;
+  vineMat: THREE.MeshLambertNodeMaterial;
   circleGeo: THREE.BufferGeometry;   // unit radius; scaled per medallion
   portalGeo: THREE.BufferGeometry;
   beaconGeo: THREE.BufferGeometry;
@@ -166,7 +172,26 @@ function makeStoneMat(): THREE.MeshLambertNodeMaterial {
   // weathered grain: static tri-noise, two scales
   const grain = triNoise3D(positionWorld.mul(0.13), 0, 0).mul(0.34)
     .add(triNoise3D(positionWorld.mul(0.55), 0, 0).mul(0.22));
-  const albedo = float(0.86).add(grain).mul(float(1).sub(mortar.mul(0.42)));
+  // Carved relief — pure math, no textures. An analytic height field whose
+  // gradient perturbs the normal: a chiselled egg-crate frieze band every 5th
+  // course + a faint tool-mark ripple everywhere. h is differentiable, so the
+  // normal offset is the exact tangential gradient (no tangent frame needed).
+  const fc = fract(positionWorld.y.div(COURSE * 8));
+  const band = smoothstep(0.44, 0.5, fc).mul(float(1).sub(smoothstep(0.56, 0.62, fc)));
+  const kx = 5.6, kq = 9.0;
+  const sx = sin(pl.x.mul(kx)), sz = sin(pl.z.mul(kx));
+  const cxn = cos(pl.x.mul(kx)), czn = cos(pl.z.mul(kx));
+  const ripple = cos(pl.x.add(pl.z).mul(kq)).mul(0.10);
+  const dhdx = band.mul(cxn.mul(sz).mul(kx * 0.13)).add(ripple.mul(-kq * 0.012));
+  const dhdz = band.mul(sx.mul(czn).mul(kx * 0.13)).add(ripple.mul(-kq * 0.012));
+  const g = vec3(dhdx, 0, dhdz);
+  const gT = g.sub(nl.mul(g.dot(nl)));
+  mat.normalNode = transformNormalToView(nl.sub(gT).normalize());
+
+  const cavity = band.mul(sx.mul(sz)).mul(0.5).add(0.5);
+  const albedo = float(0.86).add(grain)
+    .mul(float(1).sub(mortar.mul(0.42)))
+    .mul(cavity.mul(0.09).add(0.955));
   mat.colorNode = vec3(albedo);
   return mat;
 }
@@ -263,6 +288,19 @@ function getShared(): SharedRes {
   smokeMat.colorNode = color(0x2b3a58);
   smokeMat.opacityNode = smoothstep(0.5, 0.08, length(uv().sub(0.5))).mul(0.13);
 
+  // hanging vines: pinned at the top, swaying tip, dark→mossy green gradient
+  const vineMat = new THREE.MeshLambertNodeMaterial({ side: THREE.DoubleSide, transparent: true, depthWrite: false });
+  {
+    const ph = hash(instanceIndex.toFloat().add(0.47)).mul(6.2832);
+    const w = uv().y.oneMinus(); // 0 at the anchored top, 1 at the tip
+    const sway = sin(time.mul(1.3).add(ph).add(w.mul(2.1))).mul(w).mul(0.1);
+    vineMat.positionNode = positionLocal.add(vec3(sway.mul(0.5), 0, sway));
+    vineMat.colorNode = mix(color(0x39522c), color(0x17240f), uv().y.oneMinus());
+    vineMat.opacityNode = float(1).sub(smoothstep(0.8, 1.0, w)); // tip fades out
+  }
+  const vineGeo = new THREE.PlaneGeometry(0.24, 1.9, 1, 6);
+  vineGeo.translate(0, -0.95, 0);
+
   S = {
     blockGeo: shadeFaces(new RoundedBoxGeometry(CELL * 1.02, COURSE * 1.02, CELL * 1.02, 1, 0.06)),
     merlonGeo: shadeFaces(new RoundedBoxGeometry(0.72, 0.55, 0.72, 1, 0.05)),
@@ -278,6 +316,11 @@ function getShared(): SharedRes {
     floorGlowGeo: new THREE.PlaneGeometry(4.2, 4.2),
     bannerGeo,
     circleGeo: new THREE.CircleGeometry(1, 56),
+    rubbleGeo: new THREE.DodecahedronGeometry(0.17, 0),
+    crateGeo: shadeFaces(new THREE.BoxGeometry(0.72, 0.72, 0.72)),
+    vineGeo,
+    linkGeo: new THREE.BoxGeometry(0.07, 0.34, 0.16),
+    vineMat,
     portalGeo: new THREE.PlaneGeometry(1.8, 2.4),
     beaconGeo: new THREE.OctahedronGeometry(0.45),
     // Lambert = diffuse-only lighting: matte stone doesn't need GGX, and it
@@ -711,6 +754,108 @@ export function buildWorld(l: Layout): WorldHandle {
     group.add(s);
   }
 
+  // ---------------------------------------------- weathering & clutter pass
+  const rubble: Inst[] = [];
+  const crates: Inst[] = [];
+  const vines: Inst[] = [];
+  const links: Inst[] = [];
+  {
+    const totemCells = new Set(l.braziers.filter((b) => b.totem).map((b) => b.y * N + b.x));
+    for (let y = 1; y < N - 1; y++) {
+      for (let x = 1; x < N - 1; x++) {
+        const c = gi(x, y);
+        // rubble scattered where corridors meet walls — centuries of spall
+        if (kind[c] === FLOOR && !l.stairMask[c] && !l.plazaMask[c] && !totemCells.has(c)) {
+          const h = hash2(seed, c, 71);
+          if (h < 0.16) {
+            const n = 1 + Math.floor(hash2(seed, c, 72) * 3);
+            // lean the cluster toward an adjacent wall, if any
+            let ox = 0, oz = 0;
+            for (let d = 0; d < 4; d++) {
+              if (kind[gi(x + DX[d], y + DY[d])] === WALL) { ox = DX[d] * 0.62; oz = DY[d] * 0.62; break; }
+            }
+            for (let k = 0; k < n; k++) {
+              const ha = hash3(seed, c, k, 73), hb = hash3(seed, c, k, 74), hc = hash3(seed, c, k, 75);
+              stoneColor.setHSL(0.08, 0.2, 0.2 + ha * 0.16);
+              const sc = 0.55 + hb * 1.0;
+              rubble.push(inst(
+                wx(x) + ox + (ha - 0.5) * 0.9, tier[c] * TH + 0.14 + sc * 0.06, wz(y) + oz + (hb - 0.5) * 0.9,
+                hc * 6.28, sc, sc * (0.5 + hc * 0.4), sc, stoneColor.getHex(),
+              ));
+            }
+          }
+          // crates in quiet dead ends the totems didn't claim
+          let deg = 0;
+          for (let d = 0; d < 4; d++) if (kind[gi(x + DX[d], y + DY[d])] === FLOOR) deg++;
+          if (deg === 1 && !totemCells.has(c) && hash2(seed, c, 76) < 0.4 && !(x === l.entrance.x && y === l.entrance.y)) {
+            const ha = hash2(seed, c, 77);
+            crates.push(inst(wx(x) + (ha - 0.5) * 0.5, tier[c] * TH + 0.51, wz(y) + (ha - 0.5) * 0.4, ha * 1.5, 1, 1, 1, 0x4d3a22));
+            if (ha < 0.45) crates.push(inst(wx(x) + (ha - 0.5) * 0.5 + 0.3, tier[c] * TH + 1.15, wz(y) + (ha - 0.5) * 0.4 - 0.2, ha * 4, 0.72, 0.72, 0.72, 0x423120));
+          }
+        }
+        // vines draping tall wall faces
+        if (kind[c] === WALL && !l.doorMask[c]) {
+          for (let d = 0 as Dir; d < 4; d++) {
+            const n = gi(x + DX[d], y + DY[d]);
+            if (kind[n] !== FLOOR || wallTop[c] - tier[n] < 3) continue;
+            const h = hash3(seed, c, d, 81);
+            if (h > 0.24) continue;
+            const half = wallHalf(x, y, d as Dir);
+            const fx = DX[d], fz = DY[d];
+            const nStrips = 1 + Math.floor(hash3(seed, c, d, 82) * 3);
+            for (let k = 0; k < nStrips; k++) {
+              const ha = hash3(seed, c, d * 7 + k, 83), hb = hash3(seed, c, d * 7 + k, 84);
+              const lat = (ha - 0.5) * 1.5;
+              stoneColor.setHSL(0.26 + hb * 0.06, 0.32, 0.2 + ha * 0.12);
+              vines.push(inst(
+                wx(x) + fx * (half + 0.06) + (fz !== 0 ? lat : 0),
+                wallTop[c] * TH - 0.1 - hb * 0.4,
+                wz(y) + fz * (half + 0.06) + (fx !== 0 ? lat : 0),
+                dirRotY(d as Dir), 0.7 + hb * 0.7, 0.5 + ha * 0.9, 1, stoneColor.getHex(),
+              ));
+            }
+          }
+        }
+      }
+    }
+    // great chains hanging from the rim into the abyss
+    {
+      const rims: Array<{ x: number; y: number; d: Dir; h: number }> = [];
+      for (let y = 0; y < N; y++) {
+        for (let x = 0; x < N; x++) {
+          const c = gi(x, y);
+          if (kind[c] !== WALL) continue;
+          for (let d = 0 as Dir; d < 4; d++) {
+            const nx = x + DX[d], ny = y + DY[d];
+            const isVoid = nx < 0 || ny < 0 || nx >= N || ny >= N || kind[gi(nx, ny)] === VOID;
+            if (isVoid) { rims.push({ x, y, d: d as Dir, h: hash2(seed, c, 91) }); break; }
+          }
+        }
+      }
+      rims.sort((a, b) => a.h - b.h);
+      const chosen: typeof rims = [];
+      for (const r of rims) {
+        if (chosen.length >= 5) break;
+        if (chosen.some((q) => Math.max(Math.abs(q.x - r.x), Math.abs(q.y - r.y)) < 8)) continue;
+        chosen.push(r);
+      }
+      for (const r of chosen) {
+        const fx = DX[r.d], fz = DY[r.d];
+        const topY = wallTop[gi(r.x, r.y)] * TH - 0.4;
+        const endY = ABYSS * TH + 4;
+        const nL = 16;
+        for (let i = 0; i < nL; i++) {
+          const t = (i + 0.5) / nL;
+          const out = 0.6 + t * t * 1.8; // swings outward as it falls
+          links.push(inst(
+            wx(r.x) + fx * (CELL / 2 + out), topY + (endY - topY) * t, wz(r.y) + fz * (CELL / 2 + out),
+            dirRotY(r.d) + (i % 2) * Math.PI / 2, 1.15, 1.15, 1.15, 0x191a20,
+          ));
+        }
+      }
+    }
+  }
+
   // ------------------------------------------------------- instanced meshes
   // created last so every section above could still contribute masonry/flames
   group.add(makeInstanced(R.blockGeo, R.stoneMat, blocks));
@@ -722,6 +867,10 @@ export function buildWorld(l: Layout): WorldHandle {
   group.add(makeInstanced(R.flameGeo, R.flameWarm, warmFlames, false));
   group.add(makeInstanced(R.flameGeo, R.flameBlue, blueFlames, false));
   group.add(makeInstanced(R.flameGeo, R.flameRed, redFlames, false));
+  group.add(makeInstanced(R.rubbleGeo, R.stoneMat, rubble, true));
+  group.add(makeInstanced(R.crateGeo, R.woodMat, crates, true));
+  group.add(makeInstanced(R.vineGeo, R.vineMat, vines, false));
+  group.add(makeInstanced(R.linkGeo, R.woodMat, links, false));
 
   // ---------------------------------------------------------------- lights
   const lights: Array<{ light: THREE.PointLight; base: number; ph: number }> = [];

@@ -1,49 +1,96 @@
 # Dungeonforge
 
-Procedurally generated stone-labyrinth fortress diorama — three.js **WebGPU + TSL**,
-fully deterministic per seed, end-to-end in the browser.
+Procedurally generated stone-labyrinth fortress worlds — three.js **WebGPU + TSL**,
+fully deterministic per seed, end-to-end in the browser. No textures, no models
+(one CC0 knight aside): every stone, sigil, flame and bramble is procedural.
 
-![v6](docs/shot-v6.jpeg)
+![Dungeonforge](docs/shot-v6.jpeg)
 
-One integer seed reproduces the whole world bit-for-bit: chains of dungeon
-blocks grown on a coarse macro grid — each a braided growing-tree maze with
-discrete height tiers, a temple ziggurat, medallion plazas, a sunken red
-chamber, a ravine + rope bridge, torch-lit walls, banners and a beacon tower —
-linked by rope bridges, stacked into sky layers joined by square spiral
-staircases, all validated (full floor connectivity via BFS with Δtier ≤ 1
-moves, legal stairs) before anything renders.
+## ✨ Features
 
-Three world modes:
-
-- **Chain forge** (default) — N linked blocks grown like WFC tiles; sliders
-  reshape everything live.
-- **⧉ 3×3×3 cube** — 27 blocks in a solid lattice; every horizontal neighbor
-  bridges, every vertical pair gets a spiral stair shaft.
-- **Endless ∞** — a 3×3 streamed window that follows you; blocks derive from
+- **One seed, one world** — a single integer reproduces everything bit-for-bit:
+  maze topology, tiers, landmarks, torches, moss, cracked bricks. No `Math.random`.
+- **Chains of dungeon blocks** grown on a macro grid like WFC tiles, linked by
+  rope bridges, stacked into sky layers joined by square spiral staircases.
+- **Validated before it renders** — full floor connectivity via BFS (Δtier ≤ 1
+  moves), legal stairs; failed layouts re-roll a derived seed and never ship.
+- **Forge-rise reveal** — new maps assemble island by island, each block rising
+  out of the abyss as it is built.
+- **Walk everywhere** — first-person mode with analytic ground everywhere (grid
+  tiers, stair ramps, spiral towers, bridge sag). No mesh raycasts, no navmesh.
+- **Endless mode** — a streamed 3×3 window follows you; blocks derive from
   `hash(seed, i, j)`, so the infinite world is consistent and free to roam.
+- **Per-brick wear** — abraded arrises, randomly chipped corners, pockmarks and
+  cracks, all per-instance in one shared stone shader.
+- **Per-plaza sigils** — every teleport plaza draws its own pattern and color;
+  its brazier ring burns to match.
+- **60 fps on a laptop** — instancing, slot-pooled render objects, distance LOD,
+  a fixed light pool, and an emissive-threshold bloom chain (see Performance).
 
-**First-person mode**: click **⚔ Enter** — WASD/arrows to run, drag to look,
-Esc back to orbit. Walkable ground is analytic everywhere (grid tiers, stair
-ramps, spiral towers, bridge sag) — no mesh raycasts. The adventurer is the
-CC0 [KayKit Adventurers](https://kaylousberg.com) Knight — see `LICENSES.md`
-for asset credits (code is MIT).
-
-## Run
+## 🚀 Run
 
 ```sh
 npm install
-npm run dev        # → http://localhost:5173 (?seed=123&islands=4&size=13 to pin a build)
+npm run dev        # → http://localhost:5173
 npm test           # generator invariants: determinism, connectivity, stair legality
 npm run build      # static bundle in dist/
 ```
 
-## Architecture
+Shareable URLs: `?seed=123&islands=8&size=13` pins a build.
+
+## 🎮 Controls
+
+| Input | Action |
+| --- | --- |
+| drag / wheel | orbit / zoom (auto-rotate until first drag) |
+| **⚄ New dungeon** | forge a random seed |
+| seed + **Forge** | forge a specific seed |
+| **⧉ 3×3×3** | the Cube: 27 blocks in a solid lattice, fully bridged + stair shafts |
+| **⚔ Enter** | first-person: WASD/arrows run, drag to look, Esc back to orbit |
+| **endless ∞** (panel) | roam-to-generate streaming world |
+
+Step through a broken sky-door and you fall; the abyss returns you to your last
+safe footing. Spiral staircases are plain walkable ground — just walk up.
+
+## 🎛 Forge parameters
+
+Every slider re-forges live (debounced):
+
+| Slider | Reshapes |
+| --- | --- |
+| linked blocks | chain length (1–24 blocks) |
+| dungeon size | maze cells per block side |
+| teleport plazas / brazier totems | landmark counts |
+| terrain relief / temple mound | tier noise amplitude / ziggurat height |
+| braid / extra loops | how many dead ends open into loops |
+| maze: branchy ↔ river | growing-tree pick-newest bias |
+| torch spacing / wall thickness / age & decay | dressing & ruin |
+
+## 🧠 How it works
+
+The generator is **pure data, zero THREE imports** (evidence for each stage in
+[docs/research.md](docs/research.md)):
+
+1. growing-tree maze (70/30 newest/random) carving height tiers clamped ±1 per passage
+2. braiding — a fraction of dead ends knocked open into loops
+3. landmarks stamped graph-first: temple ziggurat, medallion plazas, sunken red
+   chamber, ravine + bridge
+4. rasterize to a FLOOR/WALL/VOID grid with per-cell tiers
+5. connectivity repair: BFS over floor cells, open stair-legal walls until whole
+6. stairs / wall heights / towers / torch & banner min-spacing walks
+7. validate — or re-roll a derived seed (≤ 6 attempts)
+
+The orchestrator grows a macro layout (tree growth, or a lattice for the Cube,
+or an infinite hash-grid for endless mode), generates blocks in a **worker
+pool**, and streams them into slot-pooled instanced meshes one per frame.
+
+## 🏗 Architecture
 
 ```
 src/
   config.ts        world constants (tier height, cell size, budgets, LOD bands)
   gen/             PURE-DATA generator — zero THREE imports
-    dungeon.ts       the pipeline (see below); Layout in/out as typed arrays
+    dungeon.ts       the pipeline above; Layout in/out as typed arrays
     rng.ts           mulberry32 + stateless spatial hashes ("don't generate, hash")
     worker.ts        runs generate() off the main thread (transferable buffers)
     pool.ts          round-robin worker pool, id-tagged so stale replies drop
@@ -67,50 +114,64 @@ src/
   main.ts          wiring: renderer, modes, input, main loop (~250 lines)
 ```
 
-- **Generator pipeline** (evidence in `docs/research.md`): growing-tree maze
-  (70/30 newest/random) carving tiers clamped ±1 per passage → braiding (~45% of
-  dead ends opened into loops) → landmarks stamped graph-first (temple, plazas,
-  red chamber, ravine + bridge) → rasterize to a FLOOR/WALL/VOID grid →
-  connectivity repair → stairs / wall heights / torch & banner min-spacing
-  walks. Re-rolls a derived seed on validation failure.
 - `scene/build.ts` — layout → instanced meshes. Masonry courses with per-instance
   color (baked AO + hue jitter), TSL flames / banners / medallions / portal,
   fake local torchlight (emissive wall + floor glow quads), per-island point
   lights picked by farthest-point sampling.
-- `render/post.ts` — MRT **emissive-only bloom** (only flames/sigils glow, stone
+- `render/post.ts` — **emissive-threshold bloom** (only flames/sigils glow, stone
   never blooms) + a 7-step depth-aware fog raymarch with moonward forward
   scattering.
 
-## Performance notes
+## ⚡ Performance notes
 
-60 fps on an M-series laptop; cold load → first frame ≈ 0.9s (dev); re-forge ≈ 13ms.
-What mattered:
+60 fps on an M-series laptop; re-forge ≈ 13ms. What mattered:
 
-- **No MSAA on the MRT post chain** (antialias: false — 4× bandwidth on two
+- **No MSAA under the post chain** (`antialias: false` — 4× bandwidth on two
   attachments was the killer).
-- **Baked shadows**: WebGPU three has no `renderer.shadowMap.autoUpdate` — it's
-  per-light: `light.shadow.autoUpdate = false` + `needsUpdate = true` per regen.
-- **Shared materials/geometries** across regenerations (module-level cache):
-  WebGPU pipeline compilation only ever happens once, so re-forging just refills
-  instance buffers.
-- **Warm-up before the loop**: `await renderer.init()` runs concurrently with
-  worker generation; the loading overlay animates via compositor-driven CSS
-  while the first render compiles every pipeline.
+- **Shared materials/geometries forever** (module-level kit): WebGPU pipeline
+  compilation only ever happens once, so re-forging just refills instance buffers.
+- **Slot-pooled render objects**: three's WebGPU renderer builds a node graph
+  per render object on first sight (~7ms × ~35 meshes per island) — render
+  objects are created once per slot and refilled on regen (9.8s → 30ms).
+- **Fixed light pool** (28 points): the WebGPU forward path recompiles every
+  pipeline when the scene's light count changes — so it never does; islands
+  submit specs and the pool re-aims.
 - **Zero-allocation rebuilds**: `InstList` composes instance matrices straight
-  into flat `Float32Array`s (yaw-only fast path) — a forge writes tens of
-  thousands of instances without creating a single `Matrix4`/`Color`; bounds
-  come from the translation columns, never `computeBoundingSphere`.
-- **Distance LOD with hysteresis**: far slots hide their small-detail layers and
-  swap bulk masonry to low-poly boxes; ON below 95 units, OFF above 112, so a
-  camera hovering at the boundary never thrashes geometry swaps.
-- **Fixed light pool**: the scene always holds 28 point lights — three's WebGPU
-  forward path recompiles every pipeline when the light count changes, so it
-  never does; islands submit specs and the pool re-aims.
-- **Background-tab-safe builds**: the per-island frame spacing falls back to a
-  timeout when rAF stops (hidden tab), so a forge finishes instead of stalling.
-- Light budget: 1 shadowed directional + a fixed pool of 28 unshadowed points
-  shared by the whole chain; every other torch is emissive flame + wall/floor
-  glow quads.
+  into flat `Float32Array`s; bounds come from the translation columns, never
+  `computeBoundingSphere`.
+- **Baked shadows**: `light.shadow.autoUpdate = false` + `needsUpdate = true`
+  per regen (there is no `renderer.shadowMap.autoUpdate` in WebGPU three).
+- **Distance LOD with hysteresis**: far slots hide detail layers and swap bulk
+  masonry to low-poly boxes; ON below 95 units, OFF above 112 — no swap thrash.
+- **Streamed first load**: islands build one per frame (pure JS while nothing
+  renders), then `renderer.compileAsync()` compiles every pipeline in parallel
+  off the main thread; the overlay lifts on the first drawn frame.
+- **Warm-up-safe in background tabs**: the per-island frame spacing falls back
+  to a timeout when rAF stops, so a hidden-tab forge finishes instead of stalling.
+- Light budget: 1 shadowed directional + the fixed pool of 28 unshadowed points;
+  every other torch is emissive flame + wall/floor glow quads.
 - Depth reads from **vertex-color face shading** baked into the shared block
-  geometry (top/±x/±z faces each get their own value; NodeMaterial multiplies
-  vertexColor × instanceColor), not from extra lights.
+  geometry (top/±x/±z faces each get their own value), not from extra lights.
+
+## 📐 three.js / WebGPU version notes (r185)
+
+- `renderAsync()` is deprecated — `await renderer.init()` once, then plain
+  `render()`; use `renderer.compileAsync(scene, camera)` for warm-up.
+- `THREE.PostProcessing` is being renamed to `THREE.RenderPipeline`.
+- TSL's `pointUV` compiles to `gl_PointCoord` — WebGL-only; don't build
+  round-point sprites on it.
+- Shadow "static mode" is per-light (`light.shadow.autoUpdate/needsUpdate`),
+  not a renderer flag.
+
+## 📸 More seeds
+
+| | | |
+| --- | --- | --- |
+| ![layers](docs/shot-v20-layers.jpeg) | ![cube](docs/shot-v22-cube.jpeg) | ![endless](docs/shot-v19-endless.jpeg) |
+| stacked sky layers | the 3×3×3 Cube | endless streaming |
+
+## 📄 License
+
+Code is [MIT](LICENSE). The adventurer is the CC0
+[KayKit Adventurers](https://kaylousberg.com) Knight — see
+[LICENSES.md](LICENSES.md) for asset credits.

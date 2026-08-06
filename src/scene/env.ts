@@ -5,6 +5,7 @@ import * as THREE from "three/webgpu";
 import {
   color, mix, positionWorld, positionWorldDirection, time,
   fog, densityFogFactor, triNoise3D, float, floor as tslFloor, hash, smoothstep, vec3, sin,
+  uv, length,
 } from "three/tsl";
 import * as BufferGeometryUtils from "three/addons/utils/BufferGeometryUtils.js";
 import { hash2 } from "../gen/rng";
@@ -72,20 +73,22 @@ export function buildEnvironment(scene: THREE.Scene, seed: number): {
   {
     const geos: THREE.BufferGeometry[] = [];
     const tint = new THREE.Color();
-    const addMesa = (a: number, rad: number, baseW: number, baseD: number, nStrata: number, hMul: number, k: number) => {
+    const addMesa = (a: number, rad: number, baseW: number, baseD: number, nStrata: number, hMul: number, k: number, silhouette = false) => {
       let w = baseW, d = baseD;
       let yy = ABYSS * TH - 12;
       for (let s = 0; s < nStrata; s++) {
         const hS = (2.5 + hash2(seed, k * 7 + s, 11) * 4.5) * hMul;
         const g = new THREE.BoxGeometry(w, hS, d);
         // per-stratum shading: deeper strata darker, top faces lighter still
-        const lum = 0.055 + s * 0.02 + hash2(seed, k * 7 + s, 12) * 0.015;
-        tint.setHSL(0.6 - s * 0.008, 0.32, lum);
+        const lum = silhouette ? 0.045 + s * 0.008 : 0.055 + s * 0.02 + hash2(seed, k * 7 + s, 12) * 0.015;
+        tint.setHSL(0.6 - s * 0.008, silhouette ? 0.38 : 0.32, lum);
         const nVerts = g.getAttribute("position").count;
         const colArr = new Float32Array(nVerts * 3);
         const nrm = g.getAttribute("normal");
         for (let i = 0; i < nVerts; i++) {
-          const topBoost = nrm.getY(i) > 0.5 ? 1.7 : 1;
+          // silhouette mesas keep dark tops — bright flat tops at the horizon
+          // read as a shelf edge where the world stops
+          const topBoost = nrm.getY(i) > 0.5 ? (silhouette ? 1.12 : 1.38) : 1;
           colArr[i * 3] = tint.r * topBoost;
           colArr[i * 3 + 1] = tint.g * topBoost;
           colArr[i * 3 + 2] = tint.b * topBoost;
@@ -97,8 +100,8 @@ export function buildEnvironment(scene: THREE.Scene, seed: number): {
         g.translate(Math.cos(a) * rad + jx, yy + hS / 2, Math.sin(a) * rad + jz);
         geos.push(g);
         yy += hS * (0.82 + hash2(seed, k * 7 + s, 16) * 0.12);
-        w *= 0.78 + hash2(seed, k * 7 + s, 17) * 0.12;
-        d *= 0.78 + hash2(seed, k * 7 + s, 18) * 0.12;
+        w *= 0.66 + hash2(seed, k * 7 + s, 17) * 0.14;
+        d *= 0.66 + hash2(seed, k * 7 + s, 18) * 0.14;
       }
     };
     // near ring: broad terraced mesas
@@ -111,10 +114,65 @@ export function buildEnvironment(scene: THREE.Scene, seed: number): {
       const a = (k / 7) * Math.PI * 2 + hash2(seed, k, 6) * 0.8;
       addMesa(a, 55 + hash2(seed, k, 7) * 20, 5 + hash2(seed, k, 8) * 4, 5 + hash2(seed, k, 9) * 3, 5 + Math.floor(hash2(seed, k, 10) * 3), 1.9, k);
     }
-    // far ring: bigger, darker, half-swallowed by haze
-    for (let k = 19; k < 29; k++) {
-      const a = (k / 10) * Math.PI * 2 + hash2(seed, k, 19) * 0.5;
-      addMesa(a, 105 + hash2(seed, k, 20) * 35, 26 + hash2(seed, k, 21) * 20, 18 + hash2(seed, k, 22) * 12, 3, 2.6, k);
+    // far ring: jagged dark silhouettes, wildly uneven heights — no shelf line
+    for (let k = 19; k < 31; k++) {
+      const a = (k / 12) * Math.PI * 2 + hash2(seed, k, 19) * 0.7;
+      const hVar = 1.4 + hash2(seed, k, 23) * 2.6; // some low, some looming
+      addMesa(a, 100 + hash2(seed, k, 20) * 45, 16 + hash2(seed, k, 21) * 22, 14 + hash2(seed, k, 22) * 12, 3 + Math.floor(hash2(seed, k, 24) * 3), hVar, k, true);
+    }
+    // distant sister ruins: dark tower clusters with one or two living lights —
+    // the labyrinth does not end at this canyon
+    {
+      const ruinMat = new THREE.MeshLambertNodeMaterial({ color: 0x0e1526 });
+      const lightMat = new THREE.MeshBasicNodeMaterial();
+      lightMat.colorNode = color(0xffb35c).mul(2.2);
+      for (let k = 0; k < 3; k++) {
+        const a = (k / 3) * Math.PI * 2 + 0.9 + hash2(seed, k, 25) * 0.6;
+        const rad = 92 + hash2(seed, k, 26) * 30;
+        const cx2 = Math.cos(a) * rad, cz2 = Math.sin(a) * rad;
+        const cluster = new THREE.Group();
+        const nT = 4 + Math.floor(hash2(seed, k, 27) * 4);
+        for (let t = 0; t < nT; t++) {
+          const hT = 6 + hash2(seed, k * 9 + t, 28) * 20;
+          const wT = 2.2 + hash2(seed, k * 9 + t, 29) * 4;
+          const tower = new THREE.Mesh(new THREE.BoxGeometry(wT, hT, wT), ruinMat);
+          tower.position.set(
+            cx2 + (hash2(seed, k * 9 + t, 30) - 0.5) * 16,
+            ABYSS * TH - 8 + hT / 2,
+            cz2 + (hash2(seed, k * 9 + t, 31) - 0.5) * 16,
+          );
+          tower.rotation.y = hash2(seed, k * 9 + t, 32) * 0.8;
+          cluster.add(tower);
+          // a lit window or two on the tallest towers
+          if (hT > 18 && hash2(seed, k * 9 + t, 35) < 0.8) {
+            const win = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.7), lightMat);
+            const wa = Math.atan2(-cz2, -cx2); // face roughly toward the fortress
+            win.position.set(
+              tower.position.x + Math.cos(wa) * (wT / 2 + 0.05),
+              tower.position.y + hT * 0.28,
+              tower.position.z + Math.sin(wa) * (wT / 2 + 0.05),
+            );
+            win.rotation.y = wa + Math.PI / 2;
+            cluster.add(win);
+          }
+        }
+        group.add(cluster);
+      }
+    }
+    // mist curtain: a ring of broad fog banks that swallows the horizon seam
+    {
+      const mist = new THREE.SpriteNodeMaterial({ transparent: true, depthWrite: false });
+      mist.colorNode = color(0x27415f);
+      mist.opacityNode = smoothstep(0.5, 0.06, length(uv().sub(0.5))).mul(0.1);
+      for (let k = 0; k < 12; k++) {
+        const a = (k / 12) * Math.PI * 2 + hash2(seed, k, 33) * 0.4;
+        const s = new THREE.Sprite(mist);
+        const rad = 96 + hash2(seed, k, 34) * 26;
+        s.position.set(Math.cos(a) * rad, -2 + hash2(seed, k, 36) * 6, Math.sin(a) * rad);
+        const sc = 46 + hash2(seed, k, 37) * 26;
+        s.scale.set(sc, sc * 0.4, 1);
+        group.add(s);
+      }
     }
     const merged = BufferGeometryUtils.mergeGeometries(geos);
     for (const g of geos) g.dispose();

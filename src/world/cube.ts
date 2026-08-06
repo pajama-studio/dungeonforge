@@ -87,6 +87,8 @@ export async function forgeCube(ctx: Ctx): Promise<void> {
   pruneSlots(activeSlots);
   ctx.lights.assign(interleaved);
   ctx.env.fit(pitch * 2.1, 0, 0);
+  ctx.camera.far = Math.max(400, pitch * 8); // see forge(): far must outrun the lattice
+  ctx.camera.updateProjectionMatrix();
   ctx.controls.target.set(0, LAYER * 1.1, 0);
   ctx.camera.position.set(pitch * 1.9, LAYER * 2.1, pitch * 2.6);
   ctx.renderer.setPixelRatio(Math.min(devicePixelRatio, PR_LARGE));

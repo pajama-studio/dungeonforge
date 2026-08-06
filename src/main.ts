@@ -193,13 +193,18 @@ function exitPlay(): void {
 const slotDetail = new Map<number, boolean>();
 
 async function boot(): Promise<void> {
-  // generation (worker) and WebGPU init run concurrently
-  await Promise.all([renderer.init(), forge(ctx, ctx.state.seed)]);
-  // first render compiles every pipeline (renderer.init() above makes this the
-  // blessed sync path); materials are shared afterwards, so re-forging never
-  // compiles again
-  postProcessing.render();
-  loadingEl.style.opacity = "0";
+  await renderer.init();
+  // the forge streams islands in one per frame; the loop starts as soon as the
+  // shared materials are compiled, so the overlay lifts when the FIRST island
+  // is on screen instead of after the whole chain.
+  const forging = forge(ctx, ctx.state.seed);
+  // wait for the first island (worker gen + one build), then compile every
+  // pipeline ASYNCHRONOUSLY — the GPU process compiles in parallel while
+  // further islands keep streaming in; a sync first render would instead
+  // block the main thread for the entire compile.
+  while (ctx.worlds.length === 0) await new Promise((r) => setTimeout(r, 30));
+  await renderer.compileAsync(scene, camera);
+  let revealed = false;
   let lastT = performance.now() / 1000;
   renderer.setAnimationLoop(() => {
     const t = performance.now() / 1000;
@@ -244,7 +249,12 @@ async function boot(): Promise<void> {
     postProcessing.render();
     const rDur = performance.now() - r0;
     if (rDur > 100) console.log(`[frame] render() blocked ${rDur.toFixed(0)}ms`);
+    if (!revealed && ctx.worlds.length > 0) {
+      revealed = true;
+      loadingEl.style.opacity = "0";
+    }
   });
+  await forging;
 }
 
 void boot();

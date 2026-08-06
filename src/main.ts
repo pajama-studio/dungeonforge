@@ -11,6 +11,8 @@ import { bloom } from "three/addons/tsl/display/BloomNode.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { DEFAULT_PARAMS, type Layout, type Params } from "./gen/dungeon";
 import { buildWorld, buildBridgeLink, type WorldHandle } from "./scene/build";
+import { Player, type GroundSampler } from "./player/player";
+import { FLOOR } from "./gen/dungeon";
 import { buildEnvironment, TH } from "./scene/env";
 import { mulberry32 } from "./gen/rng";
 
@@ -91,6 +93,45 @@ postProcessing.outputNode = composed.mul(trans).add(fogCol.mul(float(1).sub(tran
 const env = buildEnvironment(scene, 1); // env is seed-stable; kept across regens
 
 const worlds: WorldHandle[] = [];
+
+// walkability data captured at forge time for the third-person mode
+const TH_W = 1.85;
+interface IslandWalk { l: Layout; ox: number; oz: number; stairDir: Map<number, number> }
+interface LinkWalk { a: THREE.Vector3; b: THREE.Vector3; sag: number }
+const walkIslands: IslandWalk[] = [];
+const walkLinks: LinkWalk[] = [];
+
+const sampleGround: GroundSampler = (x, z) => {
+  for (const isl of walkIslands) {
+    const { l, ox, oz } = isl;
+    const gx = Math.round((x - ox) / CELL + (l.N - 1) / 2);
+    const gy = Math.round((z - oz) / CELL + (l.N - 1) / 2);
+    if (gx < 0 || gy < 0 || gx >= l.N || gy >= l.N) continue;
+    const c = gy * l.N + gx;
+    if (l.kind[c] !== FLOOR) return { y: 0, ok: false };
+    let y = l.tier[c] * TH_W + 0.16;
+    const sd = isl.stairDir.get(c);
+    if (sd !== undefined) {
+      // ramp across the stair cell toward the higher neighbor
+      const cx = ox + (gx - (l.N - 1) / 2) * CELL;
+      const cz = oz + (gy - (l.N - 1) / 2) * CELL;
+      const fx = [1, -1, 0, 0][sd], fz = [0, 0, 1, -1][sd];
+      const t = Math.min(1, Math.max(0, ((x - cx) * fx + (z - cz) * fz) / CELL + 0.5));
+      y += t * TH_W;
+    }
+    return { y, ok: true };
+  }
+  for (const lk of walkLinks) {
+    const abx = lk.b.x - lk.a.x, abz = lk.b.z - lk.a.z;
+    const len2 = abx * abx + abz * abz;
+    const t = ((x - lk.a.x) * abx + (z - lk.a.z) * abz) / len2;
+    if (t < 0 || t > 1) continue;
+    const px = lk.a.x + abx * t, pz = lk.a.z + abz * t;
+    if (Math.hypot(x - px, z - pz) > 1.1) continue;
+    return { y: lk.a.y + (lk.b.y - lk.a.y) * t - Math.sin(t * Math.PI) * lk.sag + 0.05, ok: true };
+  }
+  return { y: 0, ok: false };
+};
 
 // Generation runs in a WORKER POOL (pure data, transferable typed arrays) —
 // islands of a chain generate in parallel; the main thread only fills instance
@@ -184,6 +225,8 @@ async function forge(newSeed: number): Promise<void> {
 
   for (const w of worlds) w.dispose();
   worlds.length = 0;
+  walkIslands.length = 0;
+  walkLinks.length = 0;
 
   // chain layout: place each block east of the previous, aligning gate rows
   let minX = Infinity, maxX = -Infinity;
@@ -207,6 +250,10 @@ async function forge(newSeed: number): Promise<void> {
     w.group.position.set(ox, 0, oz);
     scene.add(w.group);
     worlds.push(w);
+    walkIslands.push({
+      l, ox, oz,
+      stairDir: new Map(l.stairs.map((s) => [s.y * l.N + s.x, s.dir])),
+    });
     minX = Math.min(minX, ox - half);
     maxX = Math.max(maxX, ox + half);
     // bridge back to the previous island
@@ -216,6 +263,7 @@ async function forge(newSeed: number): Promise<void> {
       const to = new THREE.Vector3(ox + wp.x - CELL / 2 - 0.3 + 0, wp.y, oz + wp.z);
       worlds.push(buildBridgeLink(from, to));
       scene.add(worlds[worlds.length - 1].group);
+      walkLinks.push({ a: from.clone(), b: to.clone(), sag: Math.min(2.2, from.distanceTo(to) * 0.06) });
     }
     if (east) {
       const ep = localPos(east);
@@ -254,6 +302,59 @@ addEventListener("resize", () => {
   renderer.setSize(innerWidth, innerHeight);
 });
 
+// ---- third-person mode ------------------------------------------------------
+let player: Player | null = null;
+let playing = false;
+let camYaw = 0.6;
+let camDist = 8.5;
+const keys = new Set<string>();
+addEventListener("keydown", (e: KeyboardEvent) => {
+  keys.add(e.key.toLowerCase());
+  if (e.key === "Escape" && playing) void exitPlay();
+});
+addEventListener("keyup", (e: KeyboardEvent) => keys.delete(e.key.toLowerCase()));
+let dragging = false;
+renderer.domElement.addEventListener("pointerdown", () => { dragging = true; });
+addEventListener("pointerup", () => { dragging = false; });
+addEventListener("pointermove", (e: PointerEvent) => {
+  if (playing && dragging) camYaw -= e.movementX * 0.005;
+});
+renderer.domElement.addEventListener("wheel", (e) => {
+  if (playing) camDist = Math.min(14, Math.max(4, camDist + e.deltaY * 0.01));
+}, { passive: true });
+
+const btnEnter = document.createElement("button");
+btnEnter.textContent = "⚔ Enter";
+document.getElementById("controls")!.appendChild(btnEnter);
+btnEnter.addEventListener("click", () => void (playing ? exitPlay() : enterPlay()));
+
+async function enterPlay(): Promise<void> {
+  if (!walkIslands.length) return;
+  if (!player) {
+    player = new Player();
+    try { await player.load("/assets/knight.glb"); } catch { /* placeholder-only */ }
+  }
+  const l0 = walkIslands[0];
+  // spawn on the first medallion plaza when there is one (open, photogenic);
+  // fall back to the entrance corridor
+  const spawnCell = l0.l.medallions[0] ?? l0.l.entrance;
+  const ex = l0.ox + (spawnCell.x - (l0.l.N - 1) / 2) * CELL;
+  const ez = l0.oz + (spawnCell.y - (l0.l.N - 1) / 2) * CELL;
+  player.place(ex, ez, sampleGround);
+  scene.add(player.group);
+  playing = true;
+  controls.enabled = false;
+  controls.autoRotate = false;
+  btnEnter.textContent = "🗺 Orbit (Esc)";
+}
+
+async function exitPlay(): Promise<void> {
+  playing = false;
+  controls.enabled = true;
+  player?.group.removeFromParent();
+  btnEnter.textContent = "⚔ Enter";
+}
+
 async function boot(): Promise<void> {
   // generation (worker) and WebGPU init run concurrently
   await Promise.all([renderer.init(), forge(seed)]);
@@ -261,9 +362,24 @@ async function boot(): Promise<void> {
   // shared afterwards, so re-forging never compiles again
   postProcessing.render();
   loadingEl.style.opacity = "0";
+  let lastT = performance.now() / 1000;
   renderer.setAnimationLoop(() => {
     const t = performance.now() / 1000;
-    controls.update();
+    const dt = Math.min(0.05, t - lastT);
+    lastT = t;
+    if (playing && player) {
+      const f = (keys.has("w") || keys.has("arrowup") ? 1 : 0) - (keys.has("s") || keys.has("arrowdown") ? 1 : 0);
+      const s = (keys.has("d") || keys.has("arrowright") ? 1 : 0) - (keys.has("a") || keys.has("arrowleft") ? 1 : 0);
+      player.update(dt, { f, s }, camYaw, sampleGround);
+      const p = player.group.position;
+      const tx = p.x - Math.sin(camYaw) * camDist;
+      const tz = p.z - Math.cos(camYaw) * camDist;
+      const ty = p.y + camDist * 0.62;
+      camera.position.lerp(new THREE.Vector3(tx, ty, tz), Math.min(1, dt * 6));
+      camera.lookAt(p.x, p.y + 1.4, p.z);
+    } else {
+      controls.update();
+    }
     for (const w of worlds) w.tick(t);
     postProcessing.render();
   });

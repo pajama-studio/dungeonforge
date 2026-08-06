@@ -42,6 +42,8 @@
       font: italic 15px Georgia, serif; letter-spacing: .2em;
       transition: opacity .8s; pointer-events: none;
     }
+    #loading span { animation: breathe 1.6s ease-in-out infinite; }
+    @keyframes breathe { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
   </style>
 </head>
 <body>
@@ -57,7 +59,7 @@
     <button id="btnGo">Forge</button>
   </div>
   <div id="tip">drag to orbit · scroll to zoom</div>
-  <div id="loading">raising the old stones…</div>
+  <div id="loading"><span>raising the old stones…</span></div>
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

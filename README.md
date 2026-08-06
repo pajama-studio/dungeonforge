@@ -3,7 +3,7 @@
 Procedurally generated stone-labyrinth fortress diorama — three.js **WebGPU + TSL**,
 fully deterministic per seed, end-to-end in the browser.
 
-![v1](docs/shot-v1.jpeg)
+![v2](docs/shot-v2.jpeg)
 
 One integer seed reproduces the whole fortress bit-for-bit: a braided growing-tree
 maze with discrete height tiers, broad staircases climbing to a temple ziggurat,
@@ -40,7 +40,21 @@ npm run build      # static bundle in dist/
 
 ## Performance notes
 
-60 fps on an M-series laptop. The two changes that mattered: **no MSAA on the MRT
-post chain** (antialias: false — 4× bandwidth on two attachments was the killer)
-and **baked shadows** for the static scene. Light budget: 1 shadowed directional +
-~12 unshadowed points; every other torch is emissive + glow quads.
+60 fps on an M-series laptop; cold load → first frame ≈ 0.9s (dev); re-forge ≈ 13ms.
+What mattered:
+
+- **No MSAA on the MRT post chain** (antialias: false — 4× bandwidth on two
+  attachments was the killer).
+- **Baked shadows**: WebGPU three has no `renderer.shadowMap.autoUpdate` — it's
+  per-light: `light.shadow.autoUpdate = false` + `needsUpdate = true` per regen.
+- **Shared materials/geometries** across regenerations (module-level cache):
+  WebGPU pipeline compilation only ever happens once, so re-forging just refills
+  instance buffers.
+- **Async warm-up**: `await postProcessing.renderAsync()` before starting the
+  loop compiles every pipeline off the hot path; the loading overlay animates
+  via compositor-driven CSS meanwhile.
+- Light budget: 1 shadowed directional + ~12 unshadowed points; every other
+  torch is emissive flame + wall/floor glow quads.
+- Depth reads from **vertex-color face shading** baked into the shared block
+  geometry (top/±x/±z faces each get their own value; NodeMaterial multiplies
+  vertexColor × instanceColor), not from extra lights.

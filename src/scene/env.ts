@@ -10,7 +10,7 @@ import * as BufferGeometryUtils from "three/addons/utils/BufferGeometryUtils.js"
 import { hash2 } from "../gen/rng";
 import { ABYSS } from "../gen/dungeon";
 
-export const TH = 1.5;    // world height per tier
+export const TH = 1.85;   // world height per tier
 export const CELL = 2.2;  // world size per grid cell
 
 export function buildEnvironment(scene: THREE.Scene, seed: number): { bakeShadows: () => void; dispose: () => void } {
@@ -31,16 +31,16 @@ export function buildEnvironment(scene: THREE.Scene, seed: number): { bakeShadow
   const noise = triNoise3D(positionWorld.mul(0.014), 0.25, time).mul(5.0);
   const fogTop = float(2.2).add(noise);
   const ground = fogTop.sub(positionWorld.y).div(fogTop.sub(fogBase)).saturate().mul(0.96);
-  const haze = densityFogFactor(float(0.0075));
+  const haze = densityFogFactor(float(0.0095));
   const combined = ground.oneMinus().mul(haze.oneMinus()).oneMinus();
   scene.fogNode = fog(fogColor, combined);
 
   // -- Lights: cool hemisphere + one shadow-casting moon.
-  const hemi = new THREE.HemisphereLight(0x3a4a72, 0x2a1e14, 0.7);
+  const hemi = new THREE.HemisphereLight(0x3a4a72, 0x2a1e14, 0.85);
   group.add(hemi);
 
-  const moon = new THREE.DirectionalLight(0x93a9e8, 1.15);
-  moon.position.set(-38, 58, -26);
+  const moon = new THREE.DirectionalLight(0x93a9e8, 1.3);
+  moon.position.set(-52, 38, -20); // grazing angle — long raking shadows sell the height
   moon.castShadow = true;
   moon.shadow.mapSize.set(2048, 2048);
   const sc = moon.shadow.camera;

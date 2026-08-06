@@ -23,7 +23,7 @@ let seed = Number(params.get("seed")) || 20260806;
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(36, innerWidth / innerHeight, 0.5, 400);
-camera.position.set(42, 46, 64);
+camera.position.set(46, 36, 66); // lower, more oblique — facades and height read stronger
 
 const renderer = new THREE.WebGPURenderer({ antialias: false });
 renderer.setSize(innerWidth, innerHeight);
@@ -31,11 +31,11 @@ renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.AgXToneMapping;
-renderer.toneMappingExposure = 1.05;
+renderer.toneMappingExposure = 1.18;
 app.appendChild(renderer.domElement);
 
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.set(0, 2 * TH, 0);
+controls.target.set(0, 3 * TH, 0);
 controls.enableDamping = true;
 controls.dampingFactor = 0.06;
 controls.maxPolarAngle = 1.38;
@@ -82,16 +82,20 @@ addEventListener("resize", () => {
   renderer.setSize(innerWidth, innerHeight);
 });
 
-forge(seed);
+async function boot(): Promise<void> {
+  await renderer.init();
+  forge(seed);
+  // pre-compile every WebGPU pipeline off the hot path so the first visible
+  // frame doesn't stall the main thread (materials are shared afterwards, so
+  // re-forging never compiles again)
+  await postProcessing.renderAsync();
+  loadingEl.style.opacity = "0";
+  renderer.setAnimationLoop(() => {
+    const t = performance.now() / 1000;
+    controls.update();
+    world?.tick(t);
+    postProcessing.render();
+  });
+}
 
-let firstFrame = true;
-renderer.setAnimationLoop(() => {
-  const t = performance.now() / 1000;
-  controls.update();
-  world?.tick(t);
-  postProcessing.render();
-  if (firstFrame) {
-    firstFrame = false;
-    loadingEl.style.opacity = "0";
-  }
-});
+void boot();

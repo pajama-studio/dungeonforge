@@ -21,7 +21,7 @@ export const VOID = 0;
 export const FLOOR = 1;
 export const WALL = 2;
 
-export const ABYSS = -5; // tier that abyss-facing masonry drops to
+export const ABYSS = -7; // tier that abyss-facing masonry drops to
 
 export type Dir = 0 | 1 | 2 | 3; // +x, -x, +y, -y (grid space; +y = south/front)
 export const DX = [1, -1, 0, 0] as const;
@@ -84,10 +84,10 @@ function attempt(seed: number): Layout | string {
   // -- Stage 1: growing-tree maze over maze-cell space, tiers carved alongside.
   const ci = M >> 1; // temple column (maze coords)
   const tierTarget = (i: number, j: number): number => {
-    const n = valueNoise2(seed ^ 0x51ab, i * 0.34, j * 0.34) * 2.6;
+    const n = valueNoise2(seed ^ 0x51ab, i * 0.34, j * 0.34) * 3.0;
     const dTemple = Math.hypot(i - ci, j - 1.2);
-    const mound = Math.max(0, 2.9 - dTemple * 0.42);
-    return Math.max(0, Math.min(6, Math.round(n + mound - 0.4)));
+    const mound = Math.max(0, 3.7 - dTemple * 0.48);
+    return Math.max(0, Math.min(7, Math.round(n + mound - 0.4)));
   };
 
   const mTier = new Int8Array(M * M).fill(-1);
@@ -121,7 +121,7 @@ function attempt(seed: number): Layout | string {
       const d = rng.pick(dirs);
       const nx = cx + DX[d], ny = cy + DY[d];
       const t = mTier[cur];
-      mTier[mi(nx, ny)] = Math.max(0, Math.min(6, Math.max(t - 1, Math.min(t + 1, tierTarget(nx, ny)))));
+      mTier[mi(nx, ny)] = Math.max(0, Math.min(7, Math.max(t - 1, Math.min(t + 1, tierTarget(nx, ny)))));
       connect(cx, cy, d);
       active.push(mi(nx, ny));
     }
@@ -185,7 +185,7 @@ function attempt(seed: number): Layout | string {
   for (let j = 0; j <= 3; j++) for (let i = ci - 3; i <= ci + 3; i++) {
     if (i >= 0 && i < M) B = Math.max(B, mTier[mi(i, j)]);
   }
-  B = Math.max(2, Math.min(4, B));
+  B = Math.max(3, Math.min(5, B));
   const platformTier = B + 2;
   const tX0 = gcx - 5, tX1 = gcx + 5; // 11 cells wide
   for (let gy = 1; gy <= 5; gy++) {
@@ -200,7 +200,7 @@ function attempt(seed: number): Layout | string {
     if (kind[gi(gx, 6)] === FLOOR && Math.abs(tier[gi(gx, 6)] - B) > 1) tier[gi(gx, 6)] = B;
   }
   // building: 5 wall cells on the top terrace, doorway at center
-  const buildTop = platformTier + 3;
+  const buildTop = platformTier + 4;
   for (let gx = gcx - 2; gx <= gcx + 2; gx++) {
     kind[gi(gx, 1)] = WALL;
     templeMask[gi(gx, 1)] = 0;
@@ -422,7 +422,7 @@ function attempt(seed: number): Layout | string {
     // silhouette variety on long outer walls
     for (let k = 1; k < N - 1; k++) {
       for (const c of [gi(k, 0), gi(0, k), gi(N - 1, k)]) {
-        if (kind[c] === WALL && hash2(seed, c, 77) < 0.18) wallTop[c] += 1;
+        if (kind[c] === WALL && hash2(seed, c, 77) < 0.32) wallTop[c] += hash2(seed, c, 78) < 0.3 ? 2 : 1;
       }
     }
   }
@@ -450,7 +450,7 @@ function attempt(seed: number): Layout | string {
   for (const [tx, ty] of [[0, 0], [N - 1, 0], [0, N - 1], [N - 1, N - 1]] as const) {
     const c = gi(tx, ty);
     if (kind[c] !== WALL) continue;
-    wallTop[c] += 2;
+    wallTop[c] += 3;
     towers.push({ x: tx, y: ty, top: wallTop[c], beacon: false, scale: 1.45 });
   }
   {
@@ -465,7 +465,7 @@ function attempt(seed: number): Layout | string {
     }
     if (best >= 0) {
       const bx = best % N, by = (best / N) | 0;
-      wallTop[best] += 5;
+      wallTop[best] += 8;
       towers.push({ x: bx, y: by, top: wallTop[best], beacon: true, scale: 1.6 });
     }
   }

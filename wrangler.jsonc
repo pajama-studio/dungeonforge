@@ -1,7 +1,10 @@
 {
-  // Static deploy of the built diorama. Usage:
-  //   npm run build && npx wrangler deploy
+  // Static deploy of the built diorama. Usage (--config avoids the parent
+  // repo's .wrangler deploy-config clash):
+  //   npm run build && npx wrangler deploy --config wrangler.jsonc
   "name": "dungeonforge",
   "compatibility_date": "2026-08-01",
-  "assets": { "directory": "./dist" }
+  "assets": { "directory": "./dist" },
+  "workers_dev": false,
+  "routes": [{ "pattern": "dungeonforge.pajama.studio", "custom_domain": true }]
 }

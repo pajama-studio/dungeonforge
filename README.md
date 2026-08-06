@@ -1,6 +1,6 @@
 # Dungeonforge
 
-**[Live demo → dungeonforge.radiantclay.workers.dev](https://dungeonforge.radiantclay.workers.dev)**
+**[Live demo → dungeonforge.pajama.studio](https://dungeonforge.pajama.studio)**
 (needs a WebGPU browser — Chrome/Edge, or Safari 26+)
 
 Procedurally generated stone-labyrinth fortress worlds — three.js **WebGPU + TSL**,

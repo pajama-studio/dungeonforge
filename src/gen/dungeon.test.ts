@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { generate, checksum, FLOOR, WALL, DX, DY, N, type Layout } from "./dungeon";
+import { generate, checksum, FLOOR, WALL, DX, DY, type Layout } from "./dungeon";
 
 function bfsReachAll(l: Layout): boolean {
   const gi = (x: number, y: number) => y * l.N + x;
@@ -56,14 +56,26 @@ describe("dungeon generator", () => {
   it("wall tops clear their tallest adjacent floor", () => {
     const l = generate(5);
     const gi = (x: number, y: number) => y * l.N + x;
-    for (let y = 1; y < N - 1; y++) {
-      for (let x = 1; x < N - 1; x++) {
+    for (let y = 1; y < l.N - 1; y++) {
+      for (let x = 1; x < l.N - 1; x++) {
         const c = gi(x, y);
         if (l.kind[c] !== WALL || l.doorMask[c]) continue;
         for (let d = 0; d < 4; d++) {
           const n = gi(x + DX[d], y + DY[d]);
           if (l.kind[n] === FLOOR) expect(l.wallTop[c]).toBeGreaterThanOrEqual(l.tier[n] + 1);
         }
+      }
+    }
+  });
+
+  it("holds invariants across sizes, plaza and totem counts", () => {
+    for (const size of [9, 13, 21]) {
+      for (const plazas of [0, 3]) {
+        const l = generate({ seed: 11, size, plazas, totems: 8 });
+        expect(l.N).toBe(2 * size + 1);
+        expect(bfsReachAll(l), `size ${size} plazas ${plazas}`).toBe(true);
+        expect(l.medallions.length).toBeLessThanOrEqual(plazas);
+        if (plazas === 0) expect(l.medallions.length).toBe(0);
       }
     }
   });

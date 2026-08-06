@@ -87,6 +87,7 @@ interface SharedRes {
   merlonGeo: THREE.BufferGeometry;
   tileGeo: THREE.BufferGeometry;
   stepGeo: THREE.BufferGeometry;
+  cheekGeo: THREE.BufferGeometry;
   bracketGeo: THREE.BufferGeometry;
   bowlGeo: THREE.BufferGeometry;
   postGeo: THREE.BufferGeometry;
@@ -267,6 +268,7 @@ function getShared(): SharedRes {
     merlonGeo: shadeFaces(new RoundedBoxGeometry(0.72, 0.55, 0.72, 1, 0.05)),
     tileGeo: shadeFaces(new RoundedBoxGeometry(CELL * 0.985, 0.15, CELL * 0.985, 1, 0.045)),
     stepGeo: shadeFaces(new THREE.BoxGeometry(CELL * 1.0, TH / 4, CELL / 4 + 0.06)),
+    cheekGeo: shadeFaces(new THREE.BoxGeometry(0.2, 0.32, CELL * 1.18)),
     bracketGeo: new THREE.BoxGeometry(0.14, 0.6, 0.14),
     bowlGeo: new THREE.CylinderGeometry(0.4, 0.2, 0.42, 8),
     postGeo: new THREE.CylinderGeometry(0.09, 0.11, 1.3, 6),
@@ -482,8 +484,8 @@ export function buildWorld(l: Layout): WorldHandle {
     }
   }
 
-  group.add(makeInstanced(R.blockGeo, R.stoneMat, blocks));
-  group.add(makeInstanced(R.merlonGeo, R.stoneMat, merlons));
+  // (instanced meshes are created at the END of buildWorld so later sections —
+  //  totem pillars, bridge abutments, stair cheeks — can still add masonry)
 
   // ---------------------------------------------------------------- floors
   for (let y = 0; y < N; y++) {
@@ -508,25 +510,36 @@ export function buildWorld(l: Layout): WorldHandle {
       ));
     }
   }
-  group.add(makeInstanced(R.tileGeo, R.stoneMat, tiles, true));
-  group.add(makeInstanced(R.tileGeo, R.redMat, redTiles, true));
-
   // ---------------------------------------------------------------- stairs
   const steps: Inst[] = [];
+  const cheeks: Array<{ m: THREE.Matrix4; c: THREE.Color }> = [];
+  const slope = Math.atan2(TH, CELL);
   for (const s of l.stairs) {
     const rot = dirRotY(s.dir);
     const fx = DX[s.dir], fz = DY[s.dir];
     for (let i = 0; i < 4; i++) {
       const along = -CELL / 2 + (i + 0.5) * (CELL / 4);
       const h1 = hash3(seed, s.x * 57 + s.y, i, 4);
-      stoneColor.setHSL(0.08, 0.22, 0.33 + h1 * 0.1);
+      // lighter treads than the surrounding pavement so flights read at a glance
+      stoneColor.setHSL(0.09, 0.28, 0.42 + h1 * 0.1);
       steps.push(inst(
         wx(s.x) + fx * along, s.tier * TH + (i + 0.5) * (TH / 4), wz(s.y) + fz * along,
-        rot, 1, 1, 1, stoneColor.getHex(),
+        rot, 1, 1.06, 1, stoneColor.getHex(),
       ));
     }
+    // sloped stringer cheeks flanking the flight — the strongest stair cue
+    const px = -fz, pz = fx; // perpendicular
+    const qYaw = new THREE.Quaternion().setFromAxisAngle(_axisY, rot);
+    const qPitch = new THREE.Quaternion().setFromEuler(new THREE.Euler(-slope, 0, 0));
+    const q = qYaw.clone().multiply(qPitch);
+    for (const sgn of [-1, 1]) {
+      stoneColor.setHSL(0.085, 0.26, 0.3 + hash3(seed, s.x, s.y, sgn + 5) * 0.06);
+      const pos = new THREE.Vector3(
+        wx(s.x) + px * sgn * (CELL / 2 - 0.1), s.tier * TH + TH * 0.5 + 0.02, wz(s.y) + pz * sgn * (CELL / 2 - 0.1),
+      );
+      cheeks.push({ m: new THREE.Matrix4().compose(pos, q, new THREE.Vector3(1, 1, 1)), c: stoneColor.clone() });
+    }
   }
-  group.add(makeInstanced(R.stepGeo, R.stoneMat, steps));
 
   // ---------------------------------------------------------------- torches & braziers
   const brackets: Inst[] = [];
@@ -549,7 +562,14 @@ export function buildWorld(l: Layout): WorldHandle {
 
   const bowls: Inst[] = [];
   for (const b of l.braziers) {
-    const px = wx(b.x), pz = wz(b.y), py = b.tier * TH + 0.15;
+    const px = wx(b.x), pz = wz(b.y);
+    // totems stand on a carved stone pillar; plaza braziers sit on the ground
+    const lift = b.totem ? 1.15 : 0;
+    const py = b.tier * TH + 0.15 + lift;
+    if (b.totem) {
+      stoneColor.setHSL(0.09, 0.3, 0.3 + hash2(seed, b.x * 91 + b.y, 12) * 0.08);
+      blocks.push(inst(px, b.tier * TH + 0.65, pz, hash2(seed, b.x, b.y) * 0.4, 0.2, 1.6, 0.2, stoneColor.getHex()));
+    }
     bowls.push(inst(px, py + 0.42, pz, 0, 1, 1, 1, 0x241d16));
     const f = inst(px, py + 0.72, pz, 0, 1.55, 1.75, 1.55, 0xffffff);
     (b.kind === "blue" ? blueFlames : b.kind === "red" ? redFlames : warmFlames).push(f);
@@ -589,10 +609,6 @@ export function buildWorld(l: Layout): WorldHandle {
     }
     group.add(makeInstanced(R.floorGlowGeo, R.floorGlowMat, floorGlows, false));
   }
-
-  group.add(makeInstanced(R.flameGeo, R.flameWarm, warmFlames, false));
-  group.add(makeInstanced(R.flameGeo, R.flameBlue, blueFlames, false));
-  group.add(makeInstanced(R.flameGeo, R.flameRed, redFlames, false));
 
   // ---------------------------------------------------------------- banners
   {
@@ -634,30 +650,37 @@ export function buildWorld(l: Layout): WorldHandle {
     const z = wz(b.y);
     const yTop = b.tier * TH + 0.1;
     const planks: Inst[] = [];
-    const nP = 12;
+    const nP = 14;
     for (let i = 0; i < nP; i++) {
       const t = (i + 0.5) / nP;
       const x = x0 + (x1 - x0) * t;
-      const sag = Math.sin(t * Math.PI) * 0.55;
+      const sag = Math.sin(t * Math.PI) * 0.7;
       const h1 = hash3(seed, 999, i, 7);
-      planks.push(inst(x, yTop - sag, z, (h1 - 0.5) * 0.12, 1, 1, 1, 0x4a3624));
+      planks.push(inst(x, yTop - sag, z, (h1 - 0.5) * 0.1, 1, 1.2, 1.45, 0x4a3624));
     }
     group.add(makeInstanced(R.plankGeo, R.woodMat, planks, true));
-    for (const side of [-0.55, 0.55]) {
+    for (const side of [-0.8, 0.8]) {
       const pts: THREE.Vector3[] = [];
       for (let i = 0; i <= 8; i++) {
         const t = i / 8;
-        pts.push(new THREE.Vector3(x0 + (x1 - x0) * t, yTop + 0.55 - Math.sin(t * Math.PI) * 0.7, z + side));
+        pts.push(new THREE.Vector3(x0 + (x1 - x0) * t, yTop + 0.7 - Math.sin(t * Math.PI) * 0.95, z + side));
       }
-      const geo = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 16, 0.035, 5);
+      const geo = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 16, 0.05, 5);
       perBuildGeos.push(geo);
       group.add(new THREE.Mesh(geo, R.woodMat));
     }
     const posts: Inst[] = [];
-    for (const px of [x0, x1]) for (const side of [-0.55, 0.55]) {
-      posts.push(inst(px, yTop + 0.55, z + side, 0, 1, 1, 1, 0x3a2c1c));
+    for (const px of [x0, x1]) for (const side of [-0.8, 0.8]) {
+      posts.push(inst(px, yTop + 0.7, z + side, 0, 1.25, 1.45, 1.25, 0x3a2c1c));
     }
     group.add(makeInstanced(R.postGeo, R.woodMat, posts, true));
+    // stone abutments anchoring both ends + a lantern flame on each near post
+    for (const [ax, sgn] of [[x0, -1], [x1, 1]] as const) {
+      stoneColor.setHSL(0.09, 0.3, 0.4);
+      blocks.push(inst(ax + sgn * 0.5, yTop - 0.35, z, 0, 0.75, 1.15, 1.9, stoneColor.getHex()));
+      warmFlames.push(inst(ax, yTop + 1.55, z + 0.8, 0, 0.8, 0.85, 0.8, 0xffffff));
+      flameAnchors.push({ x: ax, y: yTop + 1.7, z: z + 0.8 });
+    }
   }
 
   // ---------------------------------------------------------------- beacons
@@ -687,6 +710,18 @@ export function buildWorld(l: Layout): WorldHandle {
     smokes.push(s);
     group.add(s);
   }
+
+  // ------------------------------------------------------- instanced meshes
+  // created last so every section above could still contribute masonry/flames
+  group.add(makeInstanced(R.blockGeo, R.stoneMat, blocks));
+  group.add(makeInstanced(R.merlonGeo, R.stoneMat, merlons));
+  group.add(makeInstanced(R.tileGeo, R.stoneMat, tiles, true));
+  group.add(makeInstanced(R.tileGeo, R.redMat, redTiles, true));
+  group.add(makeInstanced(R.stepGeo, R.stoneMat, steps));
+  group.add(makeInstanced(R.cheekGeo, R.stoneMat, cheeks));
+  group.add(makeInstanced(R.flameGeo, R.flameWarm, warmFlames, false));
+  group.add(makeInstanced(R.flameGeo, R.flameBlue, blueFlames, false));
+  group.add(makeInstanced(R.flameGeo, R.flameRed, redFlames, false));
 
   // ---------------------------------------------------------------- lights
   const lights: Array<{ light: THREE.PointLight; base: number; ph: number }> = [];

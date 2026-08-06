@@ -32,7 +32,7 @@ export interface Torch { x: number; y: number; dir: Dir; tier: number } // wall 
 export interface Banner { x: number; y: number; dir: Dir; tier: number; top: number }
 export interface Tower { x: number; y: number; top: number; beacon: boolean; scale: number }
 export interface Medallion { x: number; y: number; r: number; tier: number; kind: "blue" | "gold" }
-export interface Brazier { x: number; y: number; tier: number; kind: "blue" | "gold" | "red" }
+export interface Brazier { x: number; y: number; tier: number; kind: "blue" | "gold" | "red"; totem?: boolean }
 export interface Bridge { y: number; x0: number; x1: number; tier: number }
 
 export interface Params {
@@ -51,6 +51,12 @@ export interface Params {
   torchSpacing: number;
   /** interior maze wall thickness in cells (ramparts/towers stay full width) */
   wallThin: number;
+  /** maze cells per side (grid is 2·size+1) — the dungeon's footprint */
+  size: number;
+  /** number of medallion teleport plazas (0-4, alternating blue/gold) */
+  plazas: number;
+  /** freestanding brazier totems scattered at corridor dead ends */
+  totems: number;
 }
 
 export const DEFAULT_PARAMS: Params = {
@@ -62,6 +68,9 @@ export const DEFAULT_PARAMS: Params = {
   mound: 3.7,
   torchSpacing: 5,
   wallThin: 0.45,
+  size: 15,
+  plazas: 2,
+  totems: 4,
 };
 
 export interface Layout {
@@ -94,8 +103,7 @@ export interface Layout {
 
 // ---------------------------------------------------------------------------
 
-const M = 15;             // maze cells per side
-export const N = 2 * M + 1; // grid cells per side (31)
+// maze size comes from Params.size; the grid is (2·size+1)² — see Layout.N
 
 const ADJ = "Sunken Gilded Hollow Ashen Silent Weeping Forgotten Blackened Endless Broken Molten Pale".split(" ");
 const NOUN = "Labyrinth Bastion Vaults Ramparts Warrens Sanctum Threshold Crucible Gallery Undercroft".split(" ");
@@ -108,11 +116,13 @@ function makeName(rng: Rng): string {
 
 function attempt(p: Params, seed: number): Layout | string {
   const rng = new Rng(seed);
+  const M = Math.max(7, Math.min(23, Math.round(p.size))) | 0;
+  const N = 2 * M + 1;
 
   // -- Stage 1: growing-tree maze over maze-cell space, tiers carved alongside.
   const ci = M >> 1; // temple column (maze coords)
   const tierTarget = (i: number, j: number): number => {
-    const n = valueNoise2(seed ^ 0x51ab, i * 0.34, j * 0.34) * p.heightAmp;
+    const n = valueNoise2(seed ^ 0x51ab, i * 0.46, j * 0.46) * p.heightAmp;
     const dTemple = Math.hypot(i - ci, j - 1.2);
     const mound = Math.max(0, p.mound - dTemple * 0.48);
     return Math.max(0, Math.min(7, Math.round(n + mound - 0.4)));
@@ -241,7 +251,7 @@ function attempt(p: Params, seed: number): Layout | string {
   const stampPlaza = (pi: number, pj: number, kindName: "blue" | "gold") => {
     const px = 2 * pi + 1, py = 2 * pj + 1;
     const P = mTier[mi(pi, pj)];
-    const R = 4.4;
+    const R = Math.min(4.4, M * 0.29);
     for (let gy = Math.max(1, Math.floor(py - R)); gy <= Math.min(N - 2, Math.ceil(py + R)); gy++) {
       for (let gx = Math.max(1, Math.floor(px - R)); gx <= Math.min(N - 2, Math.ceil(px + R)); gx++) {
         if (Math.hypot(gx - px, gy - py) > R) continue;
@@ -252,8 +262,14 @@ function attempt(p: Params, seed: number): Layout | string {
     }
     medallions.push({ x: px, y: py, r: R - 0.9, tier: P, kind: kindName });
   };
-  stampPlaza(Math.round(M * 0.18), Math.round(M * 0.72), "blue");
-  stampPlaza(Math.round(M * 0.82), Math.round(M * 0.45), "gold");
+  {
+    const anchors: Array<[number, number]> = [[0.18, 0.72], [0.82, 0.45], [0.22, 0.32], [0.78, 0.8]];
+    const kinds: Array<"blue" | "gold"> = ["blue", "gold", "gold", "blue"];
+    const nPlazas = Math.max(0, Math.min(4, Math.round(p.plazas)));
+    for (let k = 0; k < nPlazas; k++) {
+      stampPlaza(Math.round(M * anchors[k][0]), Math.round(M * anchors[k][1]), kinds[k]);
+    }
+  }
 
   // Red chamber: sunken 2×2 maze cells, dropped one tier.
   {
@@ -583,6 +599,34 @@ function attempt(p: Params, seed: number): Layout | string {
     if (n > 0) {
       const bx = Math.round(cx / n), by = Math.round(cy / n);
       if (kind[gi(bx, by)] === FLOOR) braziers.push({ x: bx, y: by, tier: tier[gi(bx, by)], kind: "red" });
+    }
+  }
+
+  // -- Stage 13: brazier totems at corridor dead ends (deterministic pick).
+  {
+    const nTotems = Math.max(0, Math.min(10, Math.round(p.totems)));
+    if (nTotems > 0) {
+      const cands: Array<{ x: number; y: number; h: number }> = [];
+      for (let y = 1; y < N - 1; y++) {
+        for (let x = 1; x < N - 1; x++) {
+          const c = gi(x, y);
+          if (kind[c] !== FLOOR || stairMask[c] || plazaMask[c] || templeMask[c] || redMask[c]) continue;
+          if (x === entrance.x && y === entrance.y) continue;
+          let deg = 0;
+          for (let d = 0; d < 4; d++) if (kind[gi(x + DX[d], y + DY[d])] === FLOOR) deg++;
+          if (deg !== 1) continue; // dead end — a shrine-worthy alcove
+          cands.push({ x, y, h: hash2(seed, c, 55) });
+        }
+      }
+      cands.sort((a, b) => a.h - b.h);
+      const taken: Array<{ x: number; y: number }> = [];
+      for (const t of cands) {
+        if (taken.length >= nTotems) break;
+        if (taken.some((q) => Math.max(Math.abs(q.x - t.x), Math.abs(q.y - t.y)) < 5)) continue;
+        if (medallions.some((m) => Math.hypot(m.x - t.x, m.y - t.y) < m.r + 2)) continue;
+        taken.push(t);
+        braziers.push({ x: t.x, y: t.y, tier: tier[gi(t.x, t.y)], kind: "gold", totem: true });
+      }
     }
   }
 

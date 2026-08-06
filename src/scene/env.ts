@@ -13,7 +13,9 @@ import { ABYSS } from "../gen/dungeon";
 export const TH = 1.85;   // world height per tier
 export const CELL = 2.2;  // world size per grid cell
 
-export function buildEnvironment(scene: THREE.Scene, seed: number): { bakeShadows: () => void; dispose: () => void } {
+export function buildEnvironment(scene: THREE.Scene, seed: number): {
+  fit: (half: number) => void; bakeShadows: () => void; dispose: () => void;
+} {
   const group = new THREE.Group();
   group.name = "environment";
 
@@ -85,6 +87,13 @@ export function buildEnvironment(scene: THREE.Scene, seed: number): { bakeShadow
   scene.add(group);
 
   return {
+    /** widen the shadow frustum to the current fortress half-extent */
+    fit(half: number) {
+      const r = half + 12;
+      if (Math.abs(sc.right - r) < 1) return;
+      sc.left = -r; sc.right = r; sc.top = r; sc.bottom = -r;
+      sc.updateProjectionMatrix();
+    },
     bakeShadows() {
       moon.shadow.needsUpdate = true;
     },

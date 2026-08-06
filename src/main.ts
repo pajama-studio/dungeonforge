@@ -82,6 +82,9 @@ function generateAsync(s: number): Promise<Layout> {
 {
   const panel = document.getElementById("params")!;
   const defs: Array<{ key: keyof Params; label: string; min: number; max: number; step: number }> = [
+    { key: "size", label: "dungeon size", min: 9, max: 21, step: 2 },
+    { key: "plazas", label: "teleport plazas", min: 0, max: 4, step: 1 },
+    { key: "totems", label: "brazier totems", min: 0, max: 10, step: 1 },
     { key: "heightAmp", label: "terrain relief", min: 0, max: 4, step: 0.1 },
     { key: "mound", label: "temple mound", min: 0, max: 5, step: 0.1 },
     { key: "braid", label: "braid (open dead ends)", min: 0, max: 1, step: 0.05 },
@@ -112,6 +115,8 @@ function generateAsync(s: number): Promise<Layout> {
   }
 }
 
+let lastN = 0;
+
 async function forge(newSeed: number): Promise<void> {
   seed = newSeed >>> 0 || 1;
   const myId = genId + 1;
@@ -120,6 +125,14 @@ async function forge(newSeed: number): Promise<void> {
   if (world) world.dispose();
   world = buildWorld(layout);
   scene.add(world.group);
+  const half = (layout.N * 2.2) / 2;
+  env.fit(half);
+  if (lastN !== layout.N) {
+    // refit the view when the footprint changes; keep the current view direction
+    camera.position.sub(controls.target).setLength(half * 2.55).add(controls.target);
+    controls.maxDistance = half * 5;
+    lastN = layout.N;
+  }
   env.bakeShadows();
   nameEl.textContent = layout.name;
   seedEl.textContent = `seed ${seed} · ${layout.stats.floor} floor · ${layout.stats.wall} wall · ${layout.stats.genMs}ms`;

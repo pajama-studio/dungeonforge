@@ -10,7 +10,7 @@ import {
 import { bloom } from "three/addons/tsl/display/BloomNode.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { DEFAULT_PARAMS, type Layout, type Params } from "./gen/dungeon";
-import { buildWorld, type WorldHandle } from "./scene/build";
+import { buildWorld, buildBridgeLink, type WorldHandle } from "./scene/build";
 import { buildEnvironment, TH } from "./scene/env";
 import { mulberry32 } from "./gen/rng";
 
@@ -90,25 +90,30 @@ postProcessing.outputNode = composed.mul(trans).add(fogCol.mul(float(1).sub(tran
 
 const env = buildEnvironment(scene, 1); // env is seed-stable; kept across regens
 
-let world: WorldHandle | null = null;
+const worlds: WorldHandle[] = [];
 
-// Generation runs in a worker (pure data, transferable typed arrays) — the
-// main thread only fills instance buffers. Requests are id-tagged so a stale
-// response from rapid re-forging is dropped instead of overwriting a newer one.
-const genWorker = new Worker(new URL("./gen/worker.ts", import.meta.url), { type: "module" });
+// Generation runs in a WORKER POOL (pure data, transferable typed arrays) —
+// islands of a chain generate in parallel; the main thread only fills instance
+// buffers. Requests are id-tagged so stale responses are dropped.
+const POOL = Math.min(4, Math.max(2, Math.floor((navigator.hardwareConcurrency || 4) / 2)));
+const genWorkers = Array.from({ length: POOL }, () =>
+  new Worker(new URL("./gen/worker.ts", import.meta.url), { type: "module" }));
 let genId = 0;
+let rr = 0;
 const pending = new Map<number, (l: Layout) => void>();
-genWorker.onmessage = (e: MessageEvent<{ id: number; layout: Layout }>) => {
-  pending.get(e.data.id)?.(e.data.layout);
-  pending.delete(e.data.id);
-};
+for (const w of genWorkers) {
+  w.onmessage = (e: MessageEvent<{ id: number; layout: Layout }>) => {
+    pending.get(e.data.id)?.(e.data.layout);
+    pending.delete(e.data.id);
+  };
+}
 const genParams: Params = { ...DEFAULT_PARAMS };
 
-function generateAsync(s: number): Promise<Layout> {
+function generateAsync(s: number, overrides: Partial<Params> = {}): Promise<Layout> {
   return new Promise((resolve) => {
     const id = ++genId;
     pending.set(id, resolve);
-    genWorker.postMessage({ id, seed: s, params: genParams });
+    genWorkers[rr++ % POOL].postMessage({ id, seed: s, params: { ...genParams, ...overrides } });
   });
 }
 
@@ -116,6 +121,7 @@ function generateAsync(s: number): Promise<Layout> {
 {
   const panel = document.getElementById("params")!;
   const defs: Array<{ key: keyof Params; label: string; min: number; max: number; step: number }> = [
+    { key: "islands", label: "linked blocks", min: 1, max: 4, step: 1 },
     { key: "size", label: "dungeon size", min: 9, max: 21, step: 2 },
     { key: "plazas", label: "teleport plazas", min: 0, max: 4, step: 1 },
     { key: "totems", label: "brazier totems", min: 0, max: 10, step: 1 },
@@ -150,27 +156,88 @@ function generateAsync(s: number): Promise<Layout> {
   }
 }
 
-let lastN = 0;
+let lastExtent = 0;
+let forgeToken = 0;
+const CELL = 2.2;
+const ISLAND_GAP = 15; // world units of abyss between linked blocks
 
 async function forge(newSeed: number): Promise<void> {
   seed = newSeed >>> 0 || 1;
-  const myId = genId + 1;
-  const layout = await generateAsync(seed);
-  if (myId !== genId) return; // a newer forge superseded this one
-  if (world) world.dispose();
-  world = buildWorld(layout);
-  scene.add(world.group);
-  const half = (layout.N * 2.2) / 2;
-  env.fit(half);
-  if (lastN !== layout.N) {
-    // refit the view when the footprint changes; keep the current view direction
-    camera.position.sub(controls.target).setLength(half * 2.55).add(controls.target);
+  const nIsl = Math.max(1, Math.min(4, Math.round(genParams.islands)));
+
+  // generate the whole chain IN PARALLEL across the worker pool
+  const tok = ++forgeToken;
+  const layouts = await Promise.all(Array.from({ length: nIsl }, (_, i) => {
+    const s = i === 0 ? seed : ((Math.imul(seed, 0x85ebca6b) ^ Math.imul(i, 0x9e3779b1)) >>> 0) || 1;
+    const gateSides = nIsl === 1 ? [] : i === 0 ? [0] : i === nIsl - 1 ? [1] : [1, 0];
+    const overrides: Partial<Params> = i === 0
+      ? { gateSides }
+      : {
+          gateSides,
+          size: Math.max(9, Math.round(genParams.size * 0.6)) | 1,
+          plazas: 1,
+          totems: Math.min(2, genParams.totems),
+        };
+    return generateAsync(s, overrides);
+  }));
+  if (tok !== forgeToken) return; // a newer forge superseded this one
+
+  for (const w of worlds) w.dispose();
+  worlds.length = 0;
+
+  // chain layout: place each block east of the previous, aligning gate rows
+  let minX = Infinity, maxX = -Infinity;
+  let prevEast: { x: number; z: number; y: number } | null = null;
+  let ox = 0, oz = 0;
+  for (let i = 0; i < layouts.length; i++) {
+    const l = layouts[i];
+    const half = (l.N * CELL) / 2;
+    const localPos = (g: { x: number; y: number; tier: number }) => ({
+      x: (g.x - (l.N - 1) / 2) * CELL,
+      z: (g.y - (l.N - 1) / 2) * CELL,
+      y: g.tier * 1.85 + 0.1,
+    });
+    const west = l.gates.find((g) => g.dir === 1);
+    const east = l.gates.find((g) => g.dir === 0);
+    if (i > 0 && prevEast) {
+      ox += ISLAND_GAP + half + (layouts[i - 1].N * CELL) / 2;
+      oz = west ? prevEast.z - localPos({ ...west, tier: 0 }).z : oz;
+    }
+    const w = buildWorld(l);
+    w.group.position.set(ox, 0, oz);
+    scene.add(w.group);
+    worlds.push(w);
+    minX = Math.min(minX, ox - half);
+    maxX = Math.max(maxX, ox + half);
+    // bridge back to the previous island
+    if (i > 0 && prevEast && west) {
+      const wp = localPos(west);
+      const from = new THREE.Vector3(prevEast.x + 0.3, prevEast.y, prevEast.z);
+      const to = new THREE.Vector3(ox + wp.x - CELL / 2 - 0.3 + 0, wp.y, oz + wp.z);
+      worlds.push(buildBridgeLink(from, to));
+      scene.add(worlds[worlds.length - 1].group);
+    }
+    if (east) {
+      const ep = localPos(east);
+      prevEast = { x: ox + ep.x + CELL / 2 + 0.3, z: oz + ep.z, y: ep.y };
+    } else {
+      prevEast = null;
+    }
+  }
+
+  const centerX = (minX + maxX) / 2;
+  const half = Math.max((maxX - minX) / 2, (layouts[0].N * CELL) / 2) + 4;
+  env.fit(Math.hypot(half, (layouts[0].N * CELL) / 2), centerX);
+  if (Math.abs(lastExtent - half) > 1) {
+    controls.target.set(centerX, 3 * TH, 0);
+    camera.position.set(centerX + half * 0.75, half * 0.62, half * 1.1);
     controls.maxDistance = half * 5;
-    lastN = layout.N;
+    lastExtent = half;
   }
   env.bakeShadows();
-  nameEl.textContent = layout.name;
-  seedEl.textContent = `seed ${seed} · ${layout.stats.floor} floor · ${layout.stats.wall} wall · ${layout.stats.genMs}ms`;
+  nameEl.textContent = layouts[0].name + (nIsl > 1 ? ` +${nIsl - 1}` : "");
+  const floorSum = layouts.reduce((s2, l) => s2 + l.stats.floor, 0);
+  seedEl.textContent = `seed ${seed} · ${nIsl} block${nIsl > 1 ? "s" : ""} · ${floorSum} floor · ${layouts[0].stats.genMs}ms`;
   const url = new URL(location.href);
   url.searchParams.set("seed", String(seed));
   history.replaceState(null, "", url);
@@ -197,7 +264,7 @@ async function boot(): Promise<void> {
   renderer.setAnimationLoop(() => {
     const t = performance.now() / 1000;
     controls.update();
-    world?.tick(t);
+    for (const w of worlds) w.tick(t);
     postProcessing.render();
   });
 }

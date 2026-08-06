@@ -47,7 +47,9 @@ function makeInstanced(
   mesh.count = items.length;
   mesh.castShadow = shadows;
   mesh.receiveShadow = shadows;
-  mesh.frustumCulled = false; // single fortress-sized bounds; always in view
+  // real per-mesh bounds → the renderer culls whole islands when off-screen
+  mesh.computeBoundingSphere();
+  mesh.frustumCulled = true;
   return mesh;
 }
 
@@ -594,6 +596,75 @@ function getShared(): SharedRes {
 // ---------------------------------------------------------------------------
 // Per-layout build.
 // ---------------------------------------------------------------------------
+
+/** A free-spanning rope bridge between two islands' gates. Shares the kit's
+ *  geometries/materials; only per-span rope tubes are owned (and disposed). */
+export function buildBridgeLink(a: THREE.Vector3, b: THREE.Vector3): WorldHandle {
+  const R = getShared();
+  const group = new THREE.Group();
+  group.name = "bridge-link";
+  const ownGeos: THREE.BufferGeometry[] = [];
+  const delta = new THREE.Vector3().subVectors(b, a);
+  const dist = delta.length();
+  const dirN = delta.clone().normalize();
+  const rotY = Math.atan2(dirN.z, dirN.x) * -1;
+  const perp = new THREE.Vector3(-dirN.z, 0, dirN.x);
+  const sagMax = Math.min(2.2, dist * 0.06);
+
+  const planks: Inst[] = [];
+  const nP = Math.max(6, Math.round(dist / 0.58));
+  const plankW = 0.41; // R.plankGeo x-size × 0.8 packing
+  for (let i = 0; i < nP; i++) {
+    const t = (i + 0.5) / nP;
+    const p = new THREE.Vector3().lerpVectors(a, b, t);
+    const h1 = hash3(0x9a7b, i, nP, 7);
+    planks.push(inst(
+      p.x, p.y - Math.sin(t * Math.PI) * sagMax, p.z,
+      rotY + (h1 - 0.5) * 0.07, (dist / nP / plankW) * 0.82, 1.2, 1.45, 0x4a3624,
+    ));
+  }
+  group.add(makeInstanced(R.plankGeo, R.woodMat, planks, true));
+
+  for (const side of [-0.8, 0.8]) {
+    const pts: THREE.Vector3[] = [];
+    for (let i = 0; i <= 12; i++) {
+      const t = i / 12;
+      const p = new THREE.Vector3().lerpVectors(a, b, t);
+      pts.push(new THREE.Vector3(
+        p.x + perp.x * side, p.y + 0.7 - Math.sin(t * Math.PI) * (sagMax + 0.35), p.z + perp.z * side,
+      ));
+    }
+    const geo = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 24, 0.05, 5);
+    ownGeos.push(geo);
+    group.add(new THREE.Mesh(geo, R.woodMat));
+  }
+
+  const posts: Inst[] = [];
+  const stones: Inst[] = [];
+  const flames: Inst[] = [];
+  const c = new THREE.Color();
+  for (const [end, sgn] of [[a, 1], [b, -1]] as const) {
+    for (const side of [-0.8, 0.8]) {
+      posts.push(inst(end.x + perp.x * side, end.y + 0.7, end.z + perp.z * side, rotY, 1.25, 1.5, 1.25, 0x3a2c1c));
+    }
+    c.setHSL(0.09, 0.3, 0.4);
+    stones.push(inst(end.x + dirN.x * sgn * 0.4, end.y - 0.4, end.z + dirN.z * sgn * 0.4, rotY, 0.85, 1.2, 1.9, c.getHex()));
+    flames.push(inst(end.x + perp.x * 0.8, end.y + 1.6, end.z + perp.z * 0.8, 0, 0.8, 0.85, 0.8, 0xffffff));
+  }
+  group.add(makeInstanced(R.postGeo, R.woodMat, posts, true));
+  group.add(makeInstanced(R.blockGeo, R.stoneMat, stones, true));
+  group.add(makeInstanced(R.flameGeo, R.flameWarm, flames, false));
+
+  return {
+    group,
+    tick() {},
+    dispose() {
+      group.removeFromParent();
+      for (const g of ownGeos) g.dispose();
+      group.traverse((o) => { if (o instanceof THREE.InstancedMesh) o.dispose(); });
+    },
+  };
+}
 
 export function buildWorld(l: Layout): WorldHandle {
   const R = getShared();
@@ -1308,7 +1379,8 @@ export function buildWorld(l: Layout): WorldHandle {
       let first = flameAnchors[0];
       for (const a of flameAnchors) if (a.x * a.x + a.z * a.z < first.x * first.x + first.z * first.z) first = a;
       chosen.push(first);
-      while (chosen.length < Math.min(9, flameAnchors.length)) {
+      const poolSize = l.N >= 25 ? 9 : 5; // satellites get a smaller light budget
+      while (chosen.length < Math.min(poolSize, flameAnchors.length)) {
         let best = flameAnchors[0], bestD = -1;
         for (const a of flameAnchors) {
           let dMin = Infinity;

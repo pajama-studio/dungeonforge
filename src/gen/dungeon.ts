@@ -34,6 +34,7 @@ export interface Tower { x: number; y: number; top: number; beacon: boolean; sca
 export interface Medallion { x: number; y: number; r: number; tier: number; kind: "blue" | "gold" }
 export interface Brazier { x: number; y: number; tier: number; kind: "blue" | "gold" | "red"; totem?: boolean }
 export interface Bridge { y: number; x0: number; x1: number; tier: number }
+export interface Gate { x: number; y: number; dir: Dir; tier: number }
 
 export interface Params {
   seed: number;
@@ -59,6 +60,10 @@ export interface Params {
   totems: number;
   /** age of the ruin: scales crumbled walls, rubble, moss and vines (0-1) */
   decay: number;
+  /** how many linked dungeon blocks the orchestrator builds (generator ignores it) */
+  islands: number;
+  /** boundary sides that get a gate opening (bridge dock): dirs 0=+x 1=-x 2=+y 3=-y */
+  gateSides?: number[];
 }
 
 export const DEFAULT_PARAMS: Params = {
@@ -74,6 +79,7 @@ export const DEFAULT_PARAMS: Params = {
   plazas: 2,
   totems: 4,
   decay: 0.5,
+  islands: 3,
 };
 
 export interface Layout {
@@ -93,6 +99,7 @@ export interface Layout {
   plazaMask: Uint8Array;
   doorMask: Uint8Array;  // temple doorway wall cell (rendered with a gap + portal)
   stairs: Stair[];
+  gates: Gate[];
   torches: Torch[];
   banners: Banner[];
   towers: Tower[];
@@ -393,6 +400,33 @@ function attempt(p: Params, seed: number): Layout | string {
   // but assert it explicitly (it's the whole point of the fortress):
   if (comp[gi(entrance.x, entrance.y)] !== comp[gi(gcx, 2)]) return "temple unreachable";
 
+  // -- Stage 5.5: gates — openings in the outer wall where bridges dock.
+  const gates: Gate[] = [];
+  for (const sideRaw of p.gateSides ?? []) {
+    const side = sideRaw as Dir;
+    let best = -1, bestScore = Infinity;
+    for (let t = 1; t < N - 1; t++) {
+      const bx = side === 0 ? N - 1 : side === 1 ? 0 : t;
+      const by = side === 2 ? N - 1 : side === 3 ? 0 : t;
+      const ix = side === 0 ? N - 2 : side === 1 ? 1 : t;
+      const iy = side === 2 ? N - 2 : side === 3 ? 1 : t;
+      const b = gi(bx, by), inn = gi(ix, iy);
+      if (kind[b] !== WALL || kind[inn] !== FLOOR) continue;
+      if (side === 3 && Math.abs(bx - gcx) < 5) continue; // never punch through the temple backdrop
+      const score = Math.abs(t - (N - 1) / 2) + hash2(seed, b, 121) * 4;
+      if (score < bestScore) { bestScore = score; best = t; }
+    }
+    if (best < 0) continue;
+    const bx = side === 0 ? N - 1 : side === 1 ? 0 : best;
+    const by = side === 2 ? N - 1 : side === 3 ? 0 : best;
+    const ix = side === 0 ? N - 2 : side === 1 ? 1 : best;
+    const iy = side === 2 ? N - 2 : side === 3 ? 1 : best;
+    const b = gi(bx, by);
+    kind[b] = FLOOR;
+    tier[b] = tier[gi(ix, iy)];
+    gates.push({ x: bx, y: by, dir: side, tier: tier[b] });
+  }
+
   // -- Stage 6: stairs (in the lower cell of every Δtier=1 adjacency).
   const stairMask = new Uint8Array(N * N);
   const stairs: Stair[] = [];
@@ -667,7 +701,7 @@ function attempt(p: Params, seed: number): Layout | string {
     seed, name: makeName(rng), N, params: p,
     kind, tier, wallTop, wallBase, support,
     stairMask, ruinMask, redMask, templeMask, plazaMask, doorMask,
-    stairs, torches, banners, towers, medallions, braziers, bridge, door,
+    stairs, gates, torches, banners, towers, medallions, braziers, bridge, door,
     entrance,
     temple: { cx: gcx, platformTier, buildTop },
     stats: { floor, wall, attempts: 1, genMs: 0 },

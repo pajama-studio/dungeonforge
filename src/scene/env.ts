@@ -5,7 +5,7 @@ import * as THREE from "three/webgpu";
 import {
   color, mix, positionWorld, positionWorldDirection, time,
   fog, densityFogFactor, triNoise3D, float, floor as tslFloor, hash, smoothstep, vec3, sin,
-  uv, length,
+  uv, length, uniform,
 } from "three/tsl";
 import * as BufferGeometryUtils from "three/addons/utils/BufferGeometryUtils.js";
 import { hash2 } from "../gen/rng";
@@ -15,7 +15,7 @@ export const TH = 1.85;   // world height per tier
 export const CELL = 2.2;  // world size per grid cell
 
 export function buildEnvironment(scene: THREE.Scene, seed: number): {
-  fit: (half: number) => void; bakeShadows: () => void; dispose: () => void;
+  fit: (half: number, centerX?: number) => void; bakeShadows: () => void; dispose: () => void;
 } {
   const group = new THREE.Group();
   group.name = "environment";
@@ -47,7 +47,8 @@ export function buildEnvironment(scene: THREE.Scene, seed: number): {
   // material-level ground fog dialed back — the post-pass volumetric raymarch
   // now owns the low mist; this only keeps distant aerial perspective coherent
   const ground = fogTop.sub(positionWorld.y).div(fogTop.sub(fogBase)).saturate().mul(0.55);
-  const haze = densityFogFactor(float(0.008));
+  const hazeU = uniform(0.008); // adapts to view extent — multi-block chains need thinner air
+  const haze = densityFogFactor(hazeU);
   const combined = ground.oneMinus().mul(haze.oneMinus()).oneMinus();
   scene.fogNode = fog(fogColor, combined);
 
@@ -70,38 +71,51 @@ export function buildEnvironment(scene: THREE.Scene, seed: number): {
   // -- Canyon walls: terraced rock mesas ringing the fortress. Each mesa is a
   //    stack of shrinking, slightly rotated strata with per-stratum vertex
   //    color (tops catch the sky) — silhouettes read as layered stone, not boxes.
+  //    Everything ring-shaped lives in ringGroup so fit() can recentre/rescale
+  //    it around a multi-block chain.
+  const ringGroup = new THREE.Group();
+  group.add(ringGroup);
   {
     const geos: THREE.BufferGeometry[] = [];
     const tint = new THREE.Color();
+    // Each stratum is a CLUSTER of jittered rock chunks, not one big box —
+    // up close the cliffs read as craggy stone, not furniture.
     const addMesa = (a: number, rad: number, baseW: number, baseD: number, nStrata: number, hMul: number, k: number, silhouette = false) => {
       let w = baseW, d = baseD;
       let yy = ABYSS * TH - 12;
       for (let s = 0; s < nStrata; s++) {
         const hS = (2.5 + hash2(seed, k * 7 + s, 11) * 4.5) * hMul;
-        const g = new THREE.BoxGeometry(w, hS, d);
-        // per-stratum shading: deeper strata darker, top faces lighter still
-        const lum = silhouette ? 0.045 + s * 0.008 : 0.055 + s * 0.02 + hash2(seed, k * 7 + s, 12) * 0.015;
-        tint.setHSL(0.6 - s * 0.008, silhouette ? 0.38 : 0.32, lum);
-        const nVerts = g.getAttribute("position").count;
-        const colArr = new Float32Array(nVerts * 3);
-        const nrm = g.getAttribute("normal");
-        for (let i = 0; i < nVerts; i++) {
-          // silhouette mesas keep dark tops — bright flat tops at the horizon
-          // read as a shelf edge where the world stops
-          const topBoost = nrm.getY(i) > 0.5 ? (silhouette ? 1.12 : 1.38) : 1;
-          colArr[i * 3] = tint.r * topBoost;
-          colArr[i * 3 + 1] = tint.g * topBoost;
-          colArr[i * 3 + 2] = tint.b * topBoost;
+        const cx0 = Math.cos(a) * rad, cz0 = Math.sin(a) * rad;
+        const nChunks = silhouette ? 2 : 3 + Math.floor(hash2(seed, k * 7 + s, 40) * 3);
+        for (let c = 0; c < nChunks; c++) {
+          const q = k * 131 + s * 17 + c;
+          const cw = w * (0.45 + hash2(seed, q, 41) * 0.5);
+          const cd = d * (0.45 + hash2(seed, q, 42) * 0.5);
+          const ch = hS * (0.75 + hash2(seed, q, 43) * 0.55);
+          const g = new THREE.BoxGeometry(cw, ch, cd);
+          const lum = (silhouette ? 0.045 + s * 0.008 : 0.055 + s * 0.02) + hash2(seed, q, 44) * 0.02;
+          tint.setHSL(0.6 - s * 0.008, silhouette ? 0.38 : 0.32, lum);
+          const nVerts = g.getAttribute("position").count;
+          const colArr = new Float32Array(nVerts * 3);
+          const nrm = g.getAttribute("normal");
+          for (let i = 0; i < nVerts; i++) {
+            const topBoost = nrm.getY(i) > 0.5 ? (silhouette ? 1.12 : 1.38) : 1;
+            colArr[i * 3] = tint.r * topBoost;
+            colArr[i * 3 + 1] = tint.g * topBoost;
+            colArr[i * 3 + 2] = tint.b * topBoost;
+          }
+          g.setAttribute("color", new THREE.BufferAttribute(colArr, 3));
+          g.rotateY(a + (hash2(seed, q, 45) - 0.5) * 0.9);
+          g.translate(
+            cx0 + (hash2(seed, q, 46) - 0.5) * w * 0.55,
+            yy + ch / 2 - hS * 0.15,
+            cz0 + (hash2(seed, q, 47) - 0.5) * d * 0.55,
+          );
+          geos.push(g);
         }
-        g.setAttribute("color", new THREE.BufferAttribute(colArr, 3));
-        g.rotateY(a + (hash2(seed, k * 7 + s, 13) - 0.5) * 0.35);
-        const jx = (hash2(seed, k * 7 + s, 14) - 0.5) * w * 0.16;
-        const jz = (hash2(seed, k * 7 + s, 15) - 0.5) * d * 0.16;
-        g.translate(Math.cos(a) * rad + jx, yy + hS / 2, Math.sin(a) * rad + jz);
-        geos.push(g);
-        yy += hS * (0.82 + hash2(seed, k * 7 + s, 16) * 0.12);
-        w *= 0.66 + hash2(seed, k * 7 + s, 17) * 0.14;
-        d *= 0.66 + hash2(seed, k * 7 + s, 18) * 0.14;
+        yy += hS * (0.8 + hash2(seed, k * 7 + s, 16) * 0.12);
+        w *= 0.7 + hash2(seed, k * 7 + s, 17) * 0.12;
+        d *= 0.7 + hash2(seed, k * 7 + s, 18) * 0.12;
       }
     };
     // near ring: broad terraced mesas
@@ -156,7 +170,7 @@ export function buildEnvironment(scene: THREE.Scene, seed: number): {
             cluster.add(win);
           }
         }
-        group.add(cluster);
+        ringGroup.add(cluster);
       }
     }
     // mist curtain: a ring of broad fog banks that swallows the horizon seam
@@ -171,7 +185,7 @@ export function buildEnvironment(scene: THREE.Scene, seed: number): {
         s.position.set(Math.cos(a) * rad, -2 + hash2(seed, k, 36) * 6, Math.sin(a) * rad);
         const sc = 46 + hash2(seed, k, 37) * 26;
         s.scale.set(sc, sc * 0.4, 1);
-        group.add(s);
+        ringGroup.add(s);
       }
     }
     const merged = BufferGeometryUtils.mergeGeometries(geos);
@@ -179,7 +193,7 @@ export function buildEnvironment(scene: THREE.Scene, seed: number): {
     const mat = new THREE.MeshLambertNodeMaterial({ vertexColors: true });
     const cliffs = new THREE.Mesh(merged, mat);
     cliffs.receiveShadow = false;
-    group.add(cliffs);
+    ringGroup.add(cliffs);
   }
 
   // -- Abyss floor far below (catches fog color, hides the void).
@@ -194,12 +208,22 @@ export function buildEnvironment(scene: THREE.Scene, seed: number): {
   scene.add(group);
 
   return {
-    /** widen the shadow frustum to the current fortress half-extent */
-    fit(half: number) {
+    /** refit shadows, canyon ring and haze to the current chain extent/centre */
+    fit(half: number, centerX = 0) {
       const r = half + 12;
-      if (Math.abs(sc.right - r) < 1) return;
-      sc.left = -r; sc.right = r; sc.top = r; sc.bottom = -r;
-      sc.updateProjectionMatrix();
+      if (Math.abs(sc.right - r) >= 1) {
+        sc.left = -r; sc.right = r; sc.top = r; sc.bottom = -r;
+        sc.updateProjectionMatrix();
+        moon.position.set(-46 + centerX, 48, -22);
+        moon.target.position.set(centerX, 0, 0);
+      }
+      // the mesa/mist/ruin ring was authored around a ~40-unit island — recentre
+      // on the chain and push it outward so cliffs never intersect the blocks
+      const s = Math.max(1, (half + 26) / 72);
+      ringGroup.position.x = centerX;
+      ringGroup.scale.set(s, 1, s);
+      // longer sightlines need thinner air or the far blocks drown in haze
+      hazeU.value = Math.min(0.008, Math.max(0.002, 0.5 / (half * 2.4)));
     },
     bakeShadows() {
       moon.shadow.needsUpdate = true;

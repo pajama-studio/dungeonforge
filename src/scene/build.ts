@@ -777,7 +777,7 @@ export function buildBridgeLink(a: THREE.Vector3, b: THREE.Vector3, slot: number
   };
 }
 
-export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D): WorldHandle {
+export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, rootScale = 1): WorldHandle {
   const R = getShared();
   const { N, kind, tier, wallTop, wallBase, support } = l;
   const gi = (x: number, y: number) => y * N + x;
@@ -1420,10 +1420,12 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D): 
     }
   }
 
-  // underside root spike: hides the flat bottoms of the abyss columns
+  // underside root spike: hides the flat bottoms of the abyss columns.
+  // stacked upper layers get a stub (rootScale < 1) so their roots don't
+  // skewer the block living beneath them
   {
     const halfW = (N * CELL) / 2;
-    const depth = 26 + halfW * 0.5;
+    const depth = (26 + halfW * 0.5) * rootScale;
     const plug = new THREE.Mesh(R.plugGeo, R.plugMat);
     plug.scale.set(halfW * 0.8, depth, halfW * 0.8);
     plug.position.y = ABYSS * TH + 1.5 - depth / 2;

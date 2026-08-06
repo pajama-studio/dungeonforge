@@ -309,7 +309,7 @@ async function forge(newSeed: number): Promise<void> {
     for (let attempt = 0; attempt < 14 && !placedOk; attempt++) {
       const p = h32(k, attempt) % macro.length;
       // guarantee at least one stacked layer once the chain is big enough
-      const needStack = nIsl >= 4 && k === nIsl - 1 && !macro.some((m) => m.dirFromParent === 4);
+      const needStack = nIsl >= 3 && k === nIsl - 1 && !macro.some((m) => m.dirFromParent === 4);
       const d = needStack && attempt < 7 ? 4 : h32(k, attempt + 100) % 5;
       const mi = macro[p].mi + MDX[d], mj = macro[p].mj + MDZ[d], mk = macro[p].mk + MDK[d];
       if (occupied.has(`${mi},${mj},${mk}`)) continue;
@@ -393,10 +393,11 @@ async function forge(newSeed: number): Promise<void> {
       const d = macro[i].dirFromParent;
       const pp = positions[pIdx];
       if (d === 4) {
-        // a LAYER above its parent — same footprint, joined by elevator
+        // a LAYER above its parent — same footprint, joined by elevator.
+        // clearance must top the parent's temple/towers (~22 world units)
         ox = pp.ox;
         oz = pp.oz;
-        oy = pp.oy + 15 + ((h32(i, 141) % 1000) / 1000) * 4;
+        oy = pp.oy + 32 + ((h32(i, 141) % 1000) / 1000) * 5;
       } else {
         const pHalf = (layouts[pIdx].N * CELL) / 2;
         const fx = [1, -1, 0, 0][d], fz = [0, 0, 1, -1][d];
@@ -419,7 +420,7 @@ async function forge(newSeed: number): Promise<void> {
     }
     positions.push({ ox, oy, oz });
 
-    const w = buildWorld(l, i, scene);
+    const w = buildWorld(l, i, scene, macro[i].dirFromParent === 4 ? 0.22 : 1);
     activeSlots.add(i);
     w.group.position.set(ox, oy, oz);
     scene.add(w.group);

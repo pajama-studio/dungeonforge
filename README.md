@@ -1,5 +1,8 @@
 # Dungeonforge
 
+**[Live demo → dungeonforge.radiantclay.workers.dev](https://dungeonforge.radiantclay.workers.dev)**
+(needs a WebGPU browser — Chrome/Edge, or Safari 26+)
+
 Procedurally generated stone-labyrinth fortress worlds — three.js **WebGPU + TSL**,
 fully deterministic per seed, end-to-end in the browser. No textures, no models
 (one CC0 knight aside): every stone, sigil, flame and bramble is procedural.

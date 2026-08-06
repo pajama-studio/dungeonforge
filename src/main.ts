@@ -11,6 +11,7 @@ import { bloom } from "three/addons/tsl/display/BloomNode.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { DEFAULT_PARAMS, type Layout, type Params } from "./gen/dungeon";
 import { buildWorld, buildBridgeLink, pruneSlots, setSlotDetail, type WorldHandle } from "./scene/build";
+import * as BufferGeometryUtils from "three/addons/utils/BufferGeometryUtils.js";
 import { Player, type GroundSampler } from "./player/player";
 import { FLOOR } from "./gen/dungeon";
 import { buildEnvironment, TH } from "./scene/env";
@@ -128,18 +129,36 @@ interface IslandWalk { l: Layout; ox: number; oy: number; oz: number; slot: numb
 interface LinkWalk { a: THREE.Vector3; b: THREE.Vector3; sag: number }
 const walkIslands: IslandWalk[] = [];
 const walkLinks: LinkWalk[] = [];
-interface Elevator { x: number; z: number; y0: number; y1: number; period: number; phase: number; platform: THREE.Mesh }
-const elevators: Elevator[] = [];
+interface Ladder { x: number; z: number; y0: number; y1: number }
+const ladders: Ladder[] = [];
 const elevMeshes: THREE.Object3D[] = [];
+
+const ladderMat = new THREE.MeshLambertNodeMaterial({ color: 0x4a3624 });
+function buildLadder(x: number, z: number, y0: number, y1: number): void {
+  const len = y1 - y0 + 1.4;
+  const parts: THREE.BufferGeometry[] = [];
+  for (const side of [-0.38, 0.38]) {
+    const rail = new THREE.BoxGeometry(0.07, len, 0.07);
+    rail.translate(side, len / 2, 0);
+    parts.push(rail);
+  }
+  for (let yy = 0.3; yy < len; yy += 0.48) {
+    const rung = new THREE.BoxGeometry(0.84, 0.055, 0.055);
+    rung.translate(0, yy, 0);
+    parts.push(rung);
+  }
+  const geo = BufferGeometryUtils.mergeGeometries(parts);
+  for (const g of parts) g.dispose();
+  const mesh = new THREE.Mesh(geo, ladderMat);
+  mesh.position.set(x, y0 - 0.4, z + 0.45);
+  scene.add(mesh);
+  elevMeshes.push(mesh);
+  ladders.push({ x, z, y0, y1 });
+}
 
 // stacked layers overlap in xz — candidates are ranked by |y - refY| so the
 // sampler resolves to whichever floor the player is actually on
 const sampleGround: GroundSampler = (x, z, refY = 0) => {
-  for (const e of elevators) {
-    if (Math.abs(x - e.x) < 1.05 && Math.abs(z - e.z) < 1.05) {
-      return { y: e.platform.position.y + 0.1, ok: true };
-    }
-  }
   let best: { y: number; ok: boolean; solid?: boolean } | null = null;
   let bestScore = Infinity;
   for (const isl of walkIslands) {
@@ -179,11 +198,6 @@ const sampleGround: GroundSampler = (x, z, refY = 0) => {
   return { y: 0, ok: false };
 };
 
-// elevator furniture (shared resources, created once)
-const elevPlatGeo = new THREE.BoxGeometry(2.05, 0.16, 2.05);
-const elevPlatMat = new THREE.MeshLambertNodeMaterial({ color: 0x4a3a26 });
-const elevPostGeo = new THREE.BoxGeometry(0.12, 1, 0.12);
-const elevPostMat = new THREE.MeshLambertNodeMaterial({ color: 0x2a2018 });
 
 // Generation runs in a WORKER POOL (pure data, transferable typed arrays) —
 // islands of a chain generate in parallel; the main thread only fills instance
@@ -246,7 +260,7 @@ function generateAsync(s: number, overrides: Partial<Params> = {}): Promise<Layo
     if (endless) {
       renderer.setPixelRatio(Math.min(devicePixelRatio, 1.25));
       worlds.length = 0; walkIslands.length = 0; walkLinks.length = 0;
-      elevators.length = 0;
+      ladders.length = 0;
       for (const m of elevMeshes) m.removeFromParent();
       elevMeshes.length = 0;
       pruneSlots(new Set());
@@ -358,7 +372,7 @@ async function forge(newSeed: number): Promise<void> {
   worlds.length = 0; // slot pools persist; pruneSlots() hides the unused ones
   walkIslands.length = 0;
   walkLinks.length = 0;
-  elevators.length = 0;
+  ladders.length = 0;
   for (const m of elevMeshes) m.removeFromParent();
   elevMeshes.length = 0;
   const activeSlots = new Set<number>();
@@ -465,19 +479,7 @@ async function forge(newSeed: number): Promise<void> {
             if (par.l.kind[pc] !== FLOOR || par.l.stairMask[pc]) continue;
             const y0 = par.oy + par.l.tier[pc] * TH_W + 0.16;
             const y1 = oy + l.tier[cc] * TH_W + 0.16;
-            const platform = new THREE.Mesh(elevPlatGeo, elevPlatMat);
-            platform.position.set(wxp, y0, wzp);
-            platform.castShadow = true;
-            scene.add(platform);
-            elevMeshes.push(platform);
-            for (const [px2, pz2] of [[-0.9, -0.9], [0.9, -0.9], [-0.9, 0.9], [0.9, 0.9]]) {
-              const post = new THREE.Mesh(elevPostGeo, elevPostMat);
-              post.scale.y = y1 - y0 + 2.4;
-              post.position.set(wxp + px2, (y0 + y1) / 2 + 0.6, wzp + pz2);
-              scene.add(post);
-              elevMeshes.push(post);
-            }
-            elevators.push({ x: wxp, z: wzp, y0, y1, period: 7, phase: (i * 1.7) % 6.28, platform });
+            buildLadder(wxp, wzp, y0, y1);
             break outer;
           }
         }
@@ -534,6 +536,138 @@ addEventListener("resize", () => {
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
 });
+
+// ---- 3×3×3 cube demo --------------------------------------------------------
+// 27 blocks in a solid lattice: every horizontal neighbor pair bridges, every
+// vertical pair gets an elevator shaft. The showcase build.
+async function forgeCube(): Promise<void> {
+  if (endless) return;
+  const tok = ++forgeToken;
+  const size = 11, N = 2 * size + 1, pitch = N * CELL + ISLAND_GAP, LAYER = 36;
+  const ch = (a: number, b: number, c: number, salt: number) =>
+    (Math.imul(seed ^ Math.imul(a + 7, 73856093) ^ Math.imul(b + 7, 19349663) ^ Math.imul(c + 7, 83492791), 0x9e3779b1 ^ salt) >>> 0);
+  const cells: Array<{ mi: number; mj: number; mk: number }> = [];
+  for (let mk = 0; mk < 3; mk++) for (let mj = -1; mj <= 1; mj++) for (let mi = -1; mi <= 1; mi++) cells.push({ mi, mj, mk });
+  const edgeRow = (a: number, b: number, c: number, axis: number) => 3 + (ch(a, b, c, 0xe0 + axis) % (N - 6));
+
+  const layouts2 = await Promise.all(cells.map((c) => {
+    const gs: number[] = [], gr: number[] = [];
+    if (c.mi < 1) { gs.push(0); gr.push(edgeRow(c.mi, c.mj, c.mk, 0)); }
+    if (c.mi > -1) { gs.push(1); gr.push(edgeRow(c.mi - 1, c.mj, c.mk, 0)); }
+    if (c.mj < 1) { gs.push(2); gr.push(edgeRow(c.mi, c.mj, c.mk, 1)); }
+    if (c.mj > -1) { gs.push(3); gr.push(edgeRow(c.mi, c.mj - 1, c.mk, 1)); }
+    return generateAsync(ch(c.mi, c.mj, c.mk, 0x77) || 1, {
+      gateSides: gs, gateRows: gr, size, plazas: 1, totems: 2,
+      mound: c.mi === 0 && c.mj === 0 && c.mk === 2 ? genParams.mound : genParams.mound * 0.3,
+      decay: Math.min(1, Math.max(0.1, genParams.decay + ((ch(c.mi, c.mj, c.mk, 0x88) % 100) / 100 - 0.5) * 0.5)),
+    });
+  }));
+  if (tok !== forgeToken) return;
+
+  worlds.length = 0;
+  walkIslands.length = 0;
+  walkLinks.length = 0;
+  ladders.length = 0;
+  for (const m of elevMeshes) m.removeFromParent();
+  elevMeshes.length = 0;
+  const activeSlots = new Set<number>();
+  const allLightsByCell: LightSpec[][] = [];
+  const nextFrame = () => new Promise<void>((r) => requestAnimationFrame(() => r()));
+
+  for (let i = 0; i < cells.length; i++) {
+    const c = cells[i], l = layouts2[i];
+    const ox = c.mi * pitch, oz = c.mj * pitch;
+    const oy = c.mk * LAYER + ((ch(c.mi, c.mj, c.mk, 0x99) % 100) / 100 - 0.5) * 4.4;
+    const w = buildWorld(l, i, scene, c.mk === 0 ? 1 : 0.22);
+    activeSlots.add(i);
+    w.group.position.set(ox, oy, oz);
+    worlds.push(w);
+    allLightsByCell.push(w.lights.map((ls) => ({ ...ls, x: ls.x + ox, y: ls.y + oy, z: ls.z + oz })));
+    walkIslands.push({ l, ox, oy, oz, slot: i, stairDir: new Map(l.stairs.map((s) => [s.y * l.N + s.x, s.dir])) });
+    if (l.bridge) {
+      const b = l.bridge;
+      const bz = oz + (b.y - (l.N - 1) / 2) * CELL;
+      const by = oy + b.tier * TH_W + 0.1;
+      walkLinks.push({
+        a: new THREE.Vector3(ox + (b.x0 - (l.N - 1) / 2) * CELL + CELL * 0.4, by, bz),
+        b: new THREE.Vector3(ox + (b.x1 - (l.N - 1) / 2) * CELL - CELL * 0.4, by, bz),
+        sag: 0.7,
+      });
+    }
+    env.bakeShadows();
+    if (i < cells.length - 1) { await nextFrame(); if (tok !== forgeToken) return; }
+  }
+
+  // bridges: every horizontally adjacent pair with facing gates
+  const cellAt = (mi: number, mj: number, mk: number) => cells.findIndex((c) => c.mi === mi && c.mj === mj && c.mk === mk);
+  const gwFor = (idx: number, dir: number): THREE.Vector3 | null => {
+    const l = layouts2[idx], c = cells[idx];
+    const g = l.gates.find((gg) => gg.dir === dir);
+    if (!g) return null;
+    const fx = [1, -1, 0, 0][dir], fz = [0, 0, 1, -1][dir];
+    const isl = walkIslands[idx];
+    return new THREE.Vector3(
+      isl.ox + (g.x - (l.N - 1) / 2) * CELL + fx * (CELL / 2 + 0.3),
+      isl.oy + g.tier * TH_W + 0.1,
+      isl.oz + (g.y - (l.N - 1) / 2) * CELL + fz * (CELL / 2 + 0.3),
+    );
+  };
+  let edgeSlot = 1000;
+  for (let i = 0; i < cells.length; i++) {
+    const c = cells[i];
+    for (const [dmi, dmj, dir] of [[1, 0, 0], [0, 1, 2]] as const) {
+      const j = cellAt(c.mi + dmi, c.mj + dmj, c.mk);
+      if (j < 0) continue;
+      const from = gwFor(i, dir), to = gwFor(j, dir ^ 1);
+      if (!from || !to) continue;
+      worlds.push(buildBridgeLink(from, to, edgeSlot, scene));
+      activeSlots.add(edgeSlot++);
+      walkLinks.push({ a: from.clone(), b: to.clone(), sag: Math.min(2.2, from.distanceTo(to) * 0.06) });
+    }
+    // ladders: every vertical pair, first clear shaft wins
+    const jUp = cellAt(c.mi, c.mj, c.mk + 1);
+    if (jUp >= 0) {
+      const par = walkIslands[i], chi = walkIslands[jUp];
+      const cN = chi.l.N, pN = par.l.N;
+      outer:
+      for (let r = 0; r < cN / 2; r++) {
+        for (let gy = Math.max(1, ((cN - 1) >> 1) - r); gy <= Math.min(cN - 2, ((cN - 1) >> 1) + r); gy++) {
+          for (let gx = Math.max(1, ((cN - 1) >> 1) - r); gx <= Math.min(cN - 2, ((cN - 1) >> 1) + r); gx++) {
+            const cc = gy * cN + gx;
+            if (chi.l.kind[cc] !== FLOOR || chi.l.stairMask[cc] || chi.l.support[cc] !== chi.l.tier[cc]) continue;
+            const wxp = chi.ox + (gx - (cN - 1) / 2) * CELL;
+            const wzp = chi.oz + (gy - (cN - 1) / 2) * CELL;
+            const pgx = Math.round((wxp - par.ox) / CELL + (pN - 1) / 2);
+            const pgy = Math.round((wzp - par.oz) / CELL + (pN - 1) / 2);
+            if (pgx < 1 || pgy < 1 || pgx >= pN - 1 || pgy >= pN - 1) continue;
+            const pc = pgy * pN + pgx;
+            if (par.l.kind[pc] !== FLOOR || par.l.stairMask[pc]) continue;
+            const y0 = par.oy + par.l.tier[pc] * TH_W + 0.16;
+            const y1 = chi.oy + chi.l.tier[cc] * TH_W + 0.16;
+            buildLadder(wxp, wzp, y0, y1);
+            break outer;
+          }
+        }
+      }
+    }
+  }
+
+  // fair light distribution: round-robin across cells into the fixed pool
+  const interleaved: LightSpec[] = [];
+  for (let li = 0; interleaved.length < LIGHT_POOL_SIZE * 2; li++) {
+    let any = false;
+    for (const arr of allLightsByCell) if (arr[li]) { interleaved.push(arr[li]); any = true; }
+    if (!any) break;
+  }
+  pruneSlots(activeSlots);
+  assignLights(interleaved);
+  env.fit(pitch * 2.1, 0, 0);
+  controls.target.set(0, LAYER * 1.1, 0);
+  camera.position.set(pitch * 1.9, LAYER * 2.1, pitch * 2.6);
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 1.25));
+  nameEl.textContent = `${layouts2[cellAt(0, 0, 2)]?.name ?? ""} — the Cube`;
+  seedEl.textContent = `seed ${seed} · 3×3×3 · ${layouts2.reduce((s2, l) => s2 + l.stats.floor, 0)} floor`;
+}
 
 // ---- endless streaming mode -------------------------------------------------
 // A 3×3 macro-cell window follows the camera/player. Blocks derive from
@@ -682,8 +816,10 @@ function updateStreaming(t: number): void {
 let player: Player | null = null;
 let playing = false;
 let spawnX = 0, spawnZ = 0;
-let camYaw = 0.6;
+let camYaw = Math.PI;
+let camPitch = -0.12;
 let camDist = 8.5;
+void camDist;
 const keys = new Set<string>();
 addEventListener("keydown", (e: KeyboardEvent) => {
   keys.add(e.key.toLowerCase());
@@ -694,11 +830,19 @@ let dragging = false;
 renderer.domElement.addEventListener("pointerdown", () => { dragging = true; });
 addEventListener("pointerup", () => { dragging = false; });
 addEventListener("pointermove", (e: PointerEvent) => {
-  if (playing && dragging) camYaw -= e.movementX * 0.005;
+  if (playing && dragging) {
+    camYaw -= e.movementX * 0.005;
+    camPitch = Math.min(0.85, Math.max(-0.85, camPitch - e.movementY * 0.003));
+  }
 });
 renderer.domElement.addEventListener("wheel", (e) => {
   if (playing) camDist = Math.min(14, Math.max(4, camDist + e.deltaY * 0.01));
 }, { passive: true });
+
+const btnCube = document.createElement("button");
+btnCube.textContent = "⧉ 3×3×3";
+document.getElementById("controls")!.appendChild(btnCube);
+btnCube.addEventListener("click", () => void forgeCube());
 
 const btnEnter = document.createElement("button");
 btnEnter.textContent = "⚔ Enter";
@@ -718,6 +862,7 @@ async function enterPlay(): Promise<void> {
   spawnX = l0.ox + (spawnCell.x - (l0.l.N - 1) / 2) * CELL;
   spawnZ = l0.oz + (spawnCell.y - (l0.l.N - 1) / 2) * CELL;
   player.place(spawnX, spawnZ, sampleGround);
+  player.setFirstPerson(true);
   scene.add(player.group);
   playing = true;
   controls.enabled = false;
@@ -747,26 +892,39 @@ async function boot(): Promise<void> {
     if (playing && player) {
       const f = (keys.has("w") || keys.has("arrowup") ? 1 : 0) - (keys.has("s") || keys.has("arrowdown") ? 1 : 0);
       const s = (keys.has("d") || keys.has("arrowright") ? 1 : 0) - (keys.has("a") || keys.has("arrowleft") ? 1 : 0);
-      player.update(dt, { f, s }, camYaw, sampleGround);
-      if (player.group.position.y < -42) {
+      const p = player.group.position;
+      // ladder climbing: stand at a ladder, W climbs, S descends
+      player.climbing = false;
+      for (const e of ladders) {
+        if (Math.abs(p.x - e.x) < 0.95 && Math.abs(p.z - e.z) < 0.95 && p.y > e.y0 - 0.5 && p.y < e.y1 + 0.5) {
+          if (f !== 0) {
+            player.climbing = true;
+            p.y = Math.min(e.y1 + 0.02, Math.max(e.y0, p.y + f * 3.4 * dt));
+            p.x += (e.x - p.x) * Math.min(1, dt * 8);
+            p.z += (e.z - p.z) * Math.min(1, dt * 8);
+            if (p.y >= e.y1 - 0.01 && f > 0) player.climbing = false; // crest the top and walk off
+          }
+          break;
+        }
+      }
+      player.update(dt, player.climbing ? { f: 0, s: 0 } : { f, s }, camYaw, sampleGround);
+      if (p.y < -42) {
         // the abyss returns what it takes — to the last safe footing
         const rx = endless ? player.lastSafeX : spawnX;
         const rz = endless ? player.lastSafeZ : spawnZ;
         player.place(rx, rz, sampleGround);
       }
-      const p = player.group.position;
-      const tx = p.x - Math.sin(camYaw) * camDist;
-      const tz = p.z - Math.cos(camYaw) * camDist;
-      const ty = p.y + camDist * 0.62;
-      camera.position.lerp(new THREE.Vector3(tx, ty, tz), Math.min(1, dt * 6));
-      camera.lookAt(p.x, p.y + 1.4, p.z);
+      // first-person camera at eye height
+      camera.position.set(p.x, p.y + 1.55, p.z);
+      camera.lookAt(
+        p.x + Math.sin(camYaw) * Math.cos(camPitch),
+        p.y + 1.55 + Math.sin(camPitch),
+        p.z + Math.cos(camYaw) * Math.cos(camPitch),
+      );
     } else {
       controls.update();
     }
     for (const w of worlds) w.tick(t);
-    for (const e of elevators) {
-      e.platform.position.y = e.y0 + (e.y1 - e.y0) * (0.5 - 0.5 * Math.cos((t / e.period) * 6.2832 + e.phase));
-    }
     // distance LOD: far islands drop their small-detail layers
     for (let i = 0; i < walkIslands.length; i++) {
       const isl = walkIslands[i];

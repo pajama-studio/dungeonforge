@@ -92,7 +92,7 @@ export async function forgeCube(ctx: Ctx): Promise<void> {
   ctx.camera.updateProjectionMatrix();
   ctx.controls.target.set(0, LAYER * 1.1, 0);
   ctx.camera.position.set(pitch * 1.9, LAYER * 2.1, pitch * 2.6);
-  ctx.renderer.setPixelRatio(Math.min(devicePixelRatio, PR_LARGE));
+  ctx.state.prCap = PR_LARGE;
   ctx.hud.name.textContent = `${layouts[cellAt(0, 0, 2)]?.name ?? ""} — the Cube`;
   ctx.hud.seed.textContent = `seed ${seed} · 3×3×3 · ${layouts.reduce((s2, l) => s2 + l.stats.floor, 0)} floor`;
 }

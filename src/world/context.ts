@@ -33,5 +33,8 @@ export interface Ctx {
     lastExtent: number;
     /** forge token: a newer forge/cube supersedes an in-flight one */
     token: number;
+    /** pixel-ratio CEILING for the current mode/world size — the adaptive-DPR
+     *  loop in main.ts walks the actual ratio between 1.0 and this */
+    prCap: number;
   };
 }

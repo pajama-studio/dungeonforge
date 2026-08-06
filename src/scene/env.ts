@@ -19,7 +19,9 @@ export type Environment = ReturnType<typeof buildEnvironment>;
 export const MOON_DIR = new THREE.Vector3(-46, 48, -22).normalize();
 
 export function buildEnvironment(scene: THREE.Scene, seed: number): {
-  fit: (half: number, centerX?: number, centerZ?: number) => void; bakeShadows: () => void; dispose: () => void;
+  fit: (half: number, centerX?: number, centerZ?: number, top?: number) => void;
+  bakeShadows: () => void;
+  dispose: () => void;
 } {
   const group = new THREE.Group();
   group.name = "environment";
@@ -220,13 +222,18 @@ export function buildEnvironment(scene: THREE.Scene, seed: number): {
   scene.add(group);
 
   return {
-    /** refit shadows, canyon ring and haze to the current chain extent/centre */
-    fit(half: number, centerX = 0, centerZ = 0) {
-      const r = half + 12;
+    /** refit shadows, canyon ring and haze to the current chain extent/centre.
+     *  `top` = world height of the tallest stack: the moon backs off along its
+     *  own direction and the shadow volume grows so sky-spires stay inside the
+     *  light frustum instead of silently losing their shadows. */
+    fit(half: number, centerX = 0, centerZ = 0, top = 0) {
+      const k = Math.max(1, (top + 26) / 60);
+      const r = half + 12 + top * 0.35;
       if (Math.abs(sc.right - r) >= 1) {
         sc.left = -r; sc.right = r; sc.top = r; sc.bottom = -r;
+        sc.far = 150 * k;
         sc.updateProjectionMatrix();
-        moon.position.set(-46 + centerX, 48, -22 + centerZ);
+        moon.position.set(-46 * k + centerX, 48 * k, -22 * k + centerZ);
         moon.target.position.set(centerX, 0, centerZ);
       }
       // the mesa/mist/ruin ring was authored around a ~40-unit island — recentre

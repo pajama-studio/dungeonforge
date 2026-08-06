@@ -105,6 +105,9 @@ interface SharedRes {
   colGeo: THREE.BufferGeometry;
   leafGeo: THREE.BufferGeometry;
   creeperGeo: THREE.BufferGeometry;
+  brambleGeoA: THREE.BufferGeometry;
+  brambleGeoB: THREE.BufferGeometry;
+  brambleMat: THREE.MeshLambertNodeMaterial;
   leafMat: THREE.MeshLambertNodeMaterial;
   wispGeo: THREE.BufferGeometry;
   runeGeo: THREE.BufferGeometry;
@@ -231,6 +234,48 @@ function makeMedallionMat(theme: number, phase: number): THREE.MeshStandardNodeM
   return mat;
 }
 
+/** Grow one thorny bramble tendril in the wall plane: a branching random walk
+ *  of woody segments, each sprouting alternating thorn spikes. Pure algorithm,
+ *  deterministic per seed — two baked variants + per-instance mirror/rot/scale
+ *  give the tangle its variety. */
+function buildBrambleGeo(seedNum: number): THREE.BufferGeometry {
+  const rng = mulberry32(seedNum);
+  const parts: THREE.BufferGeometry[] = [];
+  interface Walker { x: number; y: number; ang: number; depth: number; steps: number }
+  const queue: Walker[] = [{ x: 0, y: 0, ang: Math.PI / 2 + (rng() - 0.5) * 0.6, depth: 0, steps: 13 }];
+  let thornSide = 1;
+  while (queue.length > 0) {
+    const w = queue.pop()!;
+    for (let i = 0; i < w.steps; i++) {
+      const L = 0.2 + rng() * 0.16;
+      const dx = Math.cos(w.ang), dy = Math.sin(w.ang);
+      const mx = w.x + dx * L * 0.5, my = w.y + dy * L * 0.5;
+      const seg = new THREE.BoxGeometry(0.042, L * 1.15, 0.042);
+      seg.rotateZ(w.ang - Math.PI / 2);
+      seg.translate(mx, my, 0.06 + rng() * 0.07);
+      parts.push(seg);
+      // thorn spikes, alternating sides, pointing away from the stem
+      if (rng() < 0.85) {
+        thornSide = -thornSide;
+        const t = new THREE.ConeGeometry(0.028, 0.16, 4);
+        t.rotateZ(w.ang - Math.PI / 2 + thornSide * (Math.PI / 2 + 0.35));
+        t.translate(mx + -dy * thornSide * 0.05, my + dx * thornSide * 0.05, 0.09 + rng() * 0.05);
+        parts.push(t);
+      }
+      w.x += dx * L; w.y += dy * L;
+      w.ang += (rng() - 0.5) * 1.15;
+      // droop long runners back toward horizontal so the tangle hugs the wall
+      w.ang = w.ang * 0.86 + (Math.PI / 2) * 0.14;
+      if (w.depth < 2 && rng() < 0.24) {
+        queue.push({ x: w.x, y: w.y, ang: w.ang + (rng() < 0.5 ? 1 : -1) * (0.7 + rng() * 0.6), depth: w.depth + 1, steps: 3 + Math.floor(rng() * 5) });
+      }
+    }
+  }
+  const merged = BufferGeometryUtils.mergeGeometries(parts);
+  for (const g of parts) g.dispose();
+  return merged;
+}
+
 function getShared(): SharedRes {
   if (S) return S;
 
@@ -308,7 +353,7 @@ function getShared(): SharedRes {
   redMat.emissiveNode = color(0xff2a08).mul(sin(time.mul(1.7)).mul(0.25).add(0.85)).mul(0.55);
 
   const smokeMat = new THREE.SpriteNodeMaterial({ transparent: true, depthWrite: false });
-  smokeMat.colorNode = color(0x2b3a58);
+  smokeMat.colorNode = color(0x3a587a); // cool-tinted mist banks
   smokeMat.opacityNode = smoothstep(0.5, 0.08, length(uv().sub(0.5))).mul(0.13);
 
   // hanging vines: pinned at the top, swaying tip, dark→mossy green gradient
@@ -460,6 +505,9 @@ function getShared(): SharedRes {
     colGeo,
     leafGeo,
     creeperGeo,
+    brambleGeoA: buildBrambleGeo(0xb4a3b1e),
+    brambleGeoB: buildBrambleGeo(0x7708a2),
+    brambleMat: new THREE.MeshLambertNodeMaterial(),
     leafMat,
     wispGeo,
     runeGeo,
@@ -910,6 +958,8 @@ export function buildWorld(l: Layout): WorldHandle {
   const vines: Inst[] = [];
   const leaves: Inst[] = [];
   const creepers: Inst[] = [];
+  const bramblesA: Inst[] = [];
+  const bramblesB: Inst[] = [];
   const links: Inst[] = [];
   const moss: Inst[] = [];
   const cols: Inst[] = [];
@@ -977,6 +1027,36 @@ export function buildWorld(l: Layout): WorldHandle {
             wx(x) + (ha - 0.5) * 0.8, wallTop[c] * TH + 0.03, wz(y) + (0.5 - ha) * 0.8,
             ha * 6.28, sc, 1, sc, stoneColor.getHex(),
           ));
+        }
+        // brambles (荆棘): thorny tangles sprawling over the castle's skin —
+        // dense on the outer ramparts and ravine cliffs, sparse inside
+        if (kind[c] === WALL && !l.doorMask[c]) {
+          for (let d = 0 as Dir; d < 4; d++) {
+            const nx = x + DX[d], ny = y + DY[d];
+            const outer = nx < 0 || ny < 0 || nx >= N || ny >= N || kind[gi(nx, ny)] === VOID;
+            const innerFloor = !outer && kind[gi(nx, ny)] === FLOOR;
+            if (!outer && !innerFloor) continue;
+            const hb2 = hash3(seed, c, d, 101);
+            const chance = outer ? 0.24 + 0.5 * decay : (wallTop[c] - tier[gi(nx, ny)] >= 3 ? 0.14 * decay : 0);
+            if (hb2 > chance) continue;
+            const half = wallHalf(x, y, d as Dir);
+            const fx = DX[d], fz = DY[d];
+            const ha = hash3(seed, c, d, 102), hbv = hash3(seed, c, d, 103);
+            const lat = (ha - 0.5) * 1.2;
+            // outer tangles sprawl near the rim; inner ones climb from the floor
+            const baseY = outer
+              ? wallTop[c] * TH - 2.2 - hbv * 1.6
+              : tier[gi(nx, ny)] * TH + 0.25;
+            const sc = 0.85 + hbv * 0.75;
+            stoneColor.setHSL(0.07 + ha * 0.02, 0.25, 0.16 + ha * 0.08);
+            const item = inst(
+              wx(x) + fx * (half + 0.04) + (fz !== 0 ? lat : 0),
+              baseY,
+              wz(y) + fz * (half + 0.04) + (fx !== 0 ? lat : 0),
+              dirRotY(d as Dir), sc * (ha < 0.5 ? 1 : -1), sc * (0.8 + ha * 0.5), sc, stoneColor.getHex(),
+            );
+            (hbv < 0.5 ? bramblesA : bramblesB).push(item);
+          }
         }
         // creeper patches (爬山虎) climbing the wall faces from the floor
         if (kind[c] === WALL && !l.doorMask[c]) {
@@ -1117,6 +1197,8 @@ export function buildWorld(l: Layout): WorldHandle {
   group.add(makeInstanced(R.vineGeo, R.vineMat, vines, false));
   group.add(makeInstanced(R.leafGeo, R.leafMat, leaves, false));
   group.add(makeInstanced(R.creeperGeo, R.leafMat, creepers, false));
+  group.add(makeInstanced(R.brambleGeoA, R.brambleMat, bramblesA, false));
+  group.add(makeInstanced(R.brambleGeoB, R.brambleMat, bramblesB, false));
   group.add(makeInstanced(R.linkGeo, R.woodMat, links, false));
   group.add(makeInstanced(R.mossGeo, R.mossMat, moss, false));
   group.add(makeInstanced(R.colGeo, R.stoneMat, cols, true));

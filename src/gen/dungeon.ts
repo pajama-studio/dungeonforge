@@ -82,7 +82,7 @@ export const DEFAULT_PARAMS: Params = {
   plazas: 2,
   totems: 4,
   decay: 0.5,
-  islands: 3,
+  islands: 20,
 };
 
 export interface Layout {

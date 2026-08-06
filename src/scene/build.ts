@@ -119,7 +119,8 @@ function putInstanced(
 
 const DETAIL_KEYS = ["merlons", "rubble", "moss", "vines", "leaves", "creepers", "bramblesA", "bramblesB", "wisps", "links", "brackets", "cheeks", "wallGlows", "embers"];
 
-/** distance LOD: hide the small-detail layers of a far-away slot */
+/** distance LOD: hide the small-detail layers of a far-away slot and swap its
+ *  bulk masonry to low-poly box geometry (~4× fewer vertices) */
 export function setSlotDetail(slot: number, visible: boolean): void {
   const p = slotPools.get(slot);
   if (!p) return;
@@ -127,6 +128,11 @@ export function setSlotDetail(slot: number, visible: boolean): void {
     const m = p.meshes.get(k);
     if (m) m.visible = visible;
   }
+  const R = getShared();
+  const blocks = p.meshes.get("blocks");
+  if (blocks) blocks.geometry = visible ? R.blockGeo : R.blockGeoLo;
+  const tiles = p.meshes.get("tiles");
+  if (tiles) tiles.geometry = visible ? R.tileGeo : R.tileGeoLo;
 }
 
 /** hide pools that the current forge doesn't use */
@@ -174,6 +180,8 @@ function shadeFaces(geo: THREE.BufferGeometry): THREE.BufferGeometry {
 
 interface SharedRes {
   blockGeo: THREE.BufferGeometry;
+  blockGeoLo: THREE.BufferGeometry;
+  tileGeoLo: THREE.BufferGeometry;
   merlonGeo: THREE.BufferGeometry;
   tileGeo: THREE.BufferGeometry;
   stepGeo: THREE.BufferGeometry;
@@ -628,6 +636,8 @@ function getShared(): SharedRes {
 
   S = {
     blockGeo: shadeFaces(new RoundedBoxGeometry(CELL * 1.02, COURSE * 1.02, CELL * 1.02, 1, 0.06)),
+    blockGeoLo: shadeFaces(new THREE.BoxGeometry(CELL * 1.02, COURSE * 1.02, CELL * 1.02)),
+    tileGeoLo: shadeFaces(new THREE.BoxGeometry(CELL * 0.985, 0.15, CELL * 0.985)),
     merlonGeo: shadeFaces(new RoundedBoxGeometry(0.72, 0.55, 0.72, 1, 0.05)),
     tileGeo: shadeFaces(new RoundedBoxGeometry(CELL * 0.985, 0.15, CELL * 0.985, 1, 0.045)),
     stepGeo: shadeFaces(new THREE.BoxGeometry(CELL * 1.0, TH / 4, CELL / 4 + 0.06)),

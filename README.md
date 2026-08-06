@@ -11,6 +11,11 @@ medallion plazas, a sunken red chamber, a ravine + rope bridge, torch-lit walls,
 banners, and a beacon tower — all validated (full floor connectivity via BFS with
 Δtier ≤ 1 moves, legal stairs) before it ever renders.
 
+**Third-person mode**: click **⚔ Enter** (or the entrance plaza) — WASD/arrows
+to run, drag to turn the camera, wheel to zoom, Esc back to orbit. The
+adventurer is the CC0 [KayKit Adventurers](https://kaylousberg.com) Knight —
+see `LICENSES.md` for asset credits (code is MIT).
+
 ## Run
 
 ```sh

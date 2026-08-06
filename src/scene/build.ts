@@ -8,13 +8,13 @@
 
 import * as THREE from "three/webgpu";
 import {
-  color, vec2, vec3, uv, time, sin, positionLocal,
-  instanceIndex, hash, smoothstep, length, fract, abs, mix, float, atan, max,
+  color, vec2, vec3, uv, time, sin, positionLocal, positionWorld, normalLocal,
+  instanceIndex, hash, smoothstep, length, fract, abs, mix, float, atan, max, triNoise3D,
 } from "three/tsl";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
 import * as BufferGeometryUtils from "three/addons/utils/BufferGeometryUtils.js";
 import type { Layout, Dir } from "../gen/dungeon";
-import { FLOOR, WALL, ABYSS, DX, DY } from "../gen/dungeon";
+import { FLOOR, WALL, VOID, ABYSS, DX, DY } from "../gen/dungeon";
 import { hash2, hash3 } from "../gen/rng";
 import { TH, CELL } from "./env";
 
@@ -98,28 +98,31 @@ interface SharedRes {
   circleGeo: THREE.BufferGeometry;   // unit radius; scaled per medallion
   portalGeo: THREE.BufferGeometry;
   beaconGeo: THREE.BufferGeometry;
-  stoneMat: THREE.MeshStandardNodeMaterial;
+  stoneMat: THREE.MeshLambertNodeMaterial;
   redMat: THREE.MeshStandardNodeMaterial;
-  woodMat: THREE.MeshStandardNodeMaterial;
-  flameWarm: THREE.MeshStandardNodeMaterial;
-  flameBlue: THREE.MeshStandardNodeMaterial;
-  flameRed: THREE.MeshStandardNodeMaterial;
-  wallGlowMat: THREE.MeshStandardNodeMaterial;
-  floorGlowMat: THREE.MeshStandardNodeMaterial;
+  woodMat: THREE.MeshLambertNodeMaterial;
+  flameWarm: THREE.MeshBasicNodeMaterial;
+  flameBlue: THREE.MeshBasicNodeMaterial;
+  flameRed: THREE.MeshBasicNodeMaterial;
+  wallGlowMat: THREE.MeshBasicNodeMaterial;
+  floorGlowMat: THREE.MeshBasicNodeMaterial;
   bannerMat: THREE.MeshStandardNodeMaterial;
   medallionBlue: THREE.MeshStandardNodeMaterial;
   medallionGold: THREE.MeshStandardNodeMaterial;
-  portalMat: THREE.MeshStandardNodeMaterial;
-  beaconMat: THREE.MeshStandardNodeMaterial;
+  portalMat: THREE.MeshBasicNodeMaterial;
+  beaconMat: THREE.MeshBasicNodeMaterial;
   smokeMat: THREE.SpriteNodeMaterial;
 }
 
 let S: SharedRes | null = null;
 
-function makeFlameMat(cA: number, cB: number, cCore: number): THREE.MeshStandardNodeMaterial {
-  const mat = new THREE.MeshStandardNodeMaterial({
+// Pure-glow materials are UNLIT (MeshBasicNodeMaterial): they skip the whole
+// light loop per fragment — crucial, since additive quads are the overdraw.
+// Their colorNode outputs linear HDR > 1 so the threshold bloom picks them up.
+function makeFlameMat(cA: number, cB: number, cCore: number): THREE.MeshBasicNodeMaterial {
+  const mat = new THREE.MeshBasicNodeMaterial({
     transparent: true, depthWrite: false, side: THREE.DoubleSide,
-    blending: THREE.AdditiveBlending, roughness: 1,
+    blending: THREE.AdditiveBlending,
   });
   const ph = hash(instanceIndex.toFloat().add(0.317)).mul(6.2832);
   const flick = sin(time.mul(10.7).add(ph)).mul(0.55).add(sin(time.mul(16.3).add(ph.mul(2.7))).mul(0.45));
@@ -130,9 +133,40 @@ function makeFlameMat(cA: number, cB: number, cCore: number): THREE.MeshStandard
   const shape = smoothstep(1.0, 0.22, h.add(cx.mul(0.85)).add(flick.mul(0.08)))
     .mul(smoothstep(0.0, 0.1, float(1).sub(cx)));
   const ramp = mix(color(cCore), mix(color(cA), color(cB), h), smoothstep(0.0, 0.55, h.add(cx.mul(0.3))));
-  mat.colorNode = vec3(0);
-  mat.emissiveNode = ramp.mul(shape).mul(flick.mul(0.4).add(3.2));
+  mat.colorNode = ramp.mul(shape).mul(flick.mul(0.4).add(3.2));
   mat.opacityNode = shape;
+  return mat;
+}
+
+/** Carved-masonry stone: mortar seams at block borders, a fake running-bond
+ *  vertical seam per course (so one instance reads as 2-3 hand-laid blocks),
+ *  and low-frequency grain — all procedural, multiplied under the per-instance
+ *  hue/AO color and the per-face shading vertex color. */
+function makeStoneMat(): THREE.MeshLambertNodeMaterial {
+  const mat = new THREE.MeshLambertNodeMaterial({ vertexColors: true });
+  const pl = positionLocal;
+  const nl = normalLocal;
+  const hw = (CELL * 1.02) / 2;
+  const sideMask = smoothstep(0.6, 0.35, abs(nl.y)); // 1 on side faces, 0 on tops
+  // vertical mortar at block x/z borders (only on faces not normal to that axis)
+  const ex = smoothstep(hw - 0.12, hw - 0.02, abs(pl.x)).mul(float(1).sub(abs(nl.x)));
+  const ez = smoothstep(hw - 0.12, hw - 0.02, abs(pl.z)).mul(float(1).sub(abs(nl.z)));
+  // horizontal course seams: world-space y is course-aligned (bases sit on tier
+  // multiples and courses aren't y-jittered), so one fract does every course
+  const fy = fract(positionWorld.y.div(COURSE));
+  const dSeam = fy.min(float(1).sub(fy));
+  const line = smoothstep(0.11, 0.02, dSeam).mul(sideMask);
+  // fake running-bond: an extra vertical seam at a per-instance offset
+  const off = hash(instanceIndex.toFloat().add(0.13)).sub(0.5).mul(1.3);
+  const vseam = smoothstep(0.06, 0.015, abs(pl.x.sub(off)))
+    .add(smoothstep(0.06, 0.015, abs(pl.z.sub(off.mul(-0.7)))))
+    .mul(sideMask);
+  const mortar = ex.add(ez).add(line).add(vseam).clamp(0, 1);
+  // weathered grain: static tri-noise, two scales
+  const grain = triNoise3D(positionWorld.mul(0.13), 0, 0).mul(0.34)
+    .add(triNoise3D(positionWorld.mul(0.55), 0, 0).mul(0.22));
+  const albedo = float(0.86).add(grain).mul(float(1).sub(mortar.mul(0.42)));
+  mat.colorNode = vec3(albedo);
   return mat;
 }
 
@@ -149,7 +183,7 @@ function makeMedallionMat(theme: number, phase: number): THREE.MeshStandardNodeM
     .add(smoothstep(0.2, 0.03, r).mul(1.7));
   const pulse = sin(time.mul(1.25).add(phase)).mul(0.22).add(0.78);
   mat.colorNode = color(0x27221c).mul(float(1).sub(pattern.clamp(0, 1).mul(0.5)));
-  mat.emissiveNode = color(theme).mul(pattern).mul(pulse).mul(0.8);
+  mat.emissiveNode = color(theme).mul(pattern).mul(pulse).mul(1.6);
   return mat;
 }
 
@@ -162,8 +196,8 @@ function getShared(): SharedRes {
   const flameGeo = BufferGeometryUtils.mergeGeometries([flameGeoBase, flameGeoCross]);
   flameGeoBase.dispose(); flameGeoCross.dispose();
 
-  const bannerGeo = new THREE.PlaneGeometry(1.15, 2.05, 1, 10);
-  bannerGeo.translate(0, -1.025, 0);
+  const bannerGeo = new THREE.PlaneGeometry(1.35, 2.55, 1, 10);
+  bannerGeo.translate(0, -1.275, 0);
 
   const bannerMat = new THREE.MeshStandardNodeMaterial({ side: THREE.DoubleSide, roughness: 0.9 });
   {
@@ -184,46 +218,42 @@ function getShared(): SharedRes {
     bannerMat.emissiveNode = gold.mul(sig.add(circ)).mul(0.4);
   }
 
-  const wallGlowMat = new THREE.MeshStandardNodeMaterial({
-    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, roughness: 1,
+  const wallGlowMat = new THREE.MeshBasicNodeMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
   });
   {
     const ph = hash(instanceIndex.toFloat().add(0.83)).mul(6.2832);
     const flick = sin(time.mul(8.9).add(ph)).mul(0.1).add(sin(time.mul(14.7).add(ph.mul(1.9))).mul(0.06)).add(0.86);
     const fall = smoothstep(0.5, 0.04, length(uv().sub(vec2(0.5, 0.42))));
-    wallGlowMat.colorNode = vec3(0);
-    wallGlowMat.emissiveNode = color(0xff8a35).mul(fall).mul(flick).mul(0.42);
+    wallGlowMat.colorNode = color(0xff8a35).mul(fall).mul(flick).mul(0.42);
     wallGlowMat.opacityNode = fall;
   }
 
-  const floorGlowMat = new THREE.MeshStandardNodeMaterial({
-    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, roughness: 1,
+  const floorGlowMat = new THREE.MeshBasicNodeMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
   });
   {
     const ph = hash(instanceIndex.toFloat().add(0.59)).mul(6.2832);
     const flick = sin(time.mul(8.3).add(ph)).mul(0.09).add(sin(time.mul(13.9).add(ph.mul(2.3))).mul(0.05)).add(0.88);
     const fall = smoothstep(0.5, 0.03, length(uv().sub(0.5)));
-    floorGlowMat.colorNode = vec3(0);
-    floorGlowMat.emissiveNode = color(0xff9440).mul(fall).mul(flick).mul(0.5);
+    floorGlowMat.colorNode = color(0xff9440).mul(fall).mul(flick).mul(0.5);
     floorGlowMat.opacityNode = fall;
   }
 
-  const portalMat = new THREE.MeshStandardNodeMaterial({
-    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, roughness: 1,
+  const portalMat = new THREE.MeshBasicNodeMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
   });
   {
     const p = uv().sub(vec2(0.5, 0.42));
     const r = length(p);
     const swirl = sin(r.mul(22).sub(time.mul(2.1)).add(atan(p.y, p.x).mul(3)));
     const glow = float(0.3).div(r.add(0.16));
-    portalMat.colorNode = vec3(0);
-    portalMat.emissiveNode = color(0x3e7bff).mul(glow.mul(swirl.mul(0.22).add(1))).mul(1.6);
+    portalMat.colorNode = color(0x3e7bff).mul(glow.mul(swirl.mul(0.22).add(1))).mul(1.6);
     portalMat.opacityNode = smoothstep(0.62, 0.12, r);
   }
 
-  const beaconMat = new THREE.MeshStandardNodeMaterial({ roughness: 0.4 });
-  beaconMat.colorNode = color(0x332a18);
-  beaconMat.emissiveNode = color(0xffe4a0).mul(sin(time.mul(2.2)).mul(0.2).add(1)).mul(4.5);
+  const beaconMat = new THREE.MeshBasicNodeMaterial();
+  beaconMat.colorNode = color(0xffe4a0).mul(sin(time.mul(2.2)).mul(0.2).add(1)).mul(4.5);
 
   const redMat = new THREE.MeshStandardNodeMaterial({ roughness: 0.85, vertexColors: true });
   redMat.emissiveNode = color(0xff2a08).mul(sin(time.mul(1.7)).mul(0.25).add(0.85)).mul(0.55);
@@ -248,9 +278,11 @@ function getShared(): SharedRes {
     circleGeo: new THREE.CircleGeometry(1, 56),
     portalGeo: new THREE.PlaneGeometry(1.8, 2.4),
     beaconGeo: new THREE.OctahedronGeometry(0.45),
-    stoneMat: new THREE.MeshStandardNodeMaterial({ roughness: 0.93, metalness: 0.02, vertexColors: true }),
+    // Lambert = diffuse-only lighting: matte stone doesn't need GGX, and it
+    // halves the per-light fragment cost across the entire masonry fill.
+    stoneMat: makeStoneMat(),
     redMat,
-    woodMat: new THREE.MeshStandardNodeMaterial({ roughness: 0.9 }),
+    woodMat: new THREE.MeshLambertNodeMaterial(),
     flameWarm: makeFlameMat(0xffdd84, 0xff6a1a, 0xffeab0),
     flameBlue: makeFlameMat(0x9fd0ff, 0x2456ff, 0xeaf4ff),
     flameRed: makeFlameMat(0xffb08a, 0xff2410, 0xffe0c8),
@@ -290,6 +322,22 @@ export function buildWorld(l: Layout): WorldHandle {
 
   const isTempleBuilding = (x: number, y: number) => y === 1 && l.temple !== null && Math.abs(x - l.temple.cx) <= 2;
 
+  // Occlusion tier: the height below which every side of a column is hidden by
+  // its 4 neighbors — those courses never rasterize (topmost course always kept
+  // for the visible cap face).
+  const occlAt = (x: number, y: number): number => {
+    let o = Infinity;
+    for (let d = 0; d < 4; d++) {
+      const nx = x + DX[d], ny = y + DY[d];
+      if (nx < 0 || ny < 0 || nx >= N || ny >= N) return ABYSS;
+      const n = gi(nx, ny);
+      if (kind[n] === FLOOR) o = Math.min(o, tier[n]);
+      else if (kind[n] === WALL) o = Math.min(o, wallTop[n]);
+      else return ABYSS;
+    }
+    return o;
+  };
+
   const pushCourses = (
     x: number, y: number, baseTier: number, topTier: number,
     refFloorTier: number, scaleXZ: number, warm: number,
@@ -297,9 +345,11 @@ export function buildWorld(l: Layout): WorldHandle {
     const cx = wx(x), cz = wz(y);
     const nCourses = Math.max(0, Math.round((topTier - baseTier) * TH / COURSE));
     const doorCell = l.doorMask[gi(x, y)] === 1;
+    const occlH = occlAt(x, y) * TH;
     for (let k = 0; k < nCourses; k++) {
       const y0 = baseTier * TH + k * COURSE;
       const yMid = y0 + COURSE / 2;
+      if (k < nCourses - 1 && y0 + COURSE <= occlH - 0.01) continue; // fully hidden
       if (doorCell && l.door) {
         const gapLo = l.door.tier * TH, gapHi = l.door.tier * TH + 2.6;
         if (yMid > gapLo && yMid < gapHi) continue; // doorway gap (lintel above survives)
@@ -309,14 +359,16 @@ export function buildWorld(l: Layout): WorldHandle {
       const h3v = hash3(seed, x * 131 + y, k, 3);
       // baked AO: courses far below the nearest floor sit in shadowed crevices
       const rel = Math.min(1, Math.max(0, (yMid - refFloorTier * TH) / (2.6 * TH) + 0.72));
-      const lum = (0.43 + h1 * 0.16) * (0.5 + 0.5 * rel);
-      const hue = 0.075 + warm * 0.012 + (h2v - 0.5) * 0.018;
-      const sat = 0.30 + warm * 0.1 + (h3v - 0.5) * 0.08;
+      const lum = (0.54 + h1 * 0.17) * (0.55 + 0.45 * rel);
+      const hue = 0.092 + warm * 0.012 + (h2v - 0.5) * 0.016;
+      const sat = 0.42 + warm * 0.08 + (h3v - 0.5) * 0.08;
       stoneColor.setHSL(hue, sat, lum);
       if (yMid < refFloorTier * TH + COURSE && h1 < 0.12) stoneColor.lerp(new THREE.Color(0x39442a), 0.45); // moss
       const jx = (h2v - 0.5) * 0.07 + ((k % 2) ? 0.035 : -0.035);
       const jz = (h3v - 0.5) * 0.07 + ((k % 2) ? -0.035 : 0.035);
-      const s = scaleXZ * (0.985 + h1 * 0.045);
+      // cornice ring every 5th course on towers — segmented silhouette
+      const cornice = scaleXZ > 1.2 && k % 5 === 4 ? 1.14 : 1;
+      const s = scaleXZ * cornice * (0.985 + h1 * 0.045);
       blocks.push(inst(cx + jx, yMid, cz + jz, (h1 - 0.5) * 0.05, s, 1, s, stoneColor.getHex()));
     }
   };
@@ -333,15 +385,22 @@ export function buildWorld(l: Layout): WorldHandle {
         const tower = l.towers.find((t) => t.x === x && t.y === y);
         const warm = isTempleBuilding(x, y) ? 1 : 0;
         pushCourses(x, y, wallBase[c], wallTop[c], ref, tower ? tower.scale : 1, warm);
-        // merlon checkerboard on exposed tops
-        let exposed = x === 0 || y === 0 || x === N - 1 || y === N - 1;
-        for (let d = 0; d < 4 && !exposed; d++) {
-          const n = gi(x + DX[d], y + DY[d]);
-          if (kind[n] !== WALL) exposed = true;
+        // battlement teeth ONLY where the wall meets the outside or the ravine —
+        // interior maze walls keep clean tops (center studs read as lego bricks)
+        let voidDir = -1;
+        for (let d = 0; d < 4; d++) {
+          const nx = x + DX[d], ny = y + DY[d];
+          if (nx < 0 || ny < 0 || nx >= N || ny >= N || kind[gi(nx, ny)] === VOID) { voidDir = d; break; }
         }
-        if (exposed && !tower && (x + y) % 2 === 0 && !l.doorMask[c]) {
-          stoneColor.setHSL(0.075, 0.3, 0.33 + hash2(seed, c, 9) * 0.12);
-          merlons.push(inst(wx(x), wallTop[c] * TH + 0.26, wz(y), 0, 1, 1, 1, stoneColor.getHex()));
+        if (voidDir >= 0 && !tower && !l.doorMask[c]) {
+          const alongX = DY[voidDir] !== 0; // rim runs perpendicular to the void
+          for (const off of [-0.58, 0.58]) {
+            stoneColor.setHSL(0.09, 0.34, 0.38 + hash2(seed, c, 9) * 0.1);
+            merlons.push(inst(
+              wx(x) + (alongX ? off : 0), wallTop[c] * TH + 0.24, wz(y) + (alongX ? 0 : off),
+              0, 0.8, 0.92, 0.8, stoneColor.getHex(),
+            ));
+          }
         }
         if (tower) {
           for (const [mx, mz] of [[-0.6, -0.6], [0.6, -0.6], [-0.6, 0.6], [0.6, 0.6]]) {
@@ -351,6 +410,33 @@ export function buildWorld(l: Layout): WorldHandle {
         }
       } else if (kind[c] === FLOOR && support[c] < tier[c]) {
         pushCourses(x, y, support[c], tier[c], tier[c], 1, 0);
+      }
+    }
+  }
+
+  // temple facade: pilasters flanking the doorway + a proud lintel course
+  if (l.temple && l.door) {
+    const T = l.temple;
+    const faceZ = wz(1) + CELL / 2 + 0.14;
+    for (const px of [wx(T.cx - 1) + CELL * 0.38, wx(T.cx + 1) - CELL * 0.38]) {
+      const nC = Math.round(((T.buildTop - T.platformTier) * TH - 0.4) / COURSE);
+      for (let k = 0; k < nC; k++) {
+        stoneColor.setHSL(0.1, 0.46, 0.5 + hash3(seed, k, 5, 8) * 0.1);
+        blocks.push(inst(px, T.platformTier * TH + (k + 0.5) * COURSE, faceZ, 0, 0.34, 0.98, 0.22, stoneColor.getHex()));
+      }
+    }
+    stoneColor.setHSL(0.1, 0.48, 0.56);
+    blocks.push(inst(wx(T.cx), l.door.tier * TH + 2.75, faceZ, 0, 1.55, 0.85, 0.24, stoneColor.getHex()));
+  }
+  // pavilion roof slabs on towers
+  for (const t of l.towers) {
+    stoneColor.setHSL(0.09, 0.36, 0.42);
+    blocks.push(inst(wx(t.x), t.top * TH + (t.beacon ? 1.9 : 0) + 0.1, wz(t.y), 0, t.scale * 1.22, t.beacon ? 0.55 : 0.45, t.scale * 1.22, stoneColor.getHex()));
+    if (t.beacon) {
+      // four corner posts holding the roof over the beacon
+      for (const [mx, mz] of [[-0.62, -0.62], [0.62, -0.62], [-0.62, 0.62], [0.62, 0.62]]) {
+        stoneColor.setHSL(0.09, 0.34, 0.38);
+        blocks.push(inst(wx(t.x) + mx * t.scale, t.top * TH + 1.0, wz(t.y) + mz * t.scale, 0, 0.22, 2.4, 0.22, stoneColor.getHex()));
       }
     }
   }
@@ -371,11 +457,11 @@ export function buildWorld(l: Layout): WorldHandle {
         stoneColor.setHSL(0.015, 0.5, 0.14 + h1 * 0.05);
         target = redTiles;
       } else if (l.templeMask[c]) {
-        stoneColor.setHSL(0.095, 0.34, 0.4 + h1 * 0.14);
+        stoneColor.setHSL(0.1, 0.4, 0.5 + h1 * 0.14);
       } else if (l.plazaMask[c]) {
-        stoneColor.setHSL(0.085, 0.24, 0.34 + h1 * 0.12);
+        stoneColor.setHSL(0.09, 0.3, 0.43 + h1 * 0.12);
       } else {
-        stoneColor.setHSL(0.08 + (h2v - 0.5) * 0.02, 0.16, 0.28 + h1 * 0.12);
+        stoneColor.setHSL(0.088 + (h2v - 0.5) * 0.02, 0.24, 0.37 + h1 * 0.13);
       }
       target.push(inst(
         wx(x) + (h2v - 0.5) * 0.05, tier[c] * TH + 0.07, wz(y) + (h1 - 0.5) * 0.05,
@@ -542,11 +628,11 @@ export function buildWorld(l: Layout): WorldHandle {
 
   // ---------------------------------------------------------------- smoke
   const smokes: THREE.Sprite[] = [];
-  for (let k = 0; k < 22; k++) {
+  for (let k = 0; k < 18; k++) {
     const s = new THREE.Sprite(R.smokeMat);
     const a = hash2(seed, k, 41) * Math.PI * 2;
     const rad = 18 + hash2(seed, k, 42) * 26;
-    if (k < 8 && l.bridge) {
+    if (k < 7 && l.bridge) {
       s.position.set(wx(l.bridge.x0 + 2) + (hash2(seed, k, 43) - 0.5) * 8, -1 - hash2(seed, k, 44) * 5, wz(Math.round(N * 0.75)) + (hash2(seed, k, 45) - 0.5) * 18);
     } else {
       s.position.set(Math.cos(a) * rad, -2 - hash2(seed, k, 46) * 6, Math.sin(a) * rad);

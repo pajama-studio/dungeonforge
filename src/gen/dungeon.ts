@@ -35,7 +35,31 @@ export interface Medallion { x: number; y: number; r: number; tier: number; kind
 export interface Brazier { x: number; y: number; tier: number; kind: "blue" | "gold" | "red" }
 export interface Bridge { y: number; x0: number; x1: number; tier: number }
 
-export interface Params { seed: number }
+export interface Params {
+  seed: number;
+  /** growing-tree pick-newest bias: 1 = winding rivers (DFS), 0 = branchy (Prim-ish) */
+  newest: number;
+  /** fraction of dead ends knocked open into loops */
+  braid: number;
+  /** extra loop chance anywhere tiers allow */
+  loops: number;
+  /** tier noise amplitude (0 = flat plain, 4 = broken highlands) */
+  heightAmp: number;
+  /** temple mound height added toward the north-center */
+  mound: number;
+  /** min Chebyshev spacing between torches (smaller = more torches) */
+  torchSpacing: number;
+}
+
+export const DEFAULT_PARAMS: Params = {
+  seed: 1,
+  newest: 0.7,
+  braid: 0.45,
+  loops: 0.08,
+  heightAmp: 3.0,
+  mound: 3.7,
+  torchSpacing: 5,
+};
 
 export interface Layout {
   seed: number;
@@ -78,15 +102,15 @@ function makeName(rng: Rng): string {
   return `The ${rng.pick(ADJ)} ${rng.pick(NOUN)} of ${rng.pick(SYL_A)}${rng.pick(SYL_B)}`;
 }
 
-function attempt(seed: number): Layout | string {
+function attempt(p: Params, seed: number): Layout | string {
   const rng = new Rng(seed);
 
   // -- Stage 1: growing-tree maze over maze-cell space, tiers carved alongside.
   const ci = M >> 1; // temple column (maze coords)
   const tierTarget = (i: number, j: number): number => {
-    const n = valueNoise2(seed ^ 0x51ab, i * 0.34, j * 0.34) * 3.0;
+    const n = valueNoise2(seed ^ 0x51ab, i * 0.34, j * 0.34) * p.heightAmp;
     const dTemple = Math.hypot(i - ci, j - 1.2);
-    const mound = Math.max(0, 3.7 - dTemple * 0.48);
+    const mound = Math.max(0, p.mound - dTemple * 0.48);
     return Math.max(0, Math.min(7, Math.round(n + mound - 0.4)));
   };
 
@@ -105,7 +129,7 @@ function attempt(seed: number): Layout | string {
     // growing tree: 70% newest (river-y like recursive backtracker), 30% random (branchy)
     const active: number[] = [start];
     while (active.length > 0) {
-      const pickIdx = rng.chance(0.7) ? active.length - 1 : rng.int(0, active.length - 1);
+      const pickIdx = rng.chance(p.newest) ? active.length - 1 : rng.int(0, active.length - 1);
       const cur = active[pickIdx];
       const cx = cur % M, cy = (cur / M) | 0;
       const dirs: Dir[] = [];
@@ -133,7 +157,7 @@ function attempt(seed: number): Layout | string {
       const c = mi(i, j);
       let deg = 0;
       for (let d = 0; d < 4; d++) deg += open[c * 4 + d];
-      if (deg !== 1 || !rng.chance(0.45)) continue;
+      if (deg !== 1 || !rng.chance(p.braid)) continue;
       const options: Dir[] = [];
       for (let d = 0 as Dir; d < 4; d++) {
         if (open[c * 4 + d]) continue;
@@ -151,7 +175,7 @@ function attempt(seed: number): Layout | string {
         const nx = i + DX[d], ny = j + DY[d];
         if (nx >= M || ny >= M) continue;
         if (open[mi(i, j) * 4 + d]) continue;
-        if (Math.abs(mTier[mi(nx, ny)] - mTier[mi(i, j)]) <= 1 && rng.chance(0.08)) connect(i, j, d);
+        if (Math.abs(mTier[mi(nx, ny)] - mTier[mi(i, j)]) <= 1 && rng.chance(p.loops)) connect(i, j, d);
       }
     }
   }
@@ -472,7 +496,7 @@ function attempt(seed: number): Layout | string {
 
   // -- Stage 10: torches along walls (min Chebyshev spacing via buckets).
   const torches: Torch[] = [];
-  const TSPACE = 5;
+  const TSPACE = Math.max(3, Math.round(p.torchSpacing));
   const tbw = Math.ceil(N / TSPACE);
   const buckets = new Map<number, Array<{ x: number; y: number }>>();
   const near = (x: number, y: number, space: number): boolean => {
@@ -524,8 +548,8 @@ function attempt(seed: number): Layout | string {
           if (kind[n] === FLOOR && tier[n] > ft) { ft = tier[n]; dir = d as Dir; }
         }
         if (dir === null || wallTop[c] - ft < 3) continue;
-        if (chosen.some((p) => Math.max(Math.abs(p.x - x), Math.abs(p.y - y)) < 7)) continue;
-        if (hash2(seed, c, 913) > 0.75) continue;
+        if (chosen.some((q) => Math.max(Math.abs(q.x - x), Math.abs(q.y - y)) < 5)) continue;
+        if (hash2(seed, c, 913) > 0.85) continue;
         chosen.push({ x, y });
         banners.push({ x, y, dir, tier: ft, top: wallTop[c] });
       }
@@ -582,19 +606,22 @@ function medallionCenter(meds: Medallion[], x: number, y: number): boolean {
   return meds.some((m) => Math.hypot(m.x - x, m.y - y) < 1.5);
 }
 
-export function generate(seedIn: number): Layout {
+export function generate(input: number | Partial<Params>): Layout {
+  const p: Params = typeof input === "number"
+    ? { ...DEFAULT_PARAMS, seed: input }
+    : { ...DEFAULT_PARAMS, ...input };
   const t0 = performance.now();
   const reasons: string[] = [];
   for (let a = 0; a < 6; a++) {
-    const s = (Math.imul(seedIn + a, 0x9e3779b1) ^ Math.imul(a, 0x85ebca6b)) >>> 0;
-    const r = attempt(s === 0 ? 1 : s);
+    const s = (Math.imul(p.seed + a, 0x9e3779b1) ^ Math.imul(a, 0x85ebca6b)) >>> 0;
+    const r = attempt(p, s === 0 ? 1 : s);
     if (typeof r === "string") { reasons.push(r); continue; }
     r.stats.attempts = a + 1;
     r.stats.genMs = Math.round((performance.now() - t0) * 100) / 100;
-    (r as { seed: number }).seed = seedIn; // report the user-facing seed
+    (r as { seed: number }).seed = p.seed; // report the user-facing seed
     return r;
   }
-  throw new Error(`dungeon generation failed after 6 attempts (seed=${seedIn}): ${reasons.join("; ")}`);
+  throw new Error(`dungeon generation failed after 6 attempts (seed=${p.seed}): ${reasons.join("; ")}`);
 }
 
 /** FNV-1a over the structural arrays — determinism tests + HUD. */

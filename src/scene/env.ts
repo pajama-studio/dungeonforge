@@ -36,11 +36,11 @@ export function buildEnvironment(scene: THREE.Scene, seed: number): { bakeShadow
   scene.fogNode = fog(fogColor, combined);
 
   // -- Lights: cool hemisphere + one shadow-casting moon.
-  const hemi = new THREE.HemisphereLight(0x3a4a72, 0x2a1e14, 0.85);
+  const hemi = new THREE.HemisphereLight(0x3d4c78, 0x33241a, 1.05);
   group.add(hemi);
 
-  const moon = new THREE.DirectionalLight(0x93a9e8, 1.3);
-  moon.position.set(-52, 38, -20); // grazing angle — long raking shadows sell the height
+  const moon = new THREE.DirectionalLight(0x93a9e8, 1.45);
+  moon.position.set(-46, 48, -22); // raking but high enough to light wall tops
   moon.castShadow = true;
   moon.shadow.mapSize.set(2048, 2048);
   const sc = moon.shadow.camera;
@@ -67,7 +67,7 @@ export function buildEnvironment(scene: THREE.Scene, seed: number): { bakeShadow
     }
     const merged = BufferGeometryUtils.mergeGeometries(geos);
     for (const g of geos) g.dispose();
-    const mat = new THREE.MeshStandardNodeMaterial({ color: 0x141b2c, roughness: 1 });
+    const mat = new THREE.MeshLambertNodeMaterial({ color: 0x141b2c });
     const cliffs = new THREE.Mesh(merged, mat);
     cliffs.receiveShadow = false;
     group.add(cliffs);
@@ -75,7 +75,7 @@ export function buildEnvironment(scene: THREE.Scene, seed: number): { bakeShadow
 
   // -- Abyss floor far below (catches fog color, hides the void).
   {
-    const mat = new THREE.MeshStandardNodeMaterial({ color: 0x0a0e1a, roughness: 1 });
+    const mat = new THREE.MeshLambertNodeMaterial({ color: 0x0a0e1a });
     const plane = new THREE.Mesh(new THREE.PlaneGeometry(500, 500), mat);
     plane.rotation.x = -Math.PI / 2;
     plane.position.y = ABYSS * TH - 12;

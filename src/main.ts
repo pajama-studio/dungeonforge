@@ -2,10 +2,10 @@
 // three.js WebGPURenderer + TSL; MRT emissive bloom; deterministic seeds.
 
 import * as THREE from "three/webgpu";
-import { pass, mrt, output, emissive } from "three/tsl";
+import { pass } from "three/tsl";
 import { bloom } from "three/addons/tsl/display/BloomNode.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { generate } from "./gen/dungeon";
+import { DEFAULT_PARAMS, type Layout, type Params } from "./gen/dungeon";
 import { buildWorld, type WorldHandle } from "./scene/build";
 import { buildEnvironment, TH } from "./scene/env";
 import { mulberry32 } from "./gen/rng";
@@ -27,9 +27,9 @@ camera.position.set(46, 36, 66); // lower, more oblique — facades and height r
 
 const renderer = new THREE.WebGPURenderer({ antialias: false });
 renderer.setSize(innerWidth, innerHeight);
-renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
+renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5)); // bloom hides the difference; fill rate is the budget
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = THREE.PCFShadowMap; // static baked shadows — soft PCF not worth the taps
 renderer.toneMapping = THREE.AgXToneMapping;
 renderer.toneMappingExposure = 1.18;
 app.appendChild(renderer.domElement);
@@ -45,22 +45,78 @@ controls.autoRotate = true;
 controls.autoRotateSpeed = 0.35;
 renderer.domElement.addEventListener("pointerdown", () => { controls.autoRotate = false; }, { once: false });
 
-// post: MRT emissive bloom — only emissiveNode content glows.
+// post: single-attachment scene pass + HDR-threshold bloom. Glow materials
+// output linear values > 1, so only they (and the hottest torch-lit stone,
+// which is the reference look anyway) cross the threshold.
 const postProcessing = new THREE.PostProcessing(renderer);
 const scenePass = pass(scene, camera);
-scenePass.setMRT(mrt({ output, emissive }));
 const scenePassColor = scenePass.getTextureNode();
-const bloomPass = bloom(scenePass.getTextureNode("emissive"), 1.1, 0.4);
+const bloomPass = bloom(scenePassColor, 0.9, 0.4, 1.1);
 postProcessing.outputNode = scenePassColor.add(bloomPass);
 
 const env = buildEnvironment(scene, 1); // env is seed-stable; kept across regens
 
 let world: WorldHandle | null = null;
 
-function forge(newSeed: number): void {
+// Generation runs in a worker (pure data, transferable typed arrays) — the
+// main thread only fills instance buffers. Requests are id-tagged so a stale
+// response from rapid re-forging is dropped instead of overwriting a newer one.
+const genWorker = new Worker(new URL("./gen/worker.ts", import.meta.url), { type: "module" });
+let genId = 0;
+const pending = new Map<number, (l: Layout) => void>();
+genWorker.onmessage = (e: MessageEvent<{ id: number; layout: Layout }>) => {
+  pending.get(e.data.id)?.(e.data.layout);
+  pending.delete(e.data.id);
+};
+const genParams: Params = { ...DEFAULT_PARAMS };
+
+function generateAsync(s: number): Promise<Layout> {
+  return new Promise((resolve) => {
+    const id = ++genId;
+    pending.set(id, resolve);
+    genWorker.postMessage({ id, seed: s, params: genParams });
+  });
+}
+
+// ---- forge-parameter sliders -------------------------------------------------
+{
+  const panel = document.getElementById("params")!;
+  const defs: Array<{ key: keyof Params; label: string; min: number; max: number; step: number }> = [
+    { key: "heightAmp", label: "terrain relief", min: 0, max: 4, step: 0.1 },
+    { key: "mound", label: "temple mound", min: 0, max: 5, step: 0.1 },
+    { key: "braid", label: "braid (open dead ends)", min: 0, max: 1, step: 0.05 },
+    { key: "loops", label: "extra loops", min: 0, max: 0.3, step: 0.01 },
+    { key: "newest", label: "maze: branchy ↔ river", min: 0, max: 1, step: 0.05 },
+    { key: "torchSpacing", label: "torch spacing", min: 3, max: 9, step: 1 },
+  ];
+  let debounce = 0;
+  for (const d of defs) {
+    const label = document.createElement("label");
+    label.textContent = d.label + " ";
+    const val = document.createElement("span");
+    val.textContent = String(genParams[d.key]);
+    label.appendChild(val);
+    const input = document.createElement("input");
+    input.type = "range";
+    input.min = String(d.min); input.max = String(d.max); input.step = String(d.step);
+    input.value = String(genParams[d.key]);
+    input.addEventListener("input", () => {
+      (genParams[d.key] as number) = Number(input.value);
+      val.textContent = input.value;
+      clearTimeout(debounce);
+      debounce = window.setTimeout(() => void forge(seed), 180);
+    });
+    panel.appendChild(label);
+    panel.appendChild(input);
+  }
+}
+
+async function forge(newSeed: number): Promise<void> {
   seed = newSeed >>> 0 || 1;
+  const myId = genId + 1;
+  const layout = await generateAsync(seed);
+  if (myId !== genId) return; // a newer forge superseded this one
   if (world) world.dispose();
-  const layout = generate(seed);
   world = buildWorld(layout);
   scene.add(world.group);
   env.bakeShadows();
@@ -72,9 +128,9 @@ function forge(newSeed: number): void {
 }
 
 const uiRng = mulberry32((Date.now() ^ 0x5f3759df) >>> 0); // UI-only randomness; the world itself is seed-pure
-btnNew.addEventListener("click", () => forge((uiRng() * 0xffffffff) >>> 0));
-btnGo.addEventListener("click", () => forge(Number(seedInput.value) || 1));
-seedInput.addEventListener("keydown", (e) => { if (e.key === "Enter") forge(Number(seedInput.value) || 1); });
+btnNew.addEventListener("click", () => void forge((uiRng() * 0xffffffff) >>> 0));
+btnGo.addEventListener("click", () => void forge(Number(seedInput.value) || 1));
+seedInput.addEventListener("keydown", (e) => { if (e.key === "Enter") void forge(Number(seedInput.value) || 1); });
 
 addEventListener("resize", () => {
   camera.aspect = innerWidth / innerHeight;
@@ -83,12 +139,11 @@ addEventListener("resize", () => {
 });
 
 async function boot(): Promise<void> {
-  await renderer.init();
-  forge(seed);
-  // pre-compile every WebGPU pipeline off the hot path so the first visible
-  // frame doesn't stall the main thread (materials are shared afterwards, so
-  // re-forging never compiles again)
-  await postProcessing.renderAsync();
+  // generation (worker) and WebGPU init run concurrently
+  await Promise.all([renderer.init(), forge(seed)]);
+  // first render compiles every pipeline (async in WebGPU); materials are
+  // shared afterwards, so re-forging never compiles again
+  postProcessing.render();
   loadingEl.style.opacity = "0";
   renderer.setAnimationLoop(() => {
     const t = performance.now() / 1000;

@@ -128,30 +128,45 @@ interface IslandWalk { l: Layout; ox: number; oy: number; oz: number; stairDir: 
 interface LinkWalk { a: THREE.Vector3; b: THREE.Vector3; sag: number }
 const walkIslands: IslandWalk[] = [];
 const walkLinks: LinkWalk[] = [];
+interface Elevator { x: number; z: number; y0: number; y1: number; period: number; phase: number; platform: THREE.Mesh }
+const elevators: Elevator[] = [];
+const elevMeshes: THREE.Object3D[] = [];
 
-const sampleGround: GroundSampler = (x, z) => {
+// stacked layers overlap in xz — candidates are ranked by |y - refY| so the
+// sampler resolves to whichever floor the player is actually on
+const sampleGround: GroundSampler = (x, z, refY = 0) => {
+  for (const e of elevators) {
+    if (Math.abs(x - e.x) < 1.05 && Math.abs(z - e.z) < 1.05) {
+      return { y: e.platform.position.y + 0.1, ok: true };
+    }
+  }
+  let best: { y: number; ok: boolean; solid?: boolean } | null = null;
+  let bestScore = Infinity;
   for (const isl of walkIslands) {
     const { l, ox, oz } = isl;
     const gx = Math.round((x - ox) / CELL + (l.N - 1) / 2);
     const gy = Math.round((z - oz) / CELL + (l.N - 1) / 2);
     if (gx < 0 || gy < 0 || gx >= l.N || gy >= l.N) continue;
     const c = gy * l.N + gx;
-    // walls are solid barriers; VOID cells (ravine) fall through to the links
-    // check below, then to open air
-    if (l.kind[c] === 2) return { y: 0, ok: false, solid: true };
-    if (l.kind[c] !== FLOOR) break;
+    if (l.kind[c] === 2) {
+      const score = Math.abs(refY - isl.oy) + 2; // walls score by layer proximity
+      if (score < bestScore) { bestScore = score; best = { y: 0, ok: false, solid: true }; }
+      continue;
+    }
+    if (l.kind[c] !== FLOOR) continue;
     let y = l.tier[c] * TH_W + 0.16 + isl.oy;
     const sd = isl.stairDir.get(c);
     if (sd !== undefined) {
-      // ramp across the stair cell toward the higher neighbor
       const cx = ox + (gx - (l.N - 1) / 2) * CELL;
       const cz = oz + (gy - (l.N - 1) / 2) * CELL;
       const fx = [1, -1, 0, 0][sd], fz = [0, 0, 1, -1][sd];
       const t = Math.min(1, Math.max(0, ((x - cx) * fx + (z - cz) * fz) / CELL + 0.5));
       y += t * TH_W;
     }
-    return { y, ok: true };
+    const score = Math.abs(refY - y);
+    if (score < bestScore) { bestScore = score; best = { y, ok: true }; }
   }
+  if (best) return best;
   for (const lk of walkLinks) {
     const abx = lk.b.x - lk.a.x, abz = lk.b.z - lk.a.z;
     const len2 = abx * abx + abz * abz;
@@ -163,6 +178,12 @@ const sampleGround: GroundSampler = (x, z) => {
   }
   return { y: 0, ok: false };
 };
+
+// elevator furniture (shared resources, created once)
+const elevPlatGeo = new THREE.BoxGeometry(2.05, 0.16, 2.05);
+const elevPlatMat = new THREE.MeshLambertNodeMaterial({ color: 0x4a3a26 });
+const elevPostGeo = new THREE.BoxGeometry(0.12, 1, 0.12);
+const elevPostMat = new THREE.MeshLambertNodeMaterial({ color: 0x2a2018 });
 
 // Generation runs in a WORKER POOL (pure data, transferable typed arrays) —
 // islands of a chain generate in parallel; the main thread only fills instance
@@ -243,20 +264,21 @@ async function forge(newSeed: number): Promise<void> {
   //    over the abyss (step out and you fall).
   const tok = ++forgeToken;
   const h32 = (a: number, b: number) => (Math.imul(seed ^ a, 0x9e3779b1) ^ Math.imul(b, 0x85ebca6b)) >>> 0;
-  const macro: Array<{ mi: number; mj: number; parent: number; dirFromParent: number }> = [
-    { mi: 0, mj: 0, parent: -1, dirFromParent: -1 },
+  const macro: Array<{ mi: number; mj: number; mk: number; parent: number; dirFromParent: number }> = [
+    { mi: 0, mj: 0, mk: 0, parent: -1, dirFromParent: -1 },
   ];
-  const occupied = new Set(["0,0"]);
-  const MDX = [1, -1, 0, 0], MDZ = [0, 0, 1, -1];
+  const occupied = new Set(["0,0,0"]);
+  // dirs 0-3 horizontal; dir 4 stacks a block a LAYER above, joined by elevator
+  const MDX = [1, -1, 0, 0, 0], MDZ = [0, 0, 1, -1, 0], MDK = [0, 0, 0, 0, 1];
   for (let k = 1; k < nIsl; k++) {
     let placedOk = false;
-    for (let attempt = 0; attempt < 12 && !placedOk; attempt++) {
+    for (let attempt = 0; attempt < 14 && !placedOk; attempt++) {
       const p = h32(k, attempt) % macro.length;
-      const d = h32(k, attempt + 100) % 4;
-      const mi = macro[p].mi + MDX[d], mj = macro[p].mj + MDZ[d];
-      if (occupied.has(`${mi},${mj}`)) continue;
-      occupied.add(`${mi},${mj}`);
-      macro.push({ mi, mj, parent: p, dirFromParent: d });
+      const d = h32(k, attempt + 100) % 5;
+      const mi = macro[p].mi + MDX[d], mj = macro[p].mj + MDZ[d], mk = macro[p].mk + MDK[d];
+      if (occupied.has(`${mi},${mj},${mk}`)) continue;
+      occupied.add(`${mi},${mj},${mk}`);
+      macro.push({ mi, mj, mk, parent: p, dirFromParent: d });
       placedOk = true;
     }
     if (!placedOk) break;
@@ -266,8 +288,10 @@ async function forge(newSeed: number): Promise<void> {
   const gateSets: Array<Set<number>> = macro.map(() => new Set());
   for (let k = 1; k < macro.length; k++) {
     const d = macro[k].dirFromParent;
-    gateSets[macro[k].parent].add(d);
-    gateSets[k].add(d ^ 1);
+    if (d < 4) { // vertical neighbors join by elevator, not gate
+      gateSets[macro[k].parent].add(d);
+      gateSets[k].add(d ^ 1);
+    }
   }
   for (let k = 0; k < macro.length; k++) {
     for (let d = 0; d < 4; d++) {
@@ -297,6 +321,9 @@ async function forge(newSeed: number): Promise<void> {
   worlds.length = 0; // slot pools persist; pruneSlots() hides the unused ones
   walkIslands.length = 0;
   walkLinks.length = 0;
+  elevators.length = 0;
+  for (const m of elevMeshes) m.removeFromParent();
+  elevMeshes.length = 0;
   const activeSlots = new Set<number>();
   // building an island costs 10-20ms of instance filling on the main thread —
   // spread the chain across frames instead of stalling one frame with all of it
@@ -323,26 +350,34 @@ async function forge(newSeed: number): Promise<void> {
   for (let i = 0; i < layouts.length; i++) {
     const l = layouts[i];
     const half = (l.N * CELL) / 2;
-    const oy = i === 0 ? 0 : (((h32(i, 141) >>> 4) % 1000) / 1000 - 0.5) * 5.2;
     let ox = 0, oz = 0;
+    let oy = 0;
     const pIdx = macro[i].parent;
     if (pIdx >= 0) {
       const d = macro[i].dirFromParent;
       const pp = positions[pIdx];
-      const pHalf = (layouts[pIdx].N * CELL) / 2;
-      const fx = [1, -1, 0, 0][d], fz = [0, 0, 1, -1][d];
-      ox = pp.ox + fx * (pHalf + ISLAND_GAP + half);
-      oz = pp.oz + fz * (pHalf + ISLAND_GAP + half);
-      // slide on the cross axis so the two gates face each other
-      const pg = layouts[pIdx].gates.find((g) => g.dir === d);
-      const cg = l.gates.find((g) => g.dir === (d ^ 1));
-      if (pg && cg) {
-        if (fx !== 0) {
-          const pz2 = pp.oz + (pg.y - (layouts[pIdx].N - 1) / 2) * CELL;
-          oz = pz2 - (cg.y - (l.N - 1) / 2) * CELL;
-        } else {
-          const px2 = pp.ox + (pg.x - (layouts[pIdx].N - 1) / 2) * CELL;
-          ox = px2 - (cg.x - (l.N - 1) / 2) * CELL;
+      if (d === 4) {
+        // a LAYER above its parent — same footprint, joined by elevator
+        ox = pp.ox;
+        oz = pp.oz;
+        oy = pp.oy + 15 + ((h32(i, 141) % 1000) / 1000) * 4;
+      } else {
+        const pHalf = (layouts[pIdx].N * CELL) / 2;
+        const fx = [1, -1, 0, 0][d], fz = [0, 0, 1, -1][d];
+        ox = pp.ox + fx * (pHalf + ISLAND_GAP + half);
+        oz = pp.oz + fz * (pHalf + ISLAND_GAP + half);
+        oy = pp.oy + (((h32(i, 141) >>> 4) % 1000) / 1000 - 0.5) * 5.2;
+        // slide on the cross axis so the two gates face each other
+        const pg = layouts[pIdx].gates.find((g) => g.dir === d);
+        const cg = l.gates.find((g) => g.dir === (d ^ 1));
+        if (pg && cg) {
+          if (fx !== 0) {
+            const pz2 = pp.oz + (pg.y - (layouts[pIdx].N - 1) / 2) * CELL;
+            oz = pz2 - (cg.y - (l.N - 1) / 2) * CELL;
+          } else {
+            const px2 = pp.ox + (pg.x - (layouts[pIdx].N - 1) / 2) * CELL;
+            ox = px2 - (cg.x - (l.N - 1) / 2) * CELL;
+          }
         }
       }
     }
@@ -372,6 +407,44 @@ async function forge(newSeed: number): Promise<void> {
     minX = Math.min(minX, ox - half); maxX = Math.max(maxX, ox + half);
     minZ = Math.min(minZ, oz - half); maxZ = Math.max(maxZ, oz + half);
 
+    // elevator joining a stacked pair: a cell that is open floor in BOTH
+    // layers, with no support pillar under the upper one (a clear shaft)
+    if (pIdx >= 0 && macro[i].dirFromParent === 4) {
+      const par = walkIslands[pIdx];
+      const cN = l.N, pN = par.l.N;
+      outer:
+      for (let r = 0; r < cN / 2; r++) {
+        for (let gy = Math.max(1, ((cN - 1) >> 1) - r); gy <= Math.min(cN - 2, ((cN - 1) >> 1) + r); gy++) {
+          for (let gx = Math.max(1, ((cN - 1) >> 1) - r); gx <= Math.min(cN - 2, ((cN - 1) >> 1) + r); gx++) {
+            const cc = gy * cN + gx;
+            if (l.kind[cc] !== FLOOR || l.stairMask[cc] || l.support[cc] !== l.tier[cc]) continue;
+            const wxp = ox + (gx - (cN - 1) / 2) * CELL;
+            const wzp = oz + (gy - (cN - 1) / 2) * CELL;
+            const pgx = Math.round((wxp - par.ox) / CELL + (pN - 1) / 2);
+            const pgy = Math.round((wzp - par.oz) / CELL + (pN - 1) / 2);
+            if (pgx < 1 || pgy < 1 || pgx >= pN - 1 || pgy >= pN - 1) continue;
+            const pc = pgy * pN + pgx;
+            if (par.l.kind[pc] !== FLOOR || par.l.stairMask[pc]) continue;
+            const y0 = par.oy + par.l.tier[pc] * TH_W + 0.16;
+            const y1 = oy + l.tier[cc] * TH_W + 0.16;
+            const platform = new THREE.Mesh(elevPlatGeo, elevPlatMat);
+            platform.position.set(wxp, y0, wzp);
+            platform.castShadow = true;
+            scene.add(platform);
+            elevMeshes.push(platform);
+            for (const [px2, pz2] of [[-0.9, -0.9], [0.9, -0.9], [-0.9, 0.9], [0.9, 0.9]]) {
+              const post = new THREE.Mesh(elevPostGeo, elevPostMat);
+              post.scale.y = y1 - y0 + 2.4;
+              post.position.set(wxp + px2, (y0 + y1) / 2 + 0.6, wzp + pz2);
+              scene.add(post);
+              elevMeshes.push(post);
+            }
+            elevators.push({ x: wxp, z: wzp, y0, y1, period: 7, phase: (i * 1.7) % 6.28, platform });
+            break outer;
+          }
+        }
+      }
+    }
     if (pIdx >= 0) {
       const from = gateWorld(pIdx, macro[i].dirFromParent);
       const to = gateWorld(i, macro[i].dirFromParent ^ 1);
@@ -505,6 +578,9 @@ async function boot(): Promise<void> {
       controls.update();
     }
     for (const w of worlds) w.tick(t);
+    for (const e of elevators) {
+      e.platform.position.y = e.y0 + (e.y1 - e.y0) * (0.5 - 0.5 * Math.cos((t / e.period) * 6.2832 + e.phase));
+    }
     // distance LOD: far islands drop their small-detail layers
     for (let i = 0; i < walkIslands.length; i++) {
       const isl = walkIslands[i];

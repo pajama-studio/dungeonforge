@@ -89,6 +89,7 @@ const ctx: Ctx = {
     endless: false,
     lastExtent: 0,
     token: 0,
+    prCap: PR_BASE,
   },
 };
 const endless = new EndlessWorld(ctx);
@@ -100,7 +101,7 @@ buildPanel(ctx.genParams, {
     ctx.state.endless = on;
     endless.reset();
     if (on) {
-      renderer.setPixelRatio(Math.min(devicePixelRatio, PR_LARGE));
+      ctx.state.prCap = PR_LARGE;
       ctx.worlds.length = 0;
       ctx.walk.clear();
       ctx.stairs.clear();
@@ -109,7 +110,7 @@ buildPanel(ctx.genParams, {
       camera.position.set(50, 42, 70);
       ctx.state.lastExtent = 0;
     } else {
-      renderer.setPixelRatio(Math.min(devicePixelRatio, PR_BASE));
+      ctx.state.prCap = PR_BASE;
       pruneSlots(new Set());
       void forge(ctx, ctx.state.seed);
     }
@@ -192,6 +193,30 @@ function exitPlay(): void {
 // the boundary never thrashes geometry swaps
 const slotDetail = new Map<number, boolean>();
 
+// adaptive resolution: fill rate is the budget. Walk pixelRatio in small
+// steps between 1.0 and the mode cap, driven by an EMA of the frame time —
+// heavy views trade a little sharpness for smoothness, light views win it
+// back. Adjust at most once a second (setPixelRatio reallocates targets).
+let dprNow = Math.min(devicePixelRatio, PR_BASE);
+let frameEma = 16.7;
+let lastDprAdj = 0;
+function adaptResolution(t: number, rawMs: number): void {
+  frameEma = frameEma * 0.95 + Math.min(rawMs, 50) * 0.05; // clamp forge hitches
+  if (t - lastDprAdj < 1) return;
+  const cap = Math.min(devicePixelRatio, ctx.state.prCap);
+  let next = dprNow;
+  // floor 0.85: the controller only walks down while frames are actually
+  // over budget, and under bloom + fog the softness is invisible
+  if (frameEma > 19 && dprNow > 0.85) next = Math.max(0.85, dprNow - 0.125);
+  else if (frameEma < 14 && dprNow < cap) next = Math.min(cap, dprNow + 0.125);
+  else if (dprNow > cap) next = cap;
+  if (next !== dprNow) {
+    dprNow = next;
+    renderer.setPixelRatio(dprNow);
+    lastDprAdj = t;
+  }
+}
+
 async function boot(): Promise<void> {
   await renderer.init();
   // the forge streams islands in one per frame; the loop starts as soon as the
@@ -208,8 +233,10 @@ async function boot(): Promise<void> {
   let lastT = performance.now() / 1000;
   renderer.setAnimationLoop(() => {
     const t = performance.now() / 1000;
+    const rawMs = (t - lastT) * 1000;
     const dt = Math.min(0.05, t - lastT);
     lastT = t;
+    adaptResolution(t, rawMs);
     if (playing && player) {
       const f = (keys.has("w") || keys.has("arrowup") ? 1 : 0) - (keys.has("s") || keys.has("arrowdown") ? 1 : 0);
       const s = (keys.has("d") || keys.has("arrowright") ? 1 : 0) - (keys.has("a") || keys.has("arrowleft") ? 1 : 0);
@@ -232,10 +259,16 @@ async function boot(): Promise<void> {
       controls.update();
     }
     for (const w of ctx.worlds) w.tick(t);
-    // distance LOD: far islands drop their small-detail layers
+    // distance LOD: far islands drop their small-detail layers. TRUE 3D
+    // distance — a camera hovering 200 units above a spire is far from every
+    // island even when its xz distance is small
     for (const isl of ctx.walk.islands) {
       const half = (isl.l.N * CELL) / 2;
-      const d2 = Math.hypot(camera.position.x - isl.ox, camera.position.z - isl.oz) - half;
+      const d2 = Math.hypot(
+        camera.position.x - isl.ox,
+        camera.position.y - (isl.oy + 8),
+        camera.position.z - isl.oz,
+      ) - half;
       const prev = slotDetail.get(isl.slot);
       const want = prev === undefined ? d2 < LOD_NEAR : (prev ? d2 < LOD_FAR : d2 < LOD_NEAR);
       if (want !== prev) {

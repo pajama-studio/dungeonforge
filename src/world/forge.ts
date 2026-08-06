@@ -35,7 +35,7 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
       const needStack = nIsl >= 3 && k === nIsl - 1 && !macro.some((m) => m.dirFromParent === 4);
       const d = needStack && attempt < 7 ? 4 : h32(k, attempt + 100) % 5;
       const mi = macro[p].mi + MDX[d], mj = macro[p].mj + MDZ[d], mk = macro[p].mk + MDK[d];
-      if (mk > 2) continue; // three layers max — sky castles need a skyline, not a ladder
+      if (mk > 5) continue; // six layers max — a proper sky-spire, not an endless ladder
       if (occupied.has(`${mi},${mj},${mk}`)) continue;
       occupied.add(`${mi},${mj},${mk}`);
       macro.push({ mi, mj, mk, parent: p, dirFromParent: d });
@@ -86,6 +86,7 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   // tree layout: place blocks in BFS order along their parent edges, sliding
   // each child so the two facing gates line up; bridge every parent-child pair
   let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  let maxOy = 0;
   const allLights: LightSpec[] = [];
   const positions: Array<{ ox: number; oy: number; oz: number }> = [];
 
@@ -125,6 +126,7 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
       }
     }
     positions.push({ ox, oy, oz });
+    maxOy = Math.max(maxOy, oy);
 
     const w = buildWorld(l, i, ctx.scene, macro[i].dirFromParent === 4 ? 0.22 : 1);
     activeSlots.add(i);
@@ -164,19 +166,22 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   const centerX = (minX + maxX) / 2;
   const centerZ = (minZ + maxZ) / 2;
   const half = Math.max((maxX - minX) / 2, (maxZ - minZ) / 2, (layouts[0].N * CELL) / 2) + 4;
-  ctx.env.fit(half * 1.2, centerX, centerZ);
+  const top = maxOy + 34; // stack base height + one block's worth of towers
+  ctx.env.fit(half * 1.2, centerX, centerZ, top);
   // the far plane must outrun the chain: a fixed 400 sliced distant blocks
   // off mid-air (a clean diagonal cut) once chains spanned more than ~400
   // world units — scale it with the extent, past controls.maxDistance
-  ctx.camera.far = Math.max(400, half * 6.5);
+  ctx.camera.far = Math.max(400, half * 6.5 + top * 2);
   ctx.camera.updateProjectionMatrix();
-  if (Math.abs(state.lastExtent - half) > 1) {
-    ctx.controls.target.set(centerX, 3 * TH, centerZ);
-    ctx.camera.position.set(centerX + half * 0.75, half * 0.62, centerZ + half * 1.1);
-    ctx.controls.maxDistance = half * 5;
-    state.lastExtent = half;
-    // fill rate is the budget: bigger worlds render at a slightly lower ratio
-    ctx.renderer.setPixelRatio(Math.min(devicePixelRatio, half > 95 ? PR_LARGE : PR_BASE));
+  const extent = half + top * 0.5; // reframe on height changes too (tall spires)
+  if (Math.abs(state.lastExtent - extent) > 1) {
+    ctx.controls.target.set(centerX, 3 * TH + top * 0.18, centerZ);
+    ctx.camera.position.set(centerX + half * 0.75, half * 0.62 + top * 0.4, centerZ + half * 1.1);
+    ctx.controls.maxDistance = (half + top * 0.5) * 5;
+    state.lastExtent = extent;
+    // fill rate is the budget: bigger worlds get a lower resolution ceiling
+    // (the adaptive-DPR loop in main.ts walks the actual ratio)
+    state.prCap = half > 95 ? PR_LARGE : PR_BASE;
   }
   ctx.env.bakeShadows();
   // the forge-rise animation is still settling — re-bake once it lands

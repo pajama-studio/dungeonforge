@@ -31,7 +31,10 @@ export function createPost(
   const distGeo = delta.length();
   const maxDist = distGeo.min(110);
   const rd = delta.div(distGeo);
-  const STEPS = 7;
+  // 5 steps (was 7): the raymarch is a fixed full-screen cost — three noise
+  // octaves per step — and the jittered dither hides the coarser sampling.
+  // Density is scaled by 7/5 so the fog itself doesn't thin.
+  const STEPS = 5;
   const stepLen = maxDist.div(STEPS);
   const jitter = hash(screenUV.x.mul(1213.7).add(screenUV.y.mul(771.1))); // static dither hides banding
   const trans = float(1).toVar();
@@ -40,7 +43,7 @@ export function createPost(
     const p = ro.add(rd.mul(t));
     const hFall = smoothstep(2.8, -5.5, p.y); // slab: dense below the fortress floor, gone above
     const n = triNoise3D(p.mul(0.021).add(vec3(time.mul(0.009), 0, time.mul(0.006))), 0.3, time);
-    const dens = hFall.mul(n.mul(0.8).add(0.2)).mul(0.05);
+    const dens = hFall.mul(n.mul(0.8).add(0.2)).mul(0.07);
     trans.mulAssign(exp(dens.mul(stepLen).negate()));
   });
   const scatter = rd.dot(vec3(MOON_DIR.x, MOON_DIR.y, MOON_DIR.z)).clamp(0, 1).pow(5).mul(0.5).add(1);

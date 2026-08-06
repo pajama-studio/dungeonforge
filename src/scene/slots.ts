@@ -45,6 +45,11 @@ function fillInstanced(mesh: THREE.InstancedMesh, list: InstList): void {
   (mesh.instanceColor.array as Float32Array).set(list.cols.subarray(0, list.count * 3));
   mesh.instanceColor.needsUpdate = true;
   mesh.count = list.count;
+  // empty lists happen constantly (most islands have no red chamber, no blue
+  // flames, no crates…) — an empty-but-visible mesh still costs a render
+  // object every frame, so hide it and let setSlotDetail respect that
+  (mesh.userData as { n: number }).n = list.count;
+  mesh.visible = list.count > 0;
   // manual bounds from the matrices' translation columns — computeBoundingSphere
   // decomposes every instance matrix and costs 100ms+ on big islands
   if (list.count > 0) {
@@ -97,7 +102,7 @@ export function setSlotDetail(slot: number, visible: boolean): void {
   if (!p) return;
   for (const k of DETAIL_KEYS) {
     const m = p.meshes.get(k);
-    if (m) m.visible = visible;
+    if (m) m.visible = visible && ((m.userData as { n?: number }).n ?? 0) > 0;
   }
   const R = getKit();
   const blocks = p.meshes.get("blocks");

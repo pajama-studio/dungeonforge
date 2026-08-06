@@ -512,7 +512,7 @@ export function buildWorld(l: Layout): WorldHandle {
           for (const off of [-0.58, 0.58]) {
             stoneColor.setHSL(0.09, 0.34, 0.38 + hash2(seed, c, 9) * 0.1);
             merlons.push(inst(
-              wx(x) + (alongX ? off : 0), wallTop[c] * TH + 0.24, wz(y) + (alongX ? 0 : off),
+              wx(x) + (alongX ? off : 0), wallTop[c] * TH + 0.16, wz(y) + (alongX ? 0 : off),
               0, 0.8, 0.92, 0.8, stoneColor.getHex(),
             ));
           }
@@ -520,7 +520,7 @@ export function buildWorld(l: Layout): WorldHandle {
         if (tower) {
           for (const [mx, mz] of [[-0.6, -0.6], [0.6, -0.6], [-0.6, 0.6], [0.6, 0.6]]) {
             stoneColor.setHSL(0.075, 0.3, 0.38);
-            merlons.push(inst(wx(x) + mx * tower.scale, tower.top * TH + 0.26, wz(y) + mz * tower.scale, 0, 0.9, 1.15, 0.9, stoneColor.getHex()));
+            merlons.push(inst(wx(x) + mx * tower.scale, tower.top * TH + 0.18, wz(y) + mz * tower.scale, 0, 0.9, 1.15, 0.9, stoneColor.getHex()));
           }
         }
       } else if (kind[c] === FLOOR && support[c] < tier[c]) {

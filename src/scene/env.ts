@@ -49,7 +49,7 @@ export function buildEnvironment(scene: THREE.Scene, seed: number): {
   sc.left = -52; sc.right = 52; sc.top = 52; sc.bottom = -52;
   sc.near = 8; sc.far = 150;
   moon.shadow.bias = -0.0006;
-  moon.shadow.radius = 3;
+  moon.shadow.radius = 1; // r=3 blurred small-prop contact shadows into detached "floating" blobs
   moon.shadow.autoUpdate = false; // static scene — bake once per regeneration
   group.add(moon, moon.target);
 

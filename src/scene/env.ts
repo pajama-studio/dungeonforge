@@ -4,7 +4,7 @@
 import * as THREE from "three/webgpu";
 import {
   color, mix, positionWorld, positionWorldDirection, time,
-  fog, densityFogFactor, triNoise3D, float,
+  fog, densityFogFactor, triNoise3D, float, floor as tslFloor, hash, smoothstep, vec3, sin,
 } from "three/tsl";
 import * as BufferGeometryUtils from "three/addons/utils/BufferGeometryUtils.js";
 import { hash2 } from "../gen/rng";
@@ -19,13 +19,24 @@ export function buildEnvironment(scene: THREE.Scene, seed: number): {
   const group = new THREE.Group();
   group.name = "environment";
 
-  // -- Sky: deep navy zenith, faintly glowing horizon.
-  const dirY = positionWorldDirection.y.clamp(-0.35, 1);
-  scene.backgroundNode = mix(
-    color(0x1a2340),
-    color(0x05070f),
-    dirY.add(0.35).div(1.35).pow(0.55),
-  );
+  // -- Sky: deep navy zenith, faintly glowing horizon, salted with stars and
+  //    crowned by the moon (HDR values — the bloom pass gives it its halo).
+  {
+    const dir = positionWorldDirection;
+    const dirY = dir.y.clamp(-0.35, 1);
+    const base = mix(color(0x1a2340), color(0x05070f), dirY.add(0.35).div(1.35).pow(0.55));
+    const cell = tslFloor(dir.mul(170));
+    const starH = hash(cell.x.mul(7.91).add(cell.y.mul(37.7)).add(cell.z.mul(113.3)));
+    const twinkle = sin(hash(starH.mul(97.3)).mul(6.2832).add(time.mul(0.9))).mul(0.3).add(0.7);
+    const stars = smoothstep(0.9962, 0.9995, starH).mul(twinkle).mul(dir.y.clamp(0, 1).pow(0.4)).mul(1.4);
+    const moonDir = new THREE.Vector3(-46, 48, -22).normalize();
+    const md = dir.dot(vec3(moonDir.x, moonDir.y, moonDir.z)).clamp(0, 1);
+    const disc = smoothstep(0.99955, 0.99985, md).mul(2.6);
+    const halo = md.pow(220).mul(0.5);
+    scene.backgroundNode = base
+      .add(vec3(stars))
+      .add(color(0xdfe8ff).mul(disc.add(halo)));
+  }
 
   // -- Fog: animated ground fog pooling below the fortress + gentle distance haze.
   const fogColor = color(0x132a41); // cool teal-blue mist

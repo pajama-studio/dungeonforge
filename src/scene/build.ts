@@ -111,6 +111,11 @@ interface SharedRes {
   leafMat: THREE.MeshLambertNodeMaterial;
   wispGeo: THREE.BufferGeometry;
   runeGeo: THREE.BufferGeometry;
+  emberGeo: THREE.BufferGeometry;
+  emberMat: THREE.MeshBasicNodeMaterial;
+  beamGeo: THREE.BufferGeometry;
+  beamMatBlue: THREE.MeshBasicNodeMaterial;
+  beamMatWarm: THREE.MeshBasicNodeMaterial;
   vineMat: THREE.MeshLambertNodeMaterial;
   mossMat: THREE.MeshLambertNodeMaterial;
   wispMat: THREE.MeshBasicNodeMaterial;
@@ -464,6 +469,44 @@ function getShared(): SharedRes {
       .mul(smoothstep(0.0, 0.1, v));
   }
 
+  // drifting embers: tiny crossed quads on a looping rise, sine-wobbling
+  const emberBase = new THREE.PlaneGeometry(0.09, 0.09);
+  const emberCross = emberBase.clone().rotateY(Math.PI / 2);
+  const emberGeo = BufferGeometryUtils.mergeGeometries([emberBase, emberCross]);
+  emberBase.dispose(); emberCross.dispose();
+  const emberMat = new THREE.MeshBasicNodeMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+  });
+  {
+    const ph = hash(instanceIndex.toFloat().add(0.157)).mul(6.2832);
+    const life = fract(time.mul(0.055).add(hash(instanceIndex.toFloat().add(0.31))));
+    const rise = life.mul(5.5);
+    const wob = vec3(
+      sin(time.mul(0.9).add(ph)).mul(0.6),
+      rise,
+      sin(time.mul(0.7).add(ph.mul(1.7))).mul(0.6),
+    );
+    emberMat.positionNode = positionLocal.add(wob);
+    const fadeIO = sin(life.mul(3.1416));
+    const rad = float(1).sub(uv().sub(0.5).length().mul(2)).clamp(0, 1);
+    emberMat.colorNode = mix(color(0xff9a3a), color(0xffd9a0), hash(ph)).mul(rad).mul(fadeIO).mul(2.2);
+    emberMat.opacityNode = rad.mul(fadeIO);
+  }
+
+  // landmark light beams (portal / beacon): open cylinders fading with height
+  const beamGeo = new THREE.CylinderGeometry(0.9, 1.6, 16, 12, 1, true);
+  beamGeo.translate(0, 8, 0);
+  const makeBeamMat = (c: number, strength: number) => {
+    const m = new THREE.MeshBasicNodeMaterial({
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+    });
+    const v = uv().y; // 0 bottom → 1 top on the open cylinder
+    const shimmer = sin(time.mul(1.3).add(uv().x.mul(12.56))).mul(0.15).add(0.85);
+    m.colorNode = color(c).mul(float(1).sub(v).pow(1.8)).mul(shimmer).mul(strength);
+    m.opacityNode = float(1).sub(v).pow(2).mul(0.16);
+    return m;
+  };
+
   // glowing rune architrave above the temple door
   const runeGeo = new THREE.PlaneGeometry(2.6, 0.42);
   const runeMat = new THREE.MeshBasicNodeMaterial({
@@ -505,6 +548,11 @@ function getShared(): SharedRes {
     colGeo,
     leafGeo,
     creeperGeo,
+    emberGeo,
+    emberMat,
+    beamGeo,
+    beamMatBlue: makeBeamMat(0x3e7bff, 0.9),
+    beamMatWarm: makeBeamMat(0xffc26a, 0.7),
     brambleGeoA: buildBrambleGeo(0xb4a3b1e),
     brambleGeoB: buildBrambleGeo(0x7708a2),
     brambleMat: new THREE.MeshLambertNodeMaterial(),
@@ -1210,6 +1258,39 @@ export function buildWorld(l: Layout): WorldHandle {
       wisps.push(inst(a.x, a.y + 0.15, a.z, h * 6.28, 0.8 + h * 0.5, 0.8 + h * 0.6, 0.8 + h * 0.5, 0xffffff));
     }
     group.add(makeInstanced(R.wispGeo, R.wispMat, wisps, false));
+  }
+  // drifting embers: a few near every flame + strays wandering the corridors
+  {
+    const embers: Inst[] = [];
+    for (const a of flameAnchors) {
+      const h = hash2(seed, Math.round(a.x * 11 + a.z * 5), 98);
+      const n = 2 + Math.floor(h * 2);
+      for (let k = 0; k < n; k++) {
+        const hk = hash3(seed, Math.round(a.x * 3), k, 99);
+        embers.push(inst(a.x + (hk - 0.5) * 1.4, a.y - 0.4, a.z + (h - 0.5) * 1.4, 0, 0.6 + hk, 0.6 + hk, 0.6 + hk, 0xffffff));
+      }
+    }
+    for (let k = 0; k < 40; k++) {
+      const hx = hash2(seed, k, 104), hz = hash2(seed, k, 105);
+      const gx2 = 1 + Math.floor(hx * (N - 2)), gy2 = 1 + Math.floor(hz * (N - 2));
+      const c2 = gi(gx2, gy2);
+      if (kind[c2] !== FLOOR) continue;
+      embers.push(inst(wx(gx2), tier[c2] * TH + 0.6, wz(gy2), 0, 0.5 + hx * 0.7, 0.5 + hx * 0.7, 0.5 + hx * 0.7, 0xffffff));
+    }
+    group.add(makeInstanced(R.emberGeo, R.emberMat, embers, false));
+  }
+  // landmark beams: the portal breathes blue into the night, the beacon gold
+  if (l.door) {
+    const beam = new THREE.Mesh(R.beamGeo, R.beamMatBlue);
+    beam.position.set(wx(l.door.x), l.door.tier * TH + 2.2, wz(l.door.y));
+    group.add(beam);
+  }
+  for (const t of l.towers) {
+    if (!t.beacon) continue;
+    const beam = new THREE.Mesh(R.beamGeo, R.beamMatWarm);
+    beam.scale.set(0.55, 0.8, 0.55);
+    beam.position.set(wx(t.x), t.top * TH + 0.8, wz(t.y));
+    group.add(beam);
   }
 
   // ---------------------------------------------------------------- lights

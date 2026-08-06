@@ -25,8 +25,17 @@ export class Player {
   private heading = 0;
   private vy = 0;
   falling = false;
+  climbing = false;
   lastSafeX = 0;
   lastSafeZ = 0;
+
+  /** first-person: hide the body (the lantern stays with you) */
+  setFirstPerson(fp: boolean): void {
+    if (this.model) this.model.visible = !fp;
+    for (const c of this.group.children) {
+      if ((c as THREE.Mesh).geometry instanceof THREE.CircleGeometry) c.visible = !fp;
+    }
+  }
   readonly lantern: THREE.PointLight;
 
   constructor() {
@@ -69,6 +78,11 @@ export class Player {
 
   update(dt: number, input: PlayerInput, camYaw: number, ground: GroundSampler): void {
     const p = this.group.position;
+    if (this.climbing) {
+      // the ladder owns vertical motion; just keep the animation alive
+      this.mixer?.update(dt);
+      return;
+    }
     if (this.falling) {
       // stepped through a broken sky-door — the abyss takes it from here
       this.vy -= 30 * dt;

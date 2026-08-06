@@ -129,31 +129,64 @@ interface IslandWalk { l: Layout; ox: number; oy: number; oz: number; slot: numb
 interface LinkWalk { a: THREE.Vector3; b: THREE.Vector3; sag: number }
 const walkIslands: IslandWalk[] = [];
 const walkLinks: LinkWalk[] = [];
-interface Ladder { x: number; z: number; y0: number; y1: number }
-const ladders: Ladder[] = [];
+// Square spiral staircase (old-stairwell style): flights wind around a square
+// core with corner turns. Walking up is FREE — the ground sampler returns the
+// continuous spiral height, so the player simply walks the flights.
+const STAIR_A = 1.35;   // outer half-width of the stair square
+const STAIR_M = 0.95;   // mid-ring half-width (tread centerline)
+const STAIR_CORE = 0.5; // solid core half-width
+const STAIR_STEP = 0.46;
+const STAIR_RISE = 0.27;
+interface StairTower { x: number; z: number; y0: number; y1: number }
+const stairTowers: StairTower[] = [];
 const elevMeshes: THREE.Object3D[] = [];
 
-const ladderMat = new THREE.MeshLambertNodeMaterial({ color: 0x4a3624 });
-function buildLadder(x: number, z: number, y0: number, y1: number): void {
-  const len = y1 - y0 + 1.4;
+const stairMat = new THREE.MeshLambertNodeMaterial({ color: 0x8a7a62 });
+function buildStairTower(x: number, z: number, y0: number, y1: number): void {
   const parts: THREE.BufferGeometry[] = [];
-  for (const side of [-0.38, 0.38]) {
-    const rail = new THREE.BoxGeometry(0.07, len, 0.07);
-    rail.translate(side, len / 2, 0);
-    parts.push(rail);
+  const m = STAIR_M, P = 8 * m;
+  const rc = (STAIR_CORE + STAIR_A) / 2; // radial centerline of the treads
+  const span = STAIR_A - STAIR_CORE + 0.2;
+  const nSteps = Math.ceil((y1 - y0 + 0.6) / STAIR_RISE);
+  for (let i = 0; i < nSteps; i++) {
+    const s = (i * STAIR_STEP) % P;
+    const side = Math.floor(s / (2 * m));
+    const along = (s % (2 * m)) - m;
+    // sides 0/2 run along x (tread depth radial in z); sides 1/3 run along z
+    const tread = side % 2 === 0
+      ? new THREE.BoxGeometry(0.6, 0.12, span)
+      : new THREE.BoxGeometry(span, 0.12, 0.6);
+    if (side === 0) tread.translate(along, i * STAIR_RISE - 0.3, -rc);
+    else if (side === 1) tread.translate(rc, i * STAIR_RISE - 0.3, along);
+    else if (side === 2) tread.translate(-along, i * STAIR_RISE - 0.3, rc);
+    else tread.translate(-rc, i * STAIR_RISE - 0.3, -along);
+    parts.push(tread);
   }
-  for (let yy = 0.3; yy < len; yy += 0.48) {
-    const rung = new THREE.BoxGeometry(0.84, 0.055, 0.055);
-    rung.translate(0, yy, 0);
-    parts.push(rung);
-  }
+  // solid square core the flights wind around
+  const core = new THREE.BoxGeometry(STAIR_CORE * 2, y1 - y0 + 2.2, STAIR_CORE * 2);
+  core.translate(0, (y1 - y0) / 2 + 0.4, 0);
+  parts.push(core);
   const geo = BufferGeometryUtils.mergeGeometries(parts);
   for (const g of parts) g.dispose();
-  const mesh = new THREE.Mesh(geo, ladderMat);
-  mesh.position.set(x, y0 - 0.4, z + 0.45);
+  const mesh = new THREE.Mesh(geo, stairMat);
+  mesh.position.set(x, y0, z);
+  mesh.castShadow = true;
   scene.add(mesh);
   elevMeshes.push(mesh);
-  ladders.push({ x, z, y0, y1 });
+  stairTowers.push({ x, z, y0, y1 });
+}
+
+/** analytic spiral height at (dx,dz) for candidate loop k */
+function stairPerimeterS(dx: number, dz: number): number {
+  const m = STAIR_M;
+  const cx2 = Math.max(-m, Math.min(m, dx)), cz2 = Math.max(-m, Math.min(m, dz));
+  const ax2 = Math.abs(dx), az2 = Math.abs(dz);
+  if (az2 >= ax2) {
+    if (dz < 0) return cx2 + m;                 // side 0
+    return 4 * m + (m - cx2);                   // side 2
+  }
+  if (dx > 0) return 2 * m + (cz2 + m);         // side 1
+  return 6 * m + (m - cz2);                     // side 3
 }
 
 // stacked layers overlap in xz — candidates are ranked by |y - refY| so the
@@ -161,6 +194,22 @@ function buildLadder(x: number, z: number, y0: number, y1: number): void {
 const sampleGround: GroundSampler = (x, z, refY = 0) => {
   let best: { y: number; ok: boolean; solid?: boolean } | null = null;
   let bestScore = Infinity;
+  // square spiral staircases: analytic height on the winding flights, loop
+  // index disambiguated by refY (same xz repeats every revolution)
+  for (const st of stairTowers) {
+    const dx = x - st.x, dz = z - st.z;
+    const rInf = Math.max(Math.abs(dx), Math.abs(dz));
+    if (rInf > STAIR_A + 0.2) continue;
+    if (rInf < STAIR_CORE + 0.05) { if (bestScore > 1) { bestScore = 1; best = { y: 0, ok: false, solid: true }; } continue; }
+    const P = 8 * STAIR_M;
+    const s = stairPerimeterS(dx, dz);
+    const slope = STAIR_RISE / STAIR_STEP;
+    const kMax = Math.ceil((st.y1 - st.y0) / (P * slope));
+    const k = Math.max(0, Math.min(kMax, Math.round(((refY - st.y0) / slope - s) / P)));
+    const y = Math.min(st.y1, Math.max(st.y0, st.y0 + (k * P + s) * slope));
+    const score = Math.abs(refY - y);
+    if (score < bestScore) { bestScore = score; best = { y, ok: true }; }
+  }
   for (const isl of walkIslands) {
     const { l, ox, oz } = isl;
     const gx = Math.round((x - ox) / CELL + (l.N - 1) / 2);
@@ -260,7 +309,7 @@ function generateAsync(s: number, overrides: Partial<Params> = {}): Promise<Layo
     if (endless) {
       renderer.setPixelRatio(Math.min(devicePixelRatio, 1.25));
       worlds.length = 0; walkIslands.length = 0; walkLinks.length = 0;
-      ladders.length = 0;
+      stairTowers.length = 0;
       for (const m of elevMeshes) m.removeFromParent();
       elevMeshes.length = 0;
       pruneSlots(new Set());
@@ -372,7 +421,7 @@ async function forge(newSeed: number): Promise<void> {
   worlds.length = 0; // slot pools persist; pruneSlots() hides the unused ones
   walkIslands.length = 0;
   walkLinks.length = 0;
-  ladders.length = 0;
+  stairTowers.length = 0;
   for (const m of elevMeshes) m.removeFromParent();
   elevMeshes.length = 0;
   const activeSlots = new Set<number>();
@@ -479,7 +528,7 @@ async function forge(newSeed: number): Promise<void> {
             if (par.l.kind[pc] !== FLOOR || par.l.stairMask[pc]) continue;
             const y0 = par.oy + par.l.tier[pc] * TH_W + 0.16;
             const y1 = oy + l.tier[cc] * TH_W + 0.16;
-            buildLadder(wxp, wzp, y0, y1);
+            buildStairTower(wxp, wzp, y0, y1);
             break outer;
           }
         }
@@ -567,7 +616,7 @@ async function forgeCube(): Promise<void> {
   worlds.length = 0;
   walkIslands.length = 0;
   walkLinks.length = 0;
-  ladders.length = 0;
+  stairTowers.length = 0;
   for (const m of elevMeshes) m.removeFromParent();
   elevMeshes.length = 0;
   const activeSlots = new Set<number>();
@@ -644,7 +693,7 @@ async function forgeCube(): Promise<void> {
             if (par.l.kind[pc] !== FLOOR || par.l.stairMask[pc]) continue;
             const y0 = par.oy + par.l.tier[pc] * TH_W + 0.16;
             const y1 = chi.oy + chi.l.tier[cc] * TH_W + 0.16;
-            buildLadder(wxp, wzp, y0, y1);
+            buildStairTower(wxp, wzp, y0, y1);
             break outer;
           }
         }
@@ -893,21 +942,7 @@ async function boot(): Promise<void> {
       const f = (keys.has("w") || keys.has("arrowup") ? 1 : 0) - (keys.has("s") || keys.has("arrowdown") ? 1 : 0);
       const s = (keys.has("d") || keys.has("arrowright") ? 1 : 0) - (keys.has("a") || keys.has("arrowleft") ? 1 : 0);
       const p = player.group.position;
-      // ladder climbing: stand at a ladder, W climbs, S descends
-      player.climbing = false;
-      for (const e of ladders) {
-        if (Math.abs(p.x - e.x) < 0.95 && Math.abs(p.z - e.z) < 0.95 && p.y > e.y0 - 0.5 && p.y < e.y1 + 0.5) {
-          if (f !== 0) {
-            player.climbing = true;
-            p.y = Math.min(e.y1 + 0.02, Math.max(e.y0, p.y + f * 3.4 * dt));
-            p.x += (e.x - p.x) * Math.min(1, dt * 8);
-            p.z += (e.z - p.z) * Math.min(1, dt * 8);
-            if (p.y >= e.y1 - 0.01 && f > 0) player.climbing = false; // crest the top and walk off
-          }
-          break;
-        }
-      }
-      player.update(dt, player.climbing ? { f: 0, s: 0 } : { f, s }, camYaw, sampleGround);
+      player.update(dt, { f, s }, camYaw, sampleGround); // spiral stairs are plain walkable ground
       if (p.y < -42) {
         // the abyss returns what it takes — to the last safe footing
         const rx = endless ? player.lastSafeX : spawnX;

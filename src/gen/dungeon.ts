@@ -49,6 +49,8 @@ export interface Params {
   mound: number;
   /** min Chebyshev spacing between torches (smaller = more torches) */
   torchSpacing: number;
+  /** interior maze wall thickness in cells (ramparts/towers stay full width) */
+  wallThin: number;
 }
 
 export const DEFAULT_PARAMS: Params = {
@@ -59,12 +61,14 @@ export const DEFAULT_PARAMS: Params = {
   heightAmp: 3.0,
   mound: 3.7,
   torchSpacing: 5,
+  wallThin: 0.45,
 };
 
 export interface Layout {
   seed: number;
   name: string;
   N: number;
+  params: Params;
   kind: Uint8Array;      // VOID | FLOOR | WALL
   tier: Int8Array;       // floor cells: floor tier. walls/void: 0 (unused)
   wallTop: Int8Array;    // wall cells: top tier
@@ -592,7 +596,7 @@ function attempt(p: Params, seed: number): Layout | string {
   if (stairs.length < 6) return "too flat (no stairs)";
 
   return {
-    seed, name: makeName(rng), N,
+    seed, name: makeName(rng), N, params: p,
     kind, tier, wallTop, wallBase, support,
     stairMask, redMask, templeMask, plazaMask, doorMask,
     stairs, torches, banners, towers, medallions, braziers, bridge, door,

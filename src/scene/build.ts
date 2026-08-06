@@ -327,6 +327,8 @@ export function buildWorld(l: Layout): WorldHandle {
   // Interior maze walls are slimmer than the corridors they divide: thin across
   // their run direction, with fatter posts at crossings. Ramparts (boundary or
   // void-facing), towers and the temple building stay full-width.
+  const thin = Math.min(1, Math.max(0.25, l.params?.wallThin ?? 0.45));
+  const post = Math.min(1, thin + 0.22); // crossing pillars slightly proud of the slabs
   const wallDims = (x: number, y: number): { sx: number; sz: number } => {
     if (x === 0 || y === 0 || x === N - 1 || y === N - 1) return { sx: 1, sz: 1 };
     if (isTempleBuilding(x, y)) return { sx: 1, sz: 1 };
@@ -338,10 +340,10 @@ export function buildWorld(l: Layout): WorldHandle {
       if (kind[n] === FLOOR) (DX[d] !== 0 ? (fx = true) : (fz = true));
     }
     if (voidAdj) return { sx: 1, sz: 1 };
-    if (fx && !fz) return { sx: 0.62, sz: 1 };
-    if (fz && !fx) return { sx: 1, sz: 0.62 };
-    if (fx && fz) return { sx: 0.8, sz: 0.8 };
-    return { sx: 0.9, sz: 0.9 }; // interior junction posts
+    if (fx && !fz) return { sx: thin, sz: 1 };
+    if (fz && !fx) return { sx: 1, sz: thin };
+    if (fx && fz) return { sx: post, sz: post };
+    return { sx: Math.min(1, post + 0.1), sz: Math.min(1, post + 0.1) }; // interior junction posts
   };
   const wallHalf = (x: number, y: number, d: Dir): number => {
     const dims = wallDims(x, y);

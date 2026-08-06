@@ -25,6 +25,8 @@ export class Player {
   private heading = 0;
   private vy = 0;
   falling = false;
+  lastSafeX = 0;
+  lastSafeZ = 0;
   readonly lantern: THREE.PointLight;
 
   constructor() {
@@ -108,7 +110,11 @@ export class Player {
     } else {
       this.setRunning(false);
       const g = ground(p.x, p.z, p.y);
-      if (g.ok) p.y += (g.y - p.y) * Math.min(1, dt * 14);
+      if (g.ok) {
+        p.y += (g.y - p.y) * Math.min(1, dt * 14);
+        this.lastSafeX = p.x;
+        this.lastSafeZ = p.z;
+      }
     }
     this.mixer?.update(dt);
   }

@@ -64,6 +64,9 @@ export interface Params {
   islands: number;
   /** boundary sides that get a gate opening (bridge dock): dirs 0=+x 1=-x 2=+y 3=-y */
   gateSides?: number[];
+  /** requested boundary row per gate side (streaming: neighbors agree on the
+   *  row via a shared edge hash, so independently-generated blocks line up) */
+  gateRows?: number[];
 }
 
 export const DEFAULT_PARAMS: Params = {
@@ -402,8 +405,9 @@ function attempt(p: Params, seed: number): Layout | string {
 
   // -- Stage 5.5: gates — openings in the outer wall where bridges dock.
   const gates: Gate[] = [];
-  for (const sideRaw of p.gateSides ?? []) {
-    const side = sideRaw as Dir;
+  for (let gIdx = 0; gIdx < (p.gateSides ?? []).length; gIdx++) {
+    const side = (p.gateSides ?? [])[gIdx] as Dir;
+    const wantRow = p.gateRows?.[gIdx];
     let best = -1, bestScore = Infinity;
     for (let t = 1; t < N - 1; t++) {
       const bx = side === 0 ? N - 1 : side === 1 ? 0 : t;
@@ -413,7 +417,9 @@ function attempt(p: Params, seed: number): Layout | string {
       const b = gi(bx, by), inn = gi(ix, iy);
       if (kind[b] !== WALL || kind[inn] !== FLOOR) continue;
       if (side === 3 && Math.abs(bx - gcx) < 5) continue; // never punch through the temple backdrop
-      const score = Math.abs(t - (N - 1) / 2) + hash2(seed, b, 121) * 4;
+      const score = wantRow !== undefined
+        ? Math.abs(t - wantRow) * 3 + hash2(seed, b, 121)
+        : Math.abs(t - (N - 1) / 2) + hash2(seed, b, 121) * 4;
       if (score < bestScore) { bestScore = score; best = t; }
     }
     if (best < 0) continue;

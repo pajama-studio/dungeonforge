@@ -124,7 +124,7 @@ function assignLights(specs: LightSpec[]): void {
 
 // walkability data captured at forge time for the third-person mode
 const TH_W = 1.85;
-interface IslandWalk { l: Layout; ox: number; oy: number; oz: number; stairDir: Map<number, number> }
+interface IslandWalk { l: Layout; ox: number; oy: number; oz: number; slot: number; stairDir: Map<number, number> }
 interface LinkWalk { a: THREE.Vector3; b: THREE.Vector3; sag: number }
 const walkIslands: IslandWalk[] = [];
 const walkLinks: LinkWalk[] = [];
@@ -227,6 +227,39 @@ function generateAsync(s: number, overrides: Partial<Params> = {}): Promise<Layo
     { key: "wallThin", label: "wall thickness", min: 0.25, max: 1, step: 0.05 },
     { key: "decay", label: "age & decay", min: 0, max: 1, step: 0.05 },
   ];
+  // endless mode toggle
+  const endlessLabel = document.createElement("label");
+  endlessLabel.textContent = "endless ∞ (roam to generate) ";
+  const endlessBox = document.createElement("input");
+  endlessBox.type = "checkbox";
+  endlessBox.style.width = "auto";
+  endlessLabel.appendChild(endlessBox);
+  panel.appendChild(endlessLabel);
+  endlessBox.addEventListener("change", () => {
+    endless = endlessBox.checked;
+    streamCells.clear();
+    streamPending.clear();
+    freeStreamSlots.length = 0;
+    edgeSlotMap.clear();
+    freeEdgeSlots.length = 0;
+    streamTimer = -10;
+    if (endless) {
+      renderer.setPixelRatio(Math.min(devicePixelRatio, 1.25));
+      worlds.length = 0; walkIslands.length = 0; walkLinks.length = 0;
+      elevators.length = 0;
+      for (const m of elevMeshes) m.removeFromParent();
+      elevMeshes.length = 0;
+      pruneSlots(new Set());
+      controls.target.set(0, 3 * TH, 0);
+      camera.position.set(50, 42, 70);
+      lastExtent = 0;
+    } else {
+      renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+      pruneSlots(new Set());
+      void forge(seed);
+    }
+  });
+
   let debounce = 0;
   for (const d of defs) {
     const label = document.createElement("label");
@@ -255,6 +288,7 @@ const CELL = 2.2;
 const ISLAND_GAP = 15; // world units of abyss between linked blocks
 
 async function forge(newSeed: number): Promise<void> {
+  if (endless) return; // roaming owns the world in endless mode
   seed = newSeed >>> 0 || 1;
   const nIsl = Math.max(1, Math.min(6, Math.round(genParams.islands)));
 
@@ -274,7 +308,9 @@ async function forge(newSeed: number): Promise<void> {
     let placedOk = false;
     for (let attempt = 0; attempt < 14 && !placedOk; attempt++) {
       const p = h32(k, attempt) % macro.length;
-      const d = h32(k, attempt + 100) % 5;
+      // guarantee at least one stacked layer once the chain is big enough
+      const needStack = nIsl >= 4 && k === nIsl - 1 && !macro.some((m) => m.dirFromParent === 4);
+      const d = needStack && attempt < 7 ? 4 : h32(k, attempt + 100) % 5;
       const mi = macro[p].mi + MDX[d], mj = macro[p].mj + MDZ[d], mk = macro[p].mk + MDK[d];
       if (occupied.has(`${mi},${mj},${mk}`)) continue;
       occupied.add(`${mi},${mj},${mk}`);
@@ -390,7 +426,7 @@ async function forge(newSeed: number): Promise<void> {
     worlds.push(w);
     for (const ls of w.lights) allLights.push({ ...ls, x: ls.x + ox, y: ls.y + oy, z: ls.z + oz });
     walkIslands.push({
-      l, ox, oy, oz,
+      l, ox, oy, oz, slot: i,
       stairDir: new Map(l.stairs.map((s) => [s.y * l.N + s.x, s.dir])),
     });
     if (l.bridge) {
@@ -497,6 +533,149 @@ addEventListener("resize", () => {
   renderer.setSize(innerWidth, innerHeight);
 });
 
+// ---- endless streaming mode -------------------------------------------------
+// A 3×3 macro-cell window follows the camera/player. Blocks derive from
+// hash(seed, mi, mj) so the infinite world is consistent; edge hashes decide
+// where neighbors agree to open gates (each side carves the nearest fit — a
+// slightly diagonal bridge just means the masons disagreed). Slot pools make
+// roaming cheap: after the first nine cells, no render object is ever created.
+let endless = false;
+interface StreamCell { key: string; mi: number; mj: number; slot: number; l: Layout; ox: number; oy: number; oz: number; handle: WorldHandle }
+const streamCells = new Map<string, StreamCell>();
+const streamPending = new Set<string>();
+const freeStreamSlots: number[] = [];
+let nextStreamSlot = 10;
+const edgeSlotMap = new Map<string, number>();
+const freeEdgeSlots: number[] = [];
+let nextEdgeSlot = 2000;
+let streamTimer = -10;
+
+const eh32 = (a: number, b: number, salt: number) =>
+  (Math.imul(seed ^ Math.imul(a | 0, 73856093) ^ Math.imul(b | 0, 19349663), 0x9e3779b1 ^ salt) >>> 0);
+const streamSize = () => Math.min(11, Math.max(9, Math.round(genParams.size))) | 1; // 9 live blocks — keep them lean
+const streamPitch = () => (2 * streamSize() + 1) * CELL + ISLAND_GAP;
+function edgeInfo(mi: number, mj: number, horiz: boolean) {
+  const N = 2 * streamSize() + 1;
+  const h = eh32(mi * 2 + (horiz ? 0 : 1), mj * 2 + (horiz ? 1 : 0), 0x5eed);
+  return { has: h % 100 < 72, row: 3 + ((h >>> 8) % (N - 6)) };
+}
+
+async function ensureStreamCell(mi: number, mj: number): Promise<void> {
+  const key = `${mi},${mj}`;
+  if (streamCells.has(key) || streamPending.has(key)) return;
+  streamPending.add(key);
+  const size = streamSize();
+  const gateSides: number[] = [];
+  const gateRows: number[] = [];
+  const edges = [
+    { e: edgeInfo(mi, mj, true), side: 0 },
+    { e: edgeInfo(mi - 1, mj, true), side: 1 },
+    { e: edgeInfo(mi, mj, false), side: 2 },
+    { e: edgeInfo(mi, mj - 1, false), side: 3 },
+  ];
+  for (const { e, side } of edges) if (e.has) { gateSides.push(side); gateRows.push(e.row); }
+  const l = await generateAsync(eh32(mi, mj, 0x11) || 1, {
+    gateSides, gateRows, size,
+    mound: mi === 0 && mj === 0 ? genParams.mound : genParams.mound * 0.45,
+    plazas: eh32(mi, mj, 0x33) % 3 === 0 ? 2 : 1,
+  });
+  streamPending.delete(key);
+  if (!endless) return;
+  const slot = freeStreamSlots.pop() ?? nextStreamSlot++;
+  const pitch = streamPitch();
+  const ox = mi * pitch, oz = mj * pitch;
+  const oy = ((eh32(mi, mj, 0x22) % 1000) / 1000 - 0.5) * 5.2;
+  const w = buildWorld(l, slot, scene);
+  w.group.position.set(ox, oy, oz);
+  streamCells.set(key, { key, mi, mj, slot, l, ox, oy, oz, handle: w });
+  refreshStreamWorld();
+}
+
+function streamGateWorld(cell: StreamCell, dir: number): THREE.Vector3 | null {
+  const g = cell.l.gates.find((gg) => gg.dir === dir);
+  if (!g) return null;
+  const fx = [1, -1, 0, 0][dir], fz = [0, 0, 1, -1][dir];
+  return new THREE.Vector3(
+    cell.ox + (g.x - (cell.l.N - 1) / 2) * CELL + fx * (CELL / 2 + 0.3),
+    cell.oy + g.tier * TH_W + 0.1,
+    cell.oz + (g.y - (cell.l.N - 1) / 2) * CELL + fz * (CELL / 2 + 0.3),
+  );
+}
+
+function refreshStreamWorld(): void {
+  worlds.length = 0;
+  walkIslands.length = 0;
+  walkLinks.length = 0;
+  const allLights: LightSpec[] = [];
+  const activeSlots = new Set<number>();
+  for (const cell of streamCells.values()) {
+    activeSlots.add(cell.slot);
+    worlds.push(cell.handle);
+    walkIslands.push({
+      l: cell.l, ox: cell.ox, oy: cell.oy, oz: cell.oz, slot: cell.slot,
+      stairDir: new Map(cell.l.stairs.map((s) => [s.y * cell.l.N + s.x, s.dir])),
+    });
+    for (const ls of cell.handle.lights) allLights.push({ ...ls, x: ls.x + cell.ox, y: ls.y + cell.oy, z: ls.z + cell.oz });
+    if (cell.l.bridge) {
+      const b = cell.l.bridge;
+      const bz = cell.oz + (b.y - (cell.l.N - 1) / 2) * CELL;
+      const by = cell.oy + b.tier * TH_W + 0.1;
+      walkLinks.push({
+        a: new THREE.Vector3(cell.ox + (b.x0 - (cell.l.N - 1) / 2) * CELL + CELL * 0.4, by, bz),
+        b: new THREE.Vector3(cell.ox + (b.x1 - (cell.l.N - 1) / 2) * CELL - CELL * 0.4, by, bz),
+        sag: 0.7,
+      });
+    }
+  }
+  // inter-cell bridges for every present pair that agreed on a gate
+  const activeEdges = new Set<string>();
+  for (const cell of streamCells.values()) {
+    for (const [dmi, dmj, horiz, dir] of [[1, 0, true, 0], [0, 1, false, 2]] as const) {
+      const nb = streamCells.get(`${cell.mi + dmi},${cell.mj + dmj}`);
+      if (!nb || !edgeInfo(cell.mi, cell.mj, horiz).has) continue;
+      const from = streamGateWorld(cell, dir);
+      const to = streamGateWorld(nb, dir ^ 1);
+      if (!from || !to) continue;
+      const eKey = `${horiz ? "h" : "v"}${cell.mi},${cell.mj}`;
+      let slot = edgeSlotMap.get(eKey);
+      if (slot === undefined) {
+        slot = freeEdgeSlots.pop() ?? nextEdgeSlot++;
+        edgeSlotMap.set(eKey, slot);
+      }
+      activeEdges.add(eKey);
+      activeSlots.add(slot);
+      worlds.push(buildBridgeLink(from, to, slot, scene));
+      walkLinks.push({ a: from.clone(), b: to.clone(), sag: Math.min(2.2, from.distanceTo(to) * 0.06) });
+    }
+  }
+  for (const [k, slot] of edgeSlotMap) {
+    if (!activeEdges.has(k)) { edgeSlotMap.delete(k); freeEdgeSlots.push(slot); }
+  }
+  pruneSlots(activeSlots);
+  assignLights(allLights);
+  env.bakeShadows();
+}
+
+function updateStreaming(t: number): void {
+  if (!endless) return;
+  if (t - streamTimer < 0.4) return;
+  streamTimer = t;
+  const pitch = streamPitch();
+  const focus = playing && player ? player.group.position : controls.target;
+  const fi = Math.round(focus.x / pitch), fj = Math.round(focus.z / pitch);
+  for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) void ensureStreamCell(fi + di, fj + dj);
+  let evicted = false;
+  for (const cell of [...streamCells.values()]) {
+    if (Math.max(Math.abs(cell.mi - fi), Math.abs(cell.mj - fj)) > 1) {
+      streamCells.delete(cell.key);
+      freeStreamSlots.push(cell.slot);
+      evicted = true;
+    }
+  }
+  if (evicted) refreshStreamWorld();
+  env.fit(pitch * 1.7, fi * pitch, fj * pitch);
+}
+
 // ---- third-person mode ------------------------------------------------------
 let player: Player | null = null;
 let playing = false;
@@ -567,7 +746,12 @@ async function boot(): Promise<void> {
       const f = (keys.has("w") || keys.has("arrowup") ? 1 : 0) - (keys.has("s") || keys.has("arrowdown") ? 1 : 0);
       const s = (keys.has("d") || keys.has("arrowright") ? 1 : 0) - (keys.has("a") || keys.has("arrowleft") ? 1 : 0);
       player.update(dt, { f, s }, camYaw, sampleGround);
-      if (player.group.position.y < -42) player.place(spawnX, spawnZ, sampleGround); // the abyss returns what it takes
+      if (player.group.position.y < -42) {
+        // the abyss returns what it takes — to the last safe footing
+        const rx = endless ? player.lastSafeX : spawnX;
+        const rz = endless ? player.lastSafeZ : spawnZ;
+        player.place(rx, rz, sampleGround);
+      }
       const p = player.group.position;
       const tx = p.x - Math.sin(camYaw) * camDist;
       const tz = p.z - Math.cos(camYaw) * camDist;
@@ -586,8 +770,9 @@ async function boot(): Promise<void> {
       const isl = walkIslands[i];
       const half = (isl.l.N * CELL) / 2;
       const d2 = Math.hypot(camera.position.x - isl.ox, camera.position.z - isl.oz) - half;
-      setSlotDetail(i, d2 < 95);
+      setSlotDetail(isl.slot, d2 < 95);
     }
+    updateStreaming(t);
     for (let i = 0; i < poolSpecs.length; i++) {
       const s2 = poolSpecs[i];
       lightPool[i].intensity = s2.base * (0.82 + 0.12 * Math.sin(t * 7.3 + s2.ph) + 0.06 * Math.sin(t * 13.1 + s2.ph * 1.7));

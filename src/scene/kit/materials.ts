@@ -131,6 +131,7 @@ export interface MatKit {
   stairMat: THREE.MeshLambertNodeMaterial;
   redMat: THREE.MeshStandardNodeMaterial;
   woodMat: THREE.MeshLambertNodeMaterial;
+  ropeMat: THREE.MeshLambertNodeMaterial;
   plugMat: THREE.MeshLambertNodeMaterial;
   brambleMat: THREE.MeshLambertNodeMaterial;
   vineMat: THREE.MeshLambertNodeMaterial;
@@ -318,6 +319,9 @@ export function makeMaterials(): MatKit {
     stairMat: new THREE.MeshLambertNodeMaterial({ color: 0x8a7a62, vertexColors: true }),
     redMat,
     woodMat: new THREE.MeshLambertNodeMaterial(),
+    // ropes are plain Meshes — no per-instance color to darken them, so the
+    // material itself carries the tarred-hemp brown (shared woodMat is white)
+    ropeMat: new THREE.MeshLambertNodeMaterial({ color: 0x3b2b1a }),
     plugMat: new THREE.MeshLambertNodeMaterial({ color: 0x10141f }),
     brambleMat: new THREE.MeshLambertNodeMaterial(),
     vineMat,

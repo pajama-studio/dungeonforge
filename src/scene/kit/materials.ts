@@ -9,8 +9,8 @@
 import * as THREE from "three/webgpu";
 import {
   color, vec2, vec3, uv, time, sin, cos, positionLocal, positionWorld, normalLocal,
-  instanceIndex, hash, smoothstep, length, fract, abs, mix, float, atan, max, triNoise3D,
-  transformNormalToView,
+  instanceIndex, hash, smoothstep, length, fract, abs, mix, float, atan, max, step,
+  triNoise3D, transformNormalToView,
 } from "three/tsl";
 import { CELL, COURSE } from "../../config";
 
@@ -44,6 +44,25 @@ function makeStoneMat(): THREE.MeshLambertNodeMaterial {
   const pl = positionLocal;
   const nl = normalLocal;
   const hw = (CELL * 1.02) / 2;
+  const hh = (COURSE * 1.02) / 2;
+
+  // CHIPPED CORNERS — vertex-only, the cheapest possible break-up: pick one
+  // corner per instance by hash and crush its bevel vertices inward along the
+  // corner diagonal (~45% of bricks, varying depth). No new geometry, no extra
+  // draw calls, and the shadow pass shares positionNode so silhouettes match.
+  // Tiles/steps/merlons share this material but their vertices never reach
+  // blockGeo's corner zone, so they opt out automatically.
+  {
+    const idf = instanceIndex.toFloat();
+    const cornerW = smoothstep(0.6, 0.97, abs(pl.x).div(hw))
+      .mul(smoothstep(0.6, 0.97, abs(pl.y).div(hh)))
+      .mul(smoothstep(0.6, 0.97, abs(pl.z).div(hw)));
+    const cornerId = step(0, pl.x).add(step(0, pl.y).mul(2)).add(step(0, pl.z).mul(4));
+    const pick = hash(idf.add(0.53)).mul(7.99).floor();
+    const isPicked = float(1).sub(abs(cornerId.sub(pick)).min(1));
+    const depth = smoothstep(0.55, 1.0, hash(idf.add(4.13))).mul(0.34);
+    mat.positionNode = pl.sub(pl.normalize().mul(cornerW.mul(isPicked).mul(depth)));
+  }
   const sideMask = smoothstep(0.6, 0.35, abs(nl.y)); // 1 on side faces, 0 on tops
   // vertical mortar at block x/z borders (only on faces not normal to that axis)
   const ex = smoothstep(hw - 0.12, hw - 0.02, abs(pl.x)).mul(float(1).sub(abs(nl.x)));

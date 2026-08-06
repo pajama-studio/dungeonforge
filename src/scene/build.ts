@@ -373,11 +373,29 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
     }
   }
 
+  // per-plaza identity: a curated arcane palette + jitter, deterministic per
+  // seed. Shared by the medallion disc and its brazier ring so the whole
+  // plaza glows one color.
+  // ordered so that neighboring ENTRIES are far apart in hue (azure, gold,
+  // cyan, crimson, violet, emerald, rose) — walking the list with a small
+  // stride therefore always yields well-separated colors on one island
+  const PLAZA_HUES = [0x3d7dff, 0xffb43a, 0x3fd9de, 0xff5c49, 0xa45cff, 0x38e0a5, 0xff6fb2];
+  const plazaColor = (mIdx: number): THREE.Color => {
+    const base = Math.floor(hash2(seed, 500, 7) * PLAZA_HUES.length);
+    const stride = 1 + Math.floor(hash2(seed, 503, 7) * 2);
+    const c2 = new THREE.Color(PLAZA_HUES[(base + mIdx * stride) % PLAZA_HUES.length]);
+    c2.offsetHSL((hash2(seed, 501 + mIdx, 8) - 0.5) * 0.06, 0, (hash2(seed, 502 + mIdx, 9) - 0.5) * 0.1);
+    return c2;
+  };
+  const plazaOf = (x: number, y: number): number =>
+    l.medallions.findIndex((m) => Math.hypot(m.x - x, m.y - y) <= m.r + 1.6);
+
   // ---------------------------------------------------------------- torches & braziers
   const brackets = new InstList();
   const warmFlames = new InstList();
   const blueFlames = new InstList();
   const redFlames = new InstList();
+  const plazaFlames = new InstList();
   const flameAnchors: Array<{ x: number; y: number; z: number }> = [];
 
   for (const t of l.torches) {
@@ -403,8 +421,15 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
       blocks.pushY(px, b.tier * TH + 0.65, pz, hash2(seed, b.x, b.y) * 0.4, 0.2, 1.6, 0.2, stoneColor);
     }
     bowls.pushY(px, py + 0.42, pz, 0, 1, 1, 1, hex(0x241d16));
-    const target = b.kind === "blue" ? blueFlames : b.kind === "red" ? redFlames : warmFlames;
-    target.pushY(px, py + 0.72, pz, 0, 1.55, 1.75, 1.55, hex(0xffffff));
+    // braziers ringing a medallion burn in the PLAZA's color (neutral flame
+    // ramp × per-instance tint); everything else keeps its named kind
+    const owner = b.totem || b.kind === "red" ? -1 : plazaOf(b.x, b.y);
+    if (owner >= 0) {
+      plazaFlames.pushY(px, py + 0.72, pz, 0, 1.55, 1.75, 1.55, plazaColor(owner).offsetHSL(0, 0, 0.1));
+    } else {
+      const target = b.kind === "blue" ? blueFlames : b.kind === "red" ? redFlames : warmFlames;
+      target.pushY(px, py + 0.72, pz, 0, 1.55, 1.75, 1.55, hex(0xffffff));
+    }
     flameAnchors.push({ x: px, y: py + 1.1, z: pz });
   }
 
@@ -460,8 +485,25 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   }
 
   // ---------------------------------------------------------------- medallions
-  for (const m of l.medallions) {
-    const mesh = new THREE.Mesh(R.circleGeo, m.kind === "blue" ? R.medallionBlue : R.medallionGold);
+  // every plaza gets its own sigil + color, but ONE shared material: the
+  // per-plaza identity rides in two constant geometry attributes on a tiny
+  // cloned disc (58 verts) — no per-plaza pipelines, ever
+  for (let mIdx = 0; mIdx < l.medallions.length; mIdx++) {
+    const m = l.medallions[mIdx];
+    const geo = R.circleGeo.clone();
+    const nV = geo.getAttribute("position").count;
+    const col = plazaColor(mIdx);
+    const sVal = hash2(seed, 510 + mIdx, 11);
+    const colArr = new Float32Array(nV * 3);
+    const seedArr = new Float32Array(nV);
+    for (let i = 0; i < nV; i++) {
+      colArr[i * 3] = col.r; colArr[i * 3 + 1] = col.g; colArr[i * 3 + 2] = col.b;
+      seedArr[i] = sVal;
+    }
+    geo.setAttribute("color", new THREE.BufferAttribute(colArr, 3));
+    geo.setAttribute("plazaSeed", new THREE.BufferAttribute(seedArr, 1));
+    perBuildGeos.push(geo);
+    const mesh = new THREE.Mesh(geo, R.medallionMat);
     mesh.rotation.x = -Math.PI / 2;
     mesh.scale.setScalar(m.r * CELL);
     mesh.position.set(wx(m.x), m.tier * TH + 0.17, wz(m.y));
@@ -807,6 +849,7 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   putInstanced(pool, "flamesW", R.flameGeo, R.flameWarm, warmFlames, false);
   putInstanced(pool, "flamesB", R.flameGeo, R.flameBlue, blueFlames, false);
   putInstanced(pool, "flamesR", R.flameGeo, R.flameRed, redFlames, false);
+  putInstanced(pool, "flamesP", R.flameGeo, R.flameNeutral, plazaFlames, false);
   putInstanced(pool, "rubble", R.rubbleGeo, R.stoneMat, rubble, true);
   putInstanced(pool, "crates", R.crateGeo, R.woodMat, crates, true);
   putInstanced(pool, "vines", R.vineGeo, R.vineMat, vines, false);

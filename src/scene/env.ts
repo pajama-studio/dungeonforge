@@ -206,13 +206,15 @@ export function buildEnvironment(scene: THREE.Scene, seed: number): {
     ringGroup.add(cliffs);
   }
 
-  // -- Abyss floor far below (catches fog color, hides the void).
+  // -- Abyss floor far below (catches fog color, hides the void). Lives in
+  //    ringGroup so fit() recentres/rescales it with the chain — a fixed plane
+  //    at the origin showed its edge as a hard diagonal under big chains.
   {
     const mat = new THREE.MeshLambertNodeMaterial({ color: 0x0a0e1a });
     const plane = new THREE.Mesh(new THREE.PlaneGeometry(500, 500), mat);
     plane.rotation.x = -Math.PI / 2;
     plane.position.y = ABYSS * TH - 12;
-    group.add(plane);
+    ringGroup.add(plane);
   }
 
   scene.add(group);

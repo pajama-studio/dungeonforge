@@ -165,6 +165,11 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   const centerZ = (minZ + maxZ) / 2;
   const half = Math.max((maxX - minX) / 2, (maxZ - minZ) / 2, (layouts[0].N * CELL) / 2) + 4;
   ctx.env.fit(half * 1.2, centerX, centerZ);
+  // the far plane must outrun the chain: a fixed 400 sliced distant blocks
+  // off mid-air (a clean diagonal cut) once chains spanned more than ~400
+  // world units — scale it with the extent, past controls.maxDistance
+  ctx.camera.far = Math.max(400, half * 6.5);
+  ctx.camera.updateProjectionMatrix();
   if (Math.abs(state.lastExtent - half) > 1) {
     ctx.controls.target.set(centerX, 3 * TH, centerZ);
     ctx.camera.position.set(centerX + half * 0.75, half * 0.62, centerZ + half * 1.1);

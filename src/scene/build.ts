@@ -318,9 +318,35 @@ export function buildWorld(l: Layout): WorldHandle {
   // ---------------------------------------------------------------- masonry
   const blocks: Inst[] = [];
   const merlons: Inst[] = [];
+  const tiles: Inst[] = [];
+  const redTiles: Inst[] = [];
   const stoneColor = new THREE.Color();
 
   const isTempleBuilding = (x: number, y: number) => y === 1 && l.temple !== null && Math.abs(x - l.temple.cx) <= 2;
+
+  // Interior maze walls are slimmer than the corridors they divide: thin across
+  // their run direction, with fatter posts at crossings. Ramparts (boundary or
+  // void-facing), towers and the temple building stay full-width.
+  const wallDims = (x: number, y: number): { sx: number; sz: number } => {
+    if (x === 0 || y === 0 || x === N - 1 || y === N - 1) return { sx: 1, sz: 1 };
+    if (isTempleBuilding(x, y)) return { sx: 1, sz: 1 };
+    if (l.towers.some((t) => t.x === x && t.y === y)) return { sx: 1, sz: 1 };
+    let voidAdj = false, fx = false, fz = false;
+    for (let d = 0; d < 4; d++) {
+      const n = gi(x + DX[d], y + DY[d]);
+      if (kind[n] === VOID) voidAdj = true;
+      if (kind[n] === FLOOR) (DX[d] !== 0 ? (fx = true) : (fz = true));
+    }
+    if (voidAdj) return { sx: 1, sz: 1 };
+    if (fx && !fz) return { sx: 0.62, sz: 1 };
+    if (fz && !fx) return { sx: 1, sz: 0.62 };
+    if (fx && fz) return { sx: 0.8, sz: 0.8 };
+    return { sx: 0.9, sz: 0.9 }; // interior junction posts
+  };
+  const wallHalf = (x: number, y: number, d: Dir): number => {
+    const dims = wallDims(x, y);
+    return (d <= 1 ? dims.sx : dims.sz) * CELL * 0.5;
+  };
 
   // Occlusion tier: the height below which every side of a column is hidden by
   // its 4 neighbors — those courses never rasterize (topmost course always kept
@@ -332,8 +358,12 @@ export function buildWorld(l: Layout): WorldHandle {
       if (nx < 0 || ny < 0 || nx >= N || ny >= N) return ABYSS;
       const n = gi(nx, ny);
       if (kind[n] === FLOOR) o = Math.min(o, tier[n]);
-      else if (kind[n] === WALL) o = Math.min(o, wallTop[n]);
-      else return ABYSS;
+      else if (kind[n] === WALL) {
+        // a slimmed wall no longer hides its neighbor's flank — only count
+        // full-width neighbors as occluders above their base
+        const nd = wallDims(nx, ny);
+        o = Math.min(o, nd.sx === 1 && nd.sz === 1 ? wallTop[n] : wallBase[n]);
+      } else return ABYSS;
     }
     return o;
   };
@@ -341,6 +371,7 @@ export function buildWorld(l: Layout): WorldHandle {
   const pushCourses = (
     x: number, y: number, baseTier: number, topTier: number,
     refFloorTier: number, scaleXZ: number, warm: number,
+    dims: { sx: number; sz: number } = { sx: 1, sz: 1 },
   ) => {
     const cx = wx(x), cz = wz(y);
     const nCourses = Math.max(0, Math.round((topTier - baseTier) * TH / COURSE));
@@ -369,7 +400,7 @@ export function buildWorld(l: Layout): WorldHandle {
       // cornice ring every 5th course on towers — segmented silhouette
       const cornice = scaleXZ > 1.2 && k % 5 === 4 ? 1.14 : 1;
       const s = scaleXZ * cornice * (0.985 + h1 * 0.045);
-      blocks.push(inst(cx + jx, yMid, cz + jz, (h1 - 0.5) * 0.05, s, 1, s, stoneColor.getHex()));
+      blocks.push(inst(cx + jx, yMid, cz + jz, (h1 - 0.5) * 0.05, s * dims.sx, 1, s * dims.sz, stoneColor.getHex()));
     }
   };
 
@@ -384,7 +415,15 @@ export function buildWorld(l: Layout): WorldHandle {
         }
         const tower = l.towers.find((t) => t.x === x && t.y === y);
         const warm = isTempleBuilding(x, y) ? 1 : 0;
-        pushCourses(x, y, wallBase[c], wallTop[c], ref, tower ? tower.scale : 1, warm);
+        const dims = wallDims(x, y);
+        pushCourses(x, y, wallBase[c], wallTop[c], ref, tower ? tower.scale : 1, warm, dims);
+        // slim walls expose strips of the cell — pave them so the corridor
+        // floor reads as continuing beneath the wall
+        if (dims.sx < 1 || dims.sz < 1) {
+          const hp = hash2(seed, c, 23);
+          stoneColor.setHSL(0.088, 0.22, 0.34 + hp * 0.1);
+          tiles.push(inst(wx(x), wallBase[c] * TH + 0.07, wz(y), 0, 0.995, 1, 0.995, stoneColor.getHex()));
+        }
         // battlement teeth ONLY where the wall meets the outside or the ravine —
         // interior maze walls keep clean tops (center studs read as lego bricks)
         let voidDir = -1;
@@ -445,8 +484,6 @@ export function buildWorld(l: Layout): WorldHandle {
   group.add(makeInstanced(R.merlonGeo, R.stoneMat, merlons));
 
   // ---------------------------------------------------------------- floors
-  const tiles: Inst[] = [];
-  const redTiles: Inst[] = [];
   for (let y = 0; y < N; y++) {
     for (let x = 0; x < N; x++) {
       const c = gi(x, y);
@@ -499,8 +536,9 @@ export function buildWorld(l: Layout): WorldHandle {
   for (const t of l.torches) {
     const rot = dirRotY(t.dir);
     const fx = DX[t.dir], fz = DY[t.dir];
-    const px = wx(t.x) + fx * (CELL / 2 + 0.12);
-    const pz = wz(t.y) + fz * (CELL / 2 + 0.12);
+    const half = wallHalf(t.x, t.y, t.dir);
+    const px = wx(t.x) + fx * (half + 0.12);
+    const pz = wz(t.y) + fz * (half + 0.12);
     const py = t.tier * TH + 1.9;
     brackets.push(inst(px, py - 0.28, pz, rot, 1, 1, 1, 0x2a2018));
     warmFlames.push(inst(px + fx * 0.08, py, pz + fz * 0.08, rot, 1, 1, 1, 0xffffff));
@@ -525,8 +563,9 @@ export function buildWorld(l: Layout): WorldHandle {
     for (const t of l.torches) {
       const rot = dirRotY(t.dir);
       const fx = DX[t.dir], fz = DY[t.dir];
+      const half = wallHalf(t.x, t.y, t.dir);
       wallGlows.push(inst(
-        wx(t.x) + fx * (CELL / 2 + 0.05), t.tier * TH + 1.7, wz(t.y) + fz * (CELL / 2 + 0.05),
+        wx(t.x) + fx * (half + 0.05), t.tier * TH + 1.7, wz(t.y) + fz * (half + 0.05),
         rot, 1, 1, 1, 0xffffff,
       ));
     }
@@ -537,7 +576,8 @@ export function buildWorld(l: Layout): WorldHandle {
     const one = new THREE.Vector3(1, 1, 1);
     for (const t of l.torches) {
       const fx = DX[t.dir], fz = DY[t.dir];
-      const p = new THREE.Vector3(wx(t.x) + fx * (CELL / 2 + 0.7), t.tier * TH + 0.19, wz(t.y) + fz * (CELL / 2 + 0.7));
+      const half = wallHalf(t.x, t.y, t.dir);
+      const p = new THREE.Vector3(wx(t.x) + fx * (half + 0.7), t.tier * TH + 0.19, wz(t.y) + fz * (half + 0.7));
       floorGlows.push({ m: new THREE.Matrix4().compose(p, q, one), c: new THREE.Color(0xffffff) });
     }
     for (const b of l.braziers) {
@@ -558,9 +598,10 @@ export function buildWorld(l: Layout): WorldHandle {
     for (const b of l.banners) {
       const rot = dirRotY(b.dir);
       const fx = DX[b.dir], fz = DY[b.dir];
+      const half = wallHalf(b.x, b.y, b.dir);
       const hang = Math.min(b.top * TH - 0.5, b.tier * TH + 4.6);
       items.push(inst(
-        wx(b.x) + fx * (CELL / 2 + 0.1), hang, wz(b.y) + fz * (CELL / 2 + 0.1),
+        wx(b.x) + fx * (half + 0.1), hang, wz(b.y) + fz * (half + 0.1),
         rot, 1, 1, 1, 0xffffff,
       ));
     }

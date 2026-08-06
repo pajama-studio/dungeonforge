@@ -111,11 +111,26 @@ export function buildBridgeLink(a: THREE.Vector3, b: THREE.Vector3, slot: number
   putInstanced(pool, "linkBowls", R.bowlGeo, R.woodMat, bowls, false);
   putInstanced(pool, "linkFlames", R.flameGeo, R.flameWarm, flames, false);
 
+  const rise = makeRise(group);
   return {
     group,
     lights: [],
-    tick() {},
+    tick: rise,
     dispose() { /* slots persist — pruneSlots() hides unused ones */ },
+  };
+}
+
+/** forge reveal: freshly built content rises out of the abyss with a whisper
+ *  of overshoot (easeOutBack). Group-transform only — costs nothing, and the
+ *  handle is recreated per build, so re-forges replay it naturally. */
+function makeRise(group: THREE.Group): (t: number) => void {
+  let born = -1, baseY = 0;
+  return (t: number) => {
+    if (born < 0) { born = t; baseY = group.position.y; }
+    const k = Math.min(1, (t - born) / 1.15);
+    const u = k - 1;
+    const e = 1 + 2.70158 * u * u * u + 1.70158 * u * u;
+    group.position.y = baseY - 26 * (1 - e);
   };
 }
 
@@ -941,10 +956,12 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   }
 
   // ---------------------------------------------------------------- handle
+  const rise = makeRise(group);
   return {
     group,
     lights,
     tick(t: number) {
+      rise(t);
       for (const s of smokes) {
         const ud = s.userData as { ph: number; bx: number };
         s.position.x = ud.bx + Math.sin(t * 0.07 + ud.ph) * 3.2;

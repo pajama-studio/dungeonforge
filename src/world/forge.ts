@@ -179,6 +179,8 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
     ctx.renderer.setPixelRatio(Math.min(devicePixelRatio, half > 95 ? PR_LARGE : PR_BASE));
   }
   ctx.env.bakeShadows();
+  // the forge-rise animation is still settling — re-bake once it lands
+  setTimeout(() => { if (tok === state.token) ctx.env.bakeShadows(); }, 1500);
   ctx.hud.name.textContent = layouts[0].name + (nIsl > 1 ? ` +${nIsl - 1}` : "");
   const floorSum = layouts.reduce((s2, l) => s2 + l.stats.floor, 0);
   ctx.hud.seed.textContent = `seed ${seed} · ${nIsl} block${nIsl > 1 ? "s" : ""} · ${floorSum} floor · ${layouts[0].stats.genMs}ms`;

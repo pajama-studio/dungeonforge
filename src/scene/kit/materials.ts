@@ -10,7 +10,7 @@ import * as THREE from "three/webgpu";
 import {
   color, vec2, vec3, uv, time, sin, cos, positionLocal, positionWorld, normalLocal,
   instanceIndex, hash, smoothstep, length, fract, abs, mix, float, atan, max, step,
-  triNoise3D, transformNormalToView,
+  triNoise3D, transformNormalToView, attribute,
 } from "three/tsl";
 import { CELL, COURSE } from "../../config";
 
@@ -150,20 +150,40 @@ function makeStoneMat(): THREE.MeshLambertNodeMaterial {
   return mat;
 }
 
-function makeMedallionMat(theme: number, phase: number): THREE.MeshStandardNodeMaterial {
+/** ONE material for every teleport plaza — per-plaza identity rides in two
+ *  constant geometry attributes ('color' + 'plazaSeed', see build.ts), so a
+ *  hundred different medallions still share a single compiled pipeline.
+ *  The seed reshapes the sigil: ring radii, segment counts, spin speed and
+ *  direction, and whether the inner band is solid or dashed. */
+function makeMedallionMat(): THREE.MeshStandardNodeMaterial {
   const mat = new THREE.MeshStandardNodeMaterial({ roughness: 0.8 });
+  // (attribute() types don't carry the node type through — the casts are inert)
+  const tint = vec3(attribute("color", "vec3") as never);
+  const s = float(attribute("plazaSeed", "float") as never);
+  const s1 = fract(s.mul(7.13).add(0.17));
+  const s2 = fract(s.mul(13.7).add(0.71));
+  const s3 = fract(s.mul(29.3).add(0.37));
   const p = uv().sub(0.5).mul(2);
   const r = length(p);
   const ang = atan(p.y, p.x);
-  const band = (rr: number, w: number) => smoothstep(w, w * 0.4, abs(r.sub(rr)));
-  const segs = smoothstep(0.28, 0.34, fract(ang.mul(12 / 6.2832).add(time.mul(0.02))).sub(0.5).abs());
-  const pattern = band(0.9, 0.05)
-    .add(band(0.68, 0.045).mul(segs))
-    .add(band(0.4, 0.05))
+  // ring radii drift per plaza; the middle band's tick count and spin vary too
+  const r1 = float(0.84).add(s2.mul(0.1));
+  const r2 = float(0.52).add(s1.mul(0.2));
+  const r3 = float(0.26).add(s3.mul(0.16));
+  const nSeg = s1.mul(10).floor().add(6);
+  const spin = s2.sub(0.5).mul(0.08);
+  const segs = smoothstep(0.28, 0.34, fract(ang.mul(nSeg.div(6.2832)).add(time.mul(spin))).sub(0.5).abs());
+  // inner band: solid on some plazas, counter-rotating dashes on others
+  const nDash = s3.mul(8).floor().add(4);
+  const dash = smoothstep(0.3, 0.36, fract(ang.mul(nDash.div(6.2832)).sub(time.mul(spin))).sub(0.5).abs());
+  const inner = mix(float(1), dash, smoothstep(0.45, 0.55, s3));
+  const pattern = smoothstep(0.05, 0.02, abs(r.sub(r1)))
+    .add(smoothstep(0.045, 0.018, abs(r.sub(r2))).mul(segs))
+    .add(smoothstep(0.05, 0.02, abs(r.sub(r3))).mul(inner))
     .add(smoothstep(0.2, 0.03, r).mul(1.7));
-  const pulse = sin(time.mul(1.25).add(phase)).mul(0.22).add(0.78);
+  const pulse = sin(time.mul(1.25).add(s.mul(6.2832))).mul(0.22).add(0.78);
   mat.colorNode = color(0x27221c).mul(float(1).sub(pattern.clamp(0, 1).mul(0.5)));
-  mat.emissiveNode = color(theme).mul(pattern).mul(pulse).mul(1.6);
+  mat.emissiveNode = tint.mul(pattern).mul(pulse).mul(1.6);
   return mat;
 }
 
@@ -192,6 +212,7 @@ export interface MatKit {
   flameWarm: THREE.MeshBasicNodeMaterial;
   flameBlue: THREE.MeshBasicNodeMaterial;
   flameRed: THREE.MeshBasicNodeMaterial;
+  flameNeutral: THREE.MeshBasicNodeMaterial;
   wallGlowMat: THREE.MeshBasicNodeMaterial;
   floorGlowMat: THREE.MeshBasicNodeMaterial;
   wispMat: THREE.MeshBasicNodeMaterial;
@@ -202,8 +223,7 @@ export interface MatKit {
   beamMatBlue: THREE.MeshBasicNodeMaterial;
   beamMatWarm: THREE.MeshBasicNodeMaterial;
   bannerMat: THREE.MeshStandardNodeMaterial;
-  medallionBlue: THREE.MeshStandardNodeMaterial;
-  medallionGold: THREE.MeshStandardNodeMaterial;
+  medallionMat: THREE.MeshStandardNodeMaterial;
   smokeMat: THREE.SpriteNodeMaterial;
 }
 
@@ -382,6 +402,9 @@ export function makeMaterials(): MatKit {
     flameWarm: makeFlameMat(0xffdd84, 0xff6a1a, 0xffeab0),
     flameBlue: makeFlameMat(0x9fd0ff, 0x2456ff, 0xeaf4ff),
     flameRed: makeFlameMat(0xffb08a, 0xff2410, 0xffe0c8),
+    // grayscale ramp — NodeMaterial multiplies in the per-instance color, so
+    // one material yields plaza flames of any hue
+    flameNeutral: makeFlameMat(0xd8d8d8, 0x6a6a6a, 0xffffff),
     wallGlowMat,
     floorGlowMat,
     wispMat,
@@ -392,8 +415,7 @@ export function makeMaterials(): MatKit {
     beamMatBlue: makeBeamMat(0x3e7bff, 0.9),
     beamMatWarm: makeBeamMat(0xffc26a, 0.7),
     bannerMat,
-    medallionBlue: makeMedallionMat(0x3d7dff, 0),
-    medallionGold: makeMedallionMat(0xffb43a, 2),
+    medallionMat: makeMedallionMat(),
     smokeMat,
   };
 }

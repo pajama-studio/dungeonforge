@@ -27,6 +27,10 @@ fully deterministic per seed, end-to-end in the browser. No textures, no models
   cracks, all per-instance in one shared stone shader.
 - **Per-plaza sigils** — every teleport plaza draws its own pattern and color;
   its brazier ring burns to match.
+- **Monuments that tell a story** — the Ziggurat's terraces climb from ruined
+  warren to a pristine summit temple (decay fades with height); the Reliquary
+  hangs a sealed, fully-decayed vault at the bottom tip of a diamond whose
+  crown is immaculate. The narrative IS the generation-parameter gradient.
 - **60 fps on a laptop** — instancing, slot-pooled render objects, distance LOD,
   a fixed light pool, and an emissive-threshold bloom chain (see Performance).
 
@@ -49,6 +53,8 @@ Shareable URLs: `?seed=123&islands=8&size=13` pins a build.
 | **⚄ New dungeon** | forge a random seed |
 | seed + **Forge** | forge a specific seed |
 | **⧉ 3×3×3** | the Cube: 27 blocks in a solid lattice, fully bridged + stair shafts |
+| **▲ Ziggurat** | terraces shrink 3×3 → 2×2 → 1 toward a summit sanctum (`?mode=ziggurat`) |
+| **◆ Reliquary** | a suspended diamond 1→2×2→3×3→2×2→1; sealed vault below, sanctum above (`?mode=reliquary`) |
 | **⚔ Enter** | first-person: WASD/arrows run, drag to look, Esc back to orbit |
 | **endless ∞** (panel) | roam-to-generate streaming world |
 

@@ -23,6 +23,7 @@ import { WalkMap } from "./world/walkmap";
 import type { Ctx } from "./world/context";
 import { forge } from "./world/forge";
 import { forgeCube } from "./world/cube";
+import { forgeMonument, type Monument } from "./world/monument";
 import { EndlessWorld } from "./world/stream";
 import { buildPanel } from "./ui/panel";
 import { mulberry32 } from "./gen/rng";
@@ -127,6 +128,16 @@ btnCube.textContent = "⧉ 3×3×3";
 document.getElementById("controls")!.appendChild(btnCube);
 btnCube.addEventListener("click", () => void forgeCube(ctx));
 
+const btnZig = document.createElement("button");
+btnZig.textContent = "▲ Ziggurat";
+document.getElementById("controls")!.appendChild(btnZig);
+btnZig.addEventListener("click", () => void forgeMonument(ctx, "ziggurat"));
+
+const btnRel = document.createElement("button");
+btnRel.textContent = "◆ Reliquary";
+document.getElementById("controls")!.appendChild(btnRel);
+btnRel.addEventListener("click", () => void forgeMonument(ctx, "reliquary"));
+
 const btnEnter = document.createElement("button");
 btnEnter.textContent = "⚔ Enter";
 document.getElementById("controls")!.appendChild(btnEnter);
@@ -222,7 +233,10 @@ async function boot(): Promise<void> {
   // the forge streams islands in one per frame; the loop starts as soon as the
   // shared materials are compiled, so the overlay lifts when the FIRST island
   // is on screen instead of after the whole chain.
-  const forging = forge(ctx, ctx.state.seed);
+  const mode = urlParams.get("mode");
+  const forging = mode === "ziggurat" || mode === "reliquary"
+    ? forgeMonument(ctx, mode as Monument)
+    : forge(ctx, ctx.state.seed);
   // wait for the first island (worker gen + one build), then compile every
   // pipeline ASYNCHRONOUSLY — the GPU process compiles in parallel while
   // further islands keep streaming in; a sync first render would instead

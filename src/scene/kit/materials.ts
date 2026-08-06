@@ -1,0 +1,343 @@
+// Shared material kit — every material is created ONCE and reused across
+// regenerations (pipeline compilation only ever happens on first sight).
+//
+// All glow goes through unlit HDR colorNodes (linear values > 1) so the
+// threshold bloom picks it up and nothing else does. Pure-glow materials are
+// MeshBasicNodeMaterial: they skip the whole light loop per fragment — crucial,
+// since additive quads are the overdraw.
+
+import * as THREE from "three/webgpu";
+import {
+  color, vec2, vec3, uv, time, sin, cos, positionLocal, positionWorld, normalLocal,
+  instanceIndex, hash, smoothstep, length, fract, abs, mix, float, atan, max, triNoise3D,
+  transformNormalToView,
+} from "three/tsl";
+import { CELL, COURSE } from "../../config";
+
+function makeFlameMat(cA: number, cB: number, cCore: number): THREE.MeshBasicNodeMaterial {
+  const mat = new THREE.MeshBasicNodeMaterial({
+    transparent: true, depthWrite: false, side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+  });
+  const ph = hash(instanceIndex.toFloat().add(0.317)).mul(6.2832);
+  const flick = sin(time.mul(10.7).add(ph)).mul(0.55).add(sin(time.mul(16.3).add(ph.mul(2.7))).mul(0.45));
+  const h = uv().y;
+  const cx = uv().x.sub(0.5).abs().mul(2);
+  const sway = sin(time.mul(9.1).add(ph)).mul(h).mul(0.06);
+  mat.positionNode = positionLocal.add(vec3(sway, flick.mul(0.05).mul(h), sway.mul(0.6)));
+  const shape = smoothstep(1.0, 0.22, h.add(cx.mul(0.85)).add(flick.mul(0.08)))
+    .mul(smoothstep(0.0, 0.1, float(1).sub(cx)));
+  const ramp = mix(color(cCore), mix(color(cA), color(cB), h), smoothstep(0.0, 0.55, h.add(cx.mul(0.3))));
+  mat.colorNode = ramp.mul(shape).mul(flick.mul(0.4).add(3.2));
+  mat.opacityNode = shape;
+  return mat;
+}
+
+/** Carved-masonry stone: mortar seams at block borders, a fake running-bond
+ *  vertical seam per course (so one instance reads as 2-3 hand-laid blocks),
+ *  and low-frequency grain — all procedural, multiplied under the per-instance
+ *  hue/AO color and the per-face shading vertex color. */
+function makeStoneMat(): THREE.MeshLambertNodeMaterial {
+  // Lambert = diffuse-only lighting: matte stone doesn't need GGX, and it
+  // halves the per-light fragment cost across the entire masonry fill.
+  const mat = new THREE.MeshLambertNodeMaterial({ vertexColors: true });
+  const pl = positionLocal;
+  const nl = normalLocal;
+  const hw = (CELL * 1.02) / 2;
+  const sideMask = smoothstep(0.6, 0.35, abs(nl.y)); // 1 on side faces, 0 on tops
+  // vertical mortar at block x/z borders (only on faces not normal to that axis)
+  const ex = smoothstep(hw - 0.12, hw - 0.02, abs(pl.x)).mul(float(1).sub(abs(nl.x)));
+  const ez = smoothstep(hw - 0.12, hw - 0.02, abs(pl.z)).mul(float(1).sub(abs(nl.z)));
+  // horizontal course seams: world-space y is course-aligned (bases sit on tier
+  // multiples and courses aren't y-jittered), so one fract does every course
+  const fy = fract(positionWorld.y.div(COURSE));
+  const dSeam = fy.min(float(1).sub(fy));
+  const line = smoothstep(0.11, 0.02, dSeam).mul(sideMask);
+  // fake running-bond: an extra vertical seam at a per-instance offset
+  const off = hash(instanceIndex.toFloat().add(0.13)).sub(0.5).mul(1.3);
+  const vseam = smoothstep(0.06, 0.015, abs(pl.x.sub(off)))
+    .add(smoothstep(0.06, 0.015, abs(pl.z.sub(off.mul(-0.7)))))
+    .mul(sideMask);
+  // hand-cut seams: modulate the mortar so joints vary in depth along their run
+  const cut = triNoise3D(positionWorld.mul(2.2), 0, 0).mul(0.5).add(0.65);
+  const mortar = ex.add(ez).add(line).add(vseam).clamp(0, 1).mul(cut);
+  // weathered grain: three FINE scales only — a macro (low-frequency) term just
+  // smears meaningless light/dark clouds across whole walls
+  const grain = triNoise3D(positionWorld.mul(0.6), 0, 0).mul(0.16)
+    .add(triNoise3D(positionWorld.mul(1.8), 0, 0).mul(0.13))
+    .add(triNoise3D(positionWorld.mul(4.6), 0, 0).mul(0.09));
+  // Carved relief — pure math, no textures. An analytic height field whose
+  // gradient perturbs the normal: a chiselled egg-crate frieze band every 5th
+  // course + a faint tool-mark ripple everywhere. h is differentiable, so the
+  // normal offset is the exact tangential gradient (no tangent frame needed).
+  const fc = fract(positionWorld.y.div(COURSE * 8));
+  const band = smoothstep(0.44, 0.5, fc).mul(float(1).sub(smoothstep(0.56, 0.62, fc)))
+    .mul(sideMask); // carve SIDE faces only — on tops the tangential gradient
+                    // survives projection at full strength and reads as a
+                    // diagonal crosshatch smeared across walkways and floors
+  const kx = 5.6, kq = 9.0;
+  const sx = sin(pl.x.mul(kx)), sz = sin(pl.z.mul(kx));
+  const cxn = cos(pl.x.mul(kx)), czn = cos(pl.z.mul(kx));
+  const ripple = cos(pl.x.add(pl.z).mul(kq)).mul(0.10).mul(sideMask);
+  const dhdx = band.mul(cxn.mul(sz).mul(kx * 0.13)).add(ripple.mul(-kq * 0.012));
+  const dhdz = band.mul(sx.mul(czn).mul(kx * 0.13)).add(ripple.mul(-kq * 0.012));
+  const g = vec3(dhdx, 0, dhdz);
+  const gT = g.sub(nl.mul(g.dot(nl)));
+  mat.normalNode = transformNormalToView(nl.sub(gT).normalize());
+
+  const cavity = band.mul(sx.mul(sz)).mul(0.5).add(0.5);
+  // rain streaks: columnar (y-independent) noise → dark weathering runs down
+  // the side faces, like water has been bleeding off the walkways for ages
+  const streak = smoothstep(0.58, 0.78, triNoise3D(vec3(positionWorld.x.mul(0.9), 0, positionWorld.z.mul(0.9)), 0, 0))
+    .mul(sideMask);
+  const albedo = float(0.86).add(grain)
+    .mul(float(1).sub(mortar.mul(0.42)))
+    .mul(cavity.mul(0.09).add(0.955))
+    .mul(float(1).sub(streak.mul(0.22)));
+  mat.colorNode = vec3(albedo);
+  return mat;
+}
+
+function makeMedallionMat(theme: number, phase: number): THREE.MeshStandardNodeMaterial {
+  const mat = new THREE.MeshStandardNodeMaterial({ roughness: 0.8 });
+  const p = uv().sub(0.5).mul(2);
+  const r = length(p);
+  const ang = atan(p.y, p.x);
+  const band = (rr: number, w: number) => smoothstep(w, w * 0.4, abs(r.sub(rr)));
+  const segs = smoothstep(0.28, 0.34, fract(ang.mul(12 / 6.2832).add(time.mul(0.02))).sub(0.5).abs());
+  const pattern = band(0.9, 0.05)
+    .add(band(0.68, 0.045).mul(segs))
+    .add(band(0.4, 0.05))
+    .add(smoothstep(0.2, 0.03, r).mul(1.7));
+  const pulse = sin(time.mul(1.25).add(phase)).mul(0.22).add(0.78);
+  mat.colorNode = color(0x27221c).mul(float(1).sub(pattern.clamp(0, 1).mul(0.5)));
+  mat.emissiveNode = color(theme).mul(pattern).mul(pulse).mul(1.6);
+  return mat;
+}
+
+function makeBeamMat(c: number, strength: number): THREE.MeshBasicNodeMaterial {
+  const m = new THREE.MeshBasicNodeMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+  });
+  const v = uv().y; // 0 bottom → 1 top on the open cylinder
+  const shimmer = sin(time.mul(1.3).add(uv().x.mul(12.56))).mul(0.15).add(0.85);
+  m.colorNode = color(c).mul(float(1).sub(v).pow(1.8)).mul(shimmer).mul(strength);
+  m.opacityNode = float(1).sub(v).pow(2).mul(0.16);
+  return m;
+}
+
+export interface MatKit {
+  stoneMat: THREE.MeshLambertNodeMaterial;
+  stairMat: THREE.MeshLambertNodeMaterial;
+  redMat: THREE.MeshStandardNodeMaterial;
+  woodMat: THREE.MeshLambertNodeMaterial;
+  plugMat: THREE.MeshLambertNodeMaterial;
+  brambleMat: THREE.MeshLambertNodeMaterial;
+  vineMat: THREE.MeshLambertNodeMaterial;
+  mossMat: THREE.MeshLambertNodeMaterial;
+  leafMat: THREE.MeshLambertNodeMaterial;
+  flameWarm: THREE.MeshBasicNodeMaterial;
+  flameBlue: THREE.MeshBasicNodeMaterial;
+  flameRed: THREE.MeshBasicNodeMaterial;
+  wallGlowMat: THREE.MeshBasicNodeMaterial;
+  floorGlowMat: THREE.MeshBasicNodeMaterial;
+  wispMat: THREE.MeshBasicNodeMaterial;
+  emberMat: THREE.MeshBasicNodeMaterial;
+  runeMat: THREE.MeshBasicNodeMaterial;
+  portalMat: THREE.MeshBasicNodeMaterial;
+  beaconMat: THREE.MeshBasicNodeMaterial;
+  beamMatBlue: THREE.MeshBasicNodeMaterial;
+  beamMatWarm: THREE.MeshBasicNodeMaterial;
+  bannerMat: THREE.MeshStandardNodeMaterial;
+  medallionBlue: THREE.MeshStandardNodeMaterial;
+  medallionGold: THREE.MeshStandardNodeMaterial;
+  smokeMat: THREE.SpriteNodeMaterial;
+}
+
+export function makeMaterials(): MatKit {
+  const bannerMat = new THREE.MeshStandardNodeMaterial({
+    side: THREE.DoubleSide, roughness: 0.9, transparent: true, alphaTest: 0.4,
+  });
+  {
+    const ph = hash(instanceIndex.toFloat().add(0.71)).mul(6.2832);
+    const w = uv().y.oneMinus(); // 0 at the rod, 1 at the free bottom edge
+    const sway = sin(time.mul(1.9).add(ph).add(w.mul(2.6))).mul(w).mul(0.16);
+    bannerMat.positionNode = positionLocal.add(vec3(sway.mul(0.4), 0, sway));
+    const u = uv().x, v = uv().y;
+    const edge = u.min(u.oneMinus()).min(v);
+    const border = smoothstep(0.11, 0.075, edge);
+    const du = u.sub(0.5).abs(), dv = v.sub(0.42).abs();
+    const diamond = du.mul(2.3).add(dv.mul(1.2));
+    const sig = smoothstep(0.31, 0.26, diamond).sub(smoothstep(0.19, 0.14, diamond)).clamp(0, 1);
+    const circ = smoothstep(0.075, 0.05, length(vec2(du, v.sub(0.14))));
+    const gold = color(0xc9973a);
+    const base = color(0x2a55c8).mul(v.mul(0.45).add(0.62));
+    bannerMat.colorNode = mix(base, gold, max(border.mul(0.85), sig.add(circ).clamp(0, 1)));
+    bannerMat.emissiveNode = gold.mul(sig.add(circ)).mul(0.4);
+    // centuries of wind: a ragged, per-banner torn bottom edge
+    const tear = triNoise3D(vec3(u.mul(4.2), ph, 0), 0, 0).mul(0.2);
+    bannerMat.opacityNode = smoothstep(0.0, 0.1, v.sub(tear));
+  }
+
+  const wallGlowMat = new THREE.MeshBasicNodeMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  {
+    const ph = hash(instanceIndex.toFloat().add(0.83)).mul(6.2832);
+    const flick = sin(time.mul(8.9).add(ph)).mul(0.1).add(sin(time.mul(14.7).add(ph.mul(1.9))).mul(0.06)).add(0.86);
+    const fall = smoothstep(0.5, 0.04, length(uv().sub(vec2(0.5, 0.42))));
+    wallGlowMat.colorNode = color(0xff8a35).mul(fall).mul(flick).mul(0.42);
+    wallGlowMat.opacityNode = fall;
+  }
+
+  const floorGlowMat = new THREE.MeshBasicNodeMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  {
+    const ph = hash(instanceIndex.toFloat().add(0.59)).mul(6.2832);
+    const flick = sin(time.mul(8.3).add(ph)).mul(0.09).add(sin(time.mul(13.9).add(ph.mul(2.3))).mul(0.05)).add(0.88);
+    const fall = smoothstep(0.5, 0.03, length(uv().sub(0.5)));
+    floorGlowMat.colorNode = color(0xff9440).mul(fall).mul(flick).mul(0.5);
+    floorGlowMat.opacityNode = fall;
+  }
+
+  const portalMat = new THREE.MeshBasicNodeMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  {
+    const p = uv().sub(vec2(0.5, 0.42));
+    const r = length(p);
+    const swirl = sin(r.mul(22).sub(time.mul(2.1)).add(atan(p.y, p.x).mul(3)));
+    const glow = float(0.3).div(r.add(0.16));
+    portalMat.colorNode = color(0x3e7bff).mul(glow.mul(swirl.mul(0.22).add(1))).mul(1.6);
+    portalMat.opacityNode = smoothstep(0.62, 0.12, r);
+  }
+
+  const beaconMat = new THREE.MeshBasicNodeMaterial();
+  beaconMat.colorNode = color(0xffe4a0).mul(sin(time.mul(2.2)).mul(0.2).add(1)).mul(4.5);
+
+  const redMat = new THREE.MeshStandardNodeMaterial({ roughness: 0.85, vertexColors: true });
+  redMat.emissiveNode = color(0xff2a08).mul(sin(time.mul(1.7)).mul(0.25).add(0.85)).mul(0.55);
+
+  const smokeMat = new THREE.SpriteNodeMaterial({ transparent: true, depthWrite: false });
+  smokeMat.colorNode = color(0x3a587a); // cool-tinted mist banks
+  smokeMat.opacityNode = smoothstep(0.5, 0.08, length(uv().sub(0.5))).mul(0.13);
+
+  // hanging vines: pinned at the top, swaying tip, dark→mossy green gradient
+  const vineMat = new THREE.MeshLambertNodeMaterial({ side: THREE.DoubleSide, transparent: true, depthWrite: false });
+  {
+    const ph = hash(instanceIndex.toFloat().add(0.47)).mul(6.2832);
+    const w = uv().y.oneMinus(); // 0 at the anchored top, 1 at the tip
+    const sway = sin(time.mul(1.3).add(ph).add(w.mul(2.1))).mul(w).mul(0.1);
+    vineMat.positionNode = positionLocal.add(vec3(sway.mul(0.5), 0, sway));
+    vineMat.colorNode = mix(color(0x39522c), color(0x17240f), uv().y.oneMinus());
+    vineMat.opacityNode = float(1).sub(smoothstep(0.8, 1.0, w)); // tip fades out
+  }
+
+  // moss patches: flat blobs with noise-eaten irregular edges — the detail
+  // layer that actually reads from a top-down camera
+  const mossMat = new THREE.MeshLambertNodeMaterial({ transparent: true, depthWrite: false });
+  {
+    const r = length(uv().sub(0.5)).mul(2);
+    const n = triNoise3D(positionWorld.mul(0.85), 0, 0);
+    mossMat.colorNode = mix(color(0x2c4520), color(0x18280f), r);
+    mossMat.opacityNode = float(1).sub(smoothstep(0.45, 1.0, r.add(n.mul(0.55)))).mul(0.9);
+  }
+
+  const leafMat = new THREE.MeshLambertNodeMaterial({
+    side: THREE.DoubleSide, transparent: true, alphaTest: 0.4,
+  });
+  {
+    const ph = hash(instanceIndex.toFloat().add(0.61)).mul(6.2832);
+    const w = uv().y.oneMinus();
+    const sway = sin(time.mul(1.4).add(ph).add(w.mul(1.8))).mul(0.08);
+    leafMat.positionNode = positionLocal.add(vec3(sway.mul(0.6), 0, sway));
+    // rounded-diamond leaf mask + darker center vein
+    const du = uv().x.sub(0.5).abs(), dv = uv().y.sub(0.5).abs();
+    const dm = du.mul(2.1).add(dv.mul(1.7));
+    leafMat.opacityNode = float(1).sub(smoothstep(0.75, 0.95, dm));
+    const vein = smoothstep(0.05, 0.12, du);
+    leafMat.colorNode = mix(color(0x6f9447), color(0x3d5c2a), dv.mul(1.6).clamp(0, 1))
+      .mul(vein.mul(0.2).add(0.8));
+    // moonlit sheen so ivy doesn't collapse to silhouette at night
+    leafMat.emissive = new THREE.Color(0x101a0b);
+  }
+
+  const wispMat = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false });
+  {
+    const ph = hash(instanceIndex.toFloat().add(0.29)).mul(6.2832);
+    const v = uv().y, cx = uv().x.sub(0.5).abs().mul(2);
+    const drift = sin(time.mul(0.7).add(ph).add(v.mul(2.6))).mul(v).mul(0.35);
+    wispMat.positionNode = positionLocal.add(vec3(drift, 0, drift.mul(0.5)));
+    const puff = triNoise3D(vec3(uv().x.mul(2.2), v.mul(1.9).sub(time.mul(0.22)), ph), 0, 0);
+    wispMat.colorNode = mix(color(0x3a2c1d), color(0x151a24), v.clamp(0, 1));
+    wispMat.opacityNode = float(1).sub(cx).clamp(0, 1).pow(1.6)
+      .mul(float(1).sub(v)).mul(puff.mul(0.75).add(0.25)).mul(0.34)
+      .mul(smoothstep(0.0, 0.1, v));
+  }
+
+  // drifting embers: a looping rise, sine-wobbling, fading in and out
+  const emberMat = new THREE.MeshBasicNodeMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+  });
+  {
+    const ph = hash(instanceIndex.toFloat().add(0.157)).mul(6.2832);
+    const life = fract(time.mul(0.055).add(hash(instanceIndex.toFloat().add(0.31))));
+    const rise = life.mul(5.5);
+    const wob = vec3(
+      sin(time.mul(0.9).add(ph)).mul(0.6),
+      rise,
+      sin(time.mul(0.7).add(ph.mul(1.7))).mul(0.6),
+    );
+    emberMat.positionNode = positionLocal.add(wob);
+    const fadeIO = sin(life.mul(3.1416));
+    const rad = float(1).sub(uv().sub(0.5).length().mul(2)).clamp(0, 1);
+    emberMat.colorNode = mix(color(0xff9a3a), color(0xffd9a0), hash(ph)).mul(rad).mul(fadeIO).mul(2.2);
+    emberMat.opacityNode = rad.mul(fadeIO);
+  }
+
+  const runeMat = new THREE.MeshBasicNodeMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  {
+    const u = uv().x, v = uv().y;
+    const cellIdx = u.mul(9).floor();
+    const fu = fract(u.mul(9));
+    const gh = hash(cellIdx.add(3.7));
+    // each cell draws a distinct dash-glyph: width/height gated by its hash
+    const glyph = smoothstep(0.18, 0.24, fu).mul(float(1).sub(smoothstep(0.76, 0.82, fu)))
+      .mul(smoothstep(0.16, 0.28, v.sub(gh.mul(0.28)))).mul(float(1).sub(smoothstep(0.72, 0.84, v.add(gh.mul(0.2)))));
+    const pulse = sin(time.mul(1.1).add(u.mul(4))).mul(0.25).add(0.75);
+    runeMat.colorNode = color(0x4d86ff).mul(glyph).mul(pulse).mul(2.4);
+    runeMat.opacityNode = glyph;
+  }
+
+  return {
+    stoneMat: makeStoneMat(),
+    // spiral stair towers share the masonry face-shading via vertex colors
+    stairMat: new THREE.MeshLambertNodeMaterial({ color: 0x8a7a62, vertexColors: true }),
+    redMat,
+    woodMat: new THREE.MeshLambertNodeMaterial(),
+    plugMat: new THREE.MeshLambertNodeMaterial({ color: 0x10141f }),
+    brambleMat: new THREE.MeshLambertNodeMaterial(),
+    vineMat,
+    mossMat,
+    leafMat,
+    flameWarm: makeFlameMat(0xffdd84, 0xff6a1a, 0xffeab0),
+    flameBlue: makeFlameMat(0x9fd0ff, 0x2456ff, 0xeaf4ff),
+    flameRed: makeFlameMat(0xffb08a, 0xff2410, 0xffe0c8),
+    wallGlowMat,
+    floorGlowMat,
+    wispMat,
+    emberMat,
+    runeMat,
+    portalMat,
+    beaconMat,
+    beamMatBlue: makeBeamMat(0x3e7bff, 0.9),
+    beamMatWarm: makeBeamMat(0xffc26a, 0.7),
+    bannerMat,
+    medallionBlue: makeMedallionMat(0x3d7dff, 0),
+    medallionGold: makeMedallionMat(0xffb43a, 2),
+    smokeMat,
+  };
+}

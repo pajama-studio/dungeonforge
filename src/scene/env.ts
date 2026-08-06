@@ -10,9 +10,13 @@ import {
 import * as BufferGeometryUtils from "three/addons/utils/BufferGeometryUtils.js";
 import { hash2 } from "../gen/rng";
 import { ABYSS } from "../gen/dungeon";
+import { TH } from "../config";
 
-export const TH = 1.85;   // world height per tier
-export const CELL = 2.2;  // world size per grid cell
+export type Environment = ReturnType<typeof buildEnvironment>;
+
+/** the moon's direction — shared by the sky disc, the shadow light and the
+ *  post-pass fog forward scattering (env owns it; nobody re-derives it) */
+export const MOON_DIR = new THREE.Vector3(-46, 48, -22).normalize();
 
 export function buildEnvironment(scene: THREE.Scene, seed: number): {
   fit: (half: number, centerX?: number, centerZ?: number) => void; bakeShadows: () => void; dispose: () => void;
@@ -30,12 +34,18 @@ export function buildEnvironment(scene: THREE.Scene, seed: number): {
     const starH = hash(cell.x.mul(7.91).add(cell.y.mul(37.7)).add(cell.z.mul(113.3)));
     const twinkle = sin(hash(starH.mul(97.3)).mul(6.2832).add(time.mul(0.9))).mul(0.3).add(0.7);
     const stars = smoothstep(0.9962, 0.9995, starH).mul(twinkle).mul(dir.y.clamp(0, 1).pow(0.4)).mul(1.4);
-    const moonDir = new THREE.Vector3(-46, 48, -22).normalize();
-    const md = dir.dot(vec3(moonDir.x, moonDir.y, moonDir.z)).clamp(0, 1);
+    // milky way: a faint patchy band along the great circle whose pole is bandN —
+    // gives the upper sky some structure without competing with the moon
+    const bandN = vec3(0.62, 0.33, -0.71);
+    const band = smoothstep(0.32, 0.04, dir.dot(bandN).abs());
+    const patch = triNoise3D(dir.mul(2.6), 0, 0).mul(0.75).add(triNoise3D(dir.mul(7.3), 0, 0).mul(0.25));
+    const milky = band.mul(patch).mul(dir.y.clamp(0, 1).pow(0.35)).mul(0.16);
+    const md = dir.dot(vec3(MOON_DIR.x, MOON_DIR.y, MOON_DIR.z)).clamp(0, 1);
     const disc = smoothstep(0.99955, 0.99985, md).mul(2.6);
     const halo = md.pow(220).mul(0.5);
     scene.backgroundNode = base
       .add(vec3(stars))
+      .add(color(0x8fa3d8).mul(milky))
       .add(color(0xdfe8ff).mul(disc.add(halo)));
   }
 

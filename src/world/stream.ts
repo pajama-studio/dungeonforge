@@ -24,6 +24,9 @@ export class EndlessWorld {
   private freeSlots: number[] = [];
   private nextSlot = 10;
   private edgeSlotMap = new Map<string, number>();
+  /** live bridge handles — rebuilding an unchanged bridge every refresh would
+   *  rewrite its instances for nothing AND replay its forge-rise animation */
+  private edgeHandles = new Map<string, WorldHandle>();
   private freeEdgeSlots: number[] = [];
   private nextEdgeSlot = 2000;
   private timer = -10;
@@ -36,6 +39,7 @@ export class EndlessWorld {
     this.pending.clear();
     this.freeSlots.length = 0;
     this.edgeSlotMap.clear();
+    this.edgeHandles.clear();
     this.freeEdgeSlots.length = 0;
     this.timer = -10;
   }
@@ -117,12 +121,21 @@ export class EndlessWorld {
         }
         activeEdges.add(eKey);
         activeSlots.add(slot);
-        ctx.worlds.push(buildBridgeLink(from, to, slot, ctx.scene));
+        let h = this.edgeHandles.get(eKey);
+        if (!h) {
+          h = buildBridgeLink(from, to, slot, ctx.scene);
+          this.edgeHandles.set(eKey, h);
+        }
+        ctx.worlds.push(h);
         ctx.walk.addLink(from.clone(), to.clone(), linkSag(from.distanceTo(to)));
       }
     }
     for (const [k, slot] of this.edgeSlotMap) {
-      if (!activeEdges.has(k)) { this.edgeSlotMap.delete(k); this.freeEdgeSlots.push(slot); }
+      if (!activeEdges.has(k)) {
+        this.edgeSlotMap.delete(k);
+        this.edgeHandles.delete(k);
+        this.freeEdgeSlots.push(slot);
+      }
     }
     pruneSlots(activeSlots);
     ctx.lights.assign(allLights);

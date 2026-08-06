@@ -73,18 +73,20 @@ export function buildBridgeLink(a: THREE.Vector3, b: THREE.Vector3, slot: number
   }
   putInstanced(pool, "bridgePlanks", R.plankGeo, R.woodMat, planks, true);
 
+  // rope rails: tied at the POST TOPS, easing off gently (sin^1.7 keeps the
+  // first stretch high so it clears the stone abutment instead of stabbing
+  // through it) and slumping to hand height mid-span
   for (const side of [-0.8, 0.8]) {
     const pts: THREE.Vector3[] = [];
     for (let i = 0; i <= 12; i++) {
       const t = i / 12;
       const p = new THREE.Vector3().lerpVectors(a, b, t);
-      pts.push(new THREE.Vector3(
-        p.x + perp.x * side, p.y + 0.7 - Math.sin(t * Math.PI) * (sagMax + 0.35), p.z + perp.z * side,
-      ));
+      const drop = Math.pow(Math.sin(t * Math.PI), 1.7) * (sagMax + 1.2);
+      pts.push(new THREE.Vector3(p.x + perp.x * side, p.y + 1.55 - drop, p.z + perp.z * side));
     }
     const geo = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 24, 0.05, 5);
     ownGeos.push(geo);
-    const rope = new THREE.Mesh(geo, R.woodMat);
+    const rope = new THREE.Mesh(geo, R.ropeMat);
     group.add(rope);
     pool.perBuild.push(rope);
   }
@@ -92,6 +94,7 @@ export function buildBridgeLink(a: THREE.Vector3, b: THREE.Vector3, slot: number
   const posts = new InstList();
   const stones = new InstList();
   const flames = new InstList();
+  const bowls = new InstList();
   const c = new THREE.Color();
   for (const [end, sgn] of [[a, 1], [b, -1]] as const) {
     for (const side of [-0.8, 0.8]) {
@@ -99,10 +102,13 @@ export function buildBridgeLink(a: THREE.Vector3, b: THREE.Vector3, slot: number
     }
     c.setHSL(0.09, 0.3, 0.4);
     stones.pushY(end.x + dirN.x * sgn * 0.4, end.y - 0.4, end.z + dirN.z * sgn * 0.4, rotY, 0.85, 1.2, 1.9, c);
-    flames.pushY(end.x + perp.x * 0.8, end.y + 1.6, end.z + perp.z * 0.8, 0, 0.8, 0.85, 0.8, hex(0xffffff));
+    // lantern: a small bowl seated ON the post top, flame rising out of it
+    bowls.pushY(end.x + perp.x * 0.8, end.y + 1.72, end.z + perp.z * 0.8, 0, 0.7, 0.6, 0.7, hex(0x241d16));
+    flames.pushY(end.x + perp.x * 0.8, end.y + 1.82, end.z + perp.z * 0.8, 0, 0.8, 0.85, 0.8, hex(0xffffff));
   }
   putInstanced(pool, "bridgePosts", R.postGeo, R.woodMat, posts, true);
   putInstanced(pool, "linkStones", R.blockGeo, R.stoneMat, stones, true);
+  putInstanced(pool, "linkBowls", R.bowlGeo, R.woodMat, bowls, false);
   putInstanced(pool, "linkFlames", R.flameGeo, R.flameWarm, flames, false);
 
   return {
@@ -490,15 +496,17 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
       planks.pushY(x, yTop - sag, z, (h1 - 0.5) * 0.1, 1, 1.2, 1.45, hex(0x4a3624));
     }
     putInstanced(pool, "ravinePlanks", R.plankGeo, R.woodMat, planks, true);
+    // rope rails from post top to hand height (same easing as buildBridgeLink)
     for (const side of [-0.8, 0.8]) {
       const pts: THREE.Vector3[] = [];
       for (let i = 0; i <= 8; i++) {
         const t = i / 8;
-        pts.push(new THREE.Vector3(x0 + (x1 - x0) * t, yTop + 0.7 - Math.sin(t * Math.PI) * 0.95, z + side));
+        const drop = Math.pow(Math.sin(t * Math.PI), 1.7) * 1.7;
+        pts.push(new THREE.Vector3(x0 + (x1 - x0) * t, yTop + 1.5 - drop, z + side));
       }
       const geo = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 16, 0.05, 5);
       perBuildGeos.push(geo);
-      addUnique(new THREE.Mesh(geo, R.woodMat));
+      addUnique(new THREE.Mesh(geo, R.ropeMat));
     }
     const posts = new InstList();
     for (const px of [x0, x1]) for (const side of [-0.8, 0.8]) {

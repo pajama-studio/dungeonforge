@@ -92,6 +92,7 @@ function generateAsync(s: number): Promise<Layout> {
     { key: "newest", label: "maze: branchy ↔ river", min: 0, max: 1, step: 0.05 },
     { key: "torchSpacing", label: "torch spacing", min: 3, max: 9, step: 1 },
     { key: "wallThin", label: "wall thickness", min: 0.25, max: 1, step: 0.05 },
+    { key: "decay", label: "age & decay", min: 0, max: 1, step: 0.05 },
   ];
   let debounce = 0;
   for (const d of defs) {

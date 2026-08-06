@@ -102,8 +102,15 @@ interface SharedRes {
   vineGeo: THREE.BufferGeometry;
   linkGeo: THREE.BufferGeometry;
   mossGeo: THREE.BufferGeometry;
+  colGeo: THREE.BufferGeometry;
+  leafGeo: THREE.BufferGeometry;
+  leafMat: THREE.MeshLambertNodeMaterial;
+  wispGeo: THREE.BufferGeometry;
+  runeGeo: THREE.BufferGeometry;
   vineMat: THREE.MeshLambertNodeMaterial;
   mossMat: THREE.MeshLambertNodeMaterial;
+  wispMat: THREE.MeshBasicNodeMaterial;
+  runeMat: THREE.MeshBasicNodeMaterial;
   circleGeo: THREE.BufferGeometry;   // unit radius; scaled per medallion
   portalGeo: THREE.BufferGeometry;
   beaconGeo: THREE.BufferGeometry;
@@ -328,12 +335,90 @@ function getShared(): SharedRes {
   const mossGeo = new THREE.CircleGeometry(0.62, 12);
   mossGeo.rotateX(-Math.PI / 2);
 
+  // ancient column (unit height, base at y=0, gentle entasis taper)
+  const colGeo = new THREE.CylinderGeometry(0.16, 0.2, 1, 8);
+  colGeo.translate(0, 0.5, 0);
+
+  // ivy leaf cluster: ~10 leaf quads staggered down a hanging stem line
+  // (VegetationGeneratorThreeJS insight: instanced leaf quads carry the read;
+  //  the stem itself barely matters at diorama distance)
+  const leafGeo = (() => {
+    const quads: THREE.BufferGeometry[] = [];
+    for (let k = 0; k < 10; k++) {
+      const t = k / 9;
+      const g = new THREE.PlaneGeometry(0.4 - t * 0.14, 0.32 - t * 0.1);
+      const side = k % 2 === 0 ? 1 : -1;
+      g.rotateZ(side * (0.35 + t * 0.25));
+      g.rotateY(side * 0.55);
+      g.translate(side * (0.12 + ((k * 37) % 10) * 0.014), -0.14 - t * 1.62, 0.1 + ((k * 53) % 7) * 0.012);
+      quads.push(g);
+    }
+    const merged = BufferGeometryUtils.mergeGeometries(quads);
+    for (const g of quads) g.dispose();
+    return merged;
+  })();
+  const leafMat = new THREE.MeshLambertNodeMaterial({
+    side: THREE.DoubleSide, transparent: true, alphaTest: 0.4,
+  });
+  {
+    const ph = hash(instanceIndex.toFloat().add(0.61)).mul(6.2832);
+    const w = uv().y.oneMinus();
+    const sway = sin(time.mul(1.4).add(ph).add(w.mul(1.8))).mul(0.08);
+    leafMat.positionNode = positionLocal.add(vec3(sway.mul(0.6), 0, sway));
+    // rounded-diamond leaf mask + darker center vein
+    const du = uv().x.sub(0.5).abs(), dv = uv().y.sub(0.5).abs();
+    const dm = du.mul(2.1).add(dv.mul(1.7));
+    leafMat.opacityNode = float(1).sub(smoothstep(0.75, 0.95, dm));
+    const vein = smoothstep(0.05, 0.12, du);
+    leafMat.colorNode = mix(color(0x6f9447), color(0x3d5c2a), dv.mul(1.6).clamp(0, 1))
+      .mul(vein.mul(0.2).add(0.8));
+    // moonlit sheen so ivy doesn't collapse to silhouette at night
+    leafMat.emissiveNode = color(0x24361a).mul(0.35);
+  }
+
+  // torch smoke: crossed quads, upward-thinning wisps driven by scrolling noise
+  const wispBase = new THREE.PlaneGeometry(0.7, 2.6);
+  wispBase.translate(0, 1.3, 0);
+  const wispCross = wispBase.clone().rotateY(Math.PI / 2);
+  const wispGeo = BufferGeometryUtils.mergeGeometries([wispBase, wispCross]);
+  wispBase.dispose(); wispCross.dispose();
+  const wispMat = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false });
+  {
+    const ph = hash(instanceIndex.toFloat().add(0.29)).mul(6.2832);
+    const v = uv().y, cx = uv().x.sub(0.5).abs().mul(2);
+    const drift = sin(time.mul(0.7).add(ph).add(v.mul(2.6))).mul(v).mul(0.35);
+    wispMat.positionNode = positionLocal.add(vec3(drift, 0, drift.mul(0.5)));
+    const puff = triNoise3D(vec3(uv().x.mul(2.2), v.mul(1.9).sub(time.mul(0.22)), ph), 0, 0);
+    wispMat.colorNode = mix(color(0x3a2c1d), color(0x151a24), v.clamp(0, 1));
+    wispMat.opacityNode = float(1).sub(cx).clamp(0, 1).pow(1.6)
+      .mul(float(1).sub(v)).mul(puff.mul(0.75).add(0.25)).mul(0.34)
+      .mul(smoothstep(0.0, 0.1, v));
+  }
+
+  // glowing rune architrave above the temple door
+  const runeGeo = new THREE.PlaneGeometry(2.6, 0.42);
+  const runeMat = new THREE.MeshBasicNodeMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  {
+    const u = uv().x, v = uv().y;
+    const cellIdx = u.mul(9).floor();
+    const fu = fract(u.mul(9));
+    const gh = hash(cellIdx.add(3.7));
+    // each cell draws a distinct dash-glyph: width/height gated by its hash
+    const glyph = smoothstep(0.18, 0.24, fu).mul(float(1).sub(smoothstep(0.76, 0.82, fu)))
+      .mul(smoothstep(0.16, 0.28, v.sub(gh.mul(0.28)))).mul(float(1).sub(smoothstep(0.72, 0.84, v.add(gh.mul(0.2)))));
+    const pulse = sin(time.mul(1.1).add(u.mul(4))).mul(0.25).add(0.75);
+    runeMat.colorNode = color(0x4d86ff).mul(glyph).mul(pulse).mul(2.4);
+    runeMat.opacityNode = glyph;
+  }
+
   S = {
     blockGeo: shadeFaces(new RoundedBoxGeometry(CELL * 1.02, COURSE * 1.02, CELL * 1.02, 1, 0.06)),
     merlonGeo: shadeFaces(new RoundedBoxGeometry(0.72, 0.55, 0.72, 1, 0.05)),
     tileGeo: shadeFaces(new RoundedBoxGeometry(CELL * 0.985, 0.15, CELL * 0.985, 1, 0.045)),
     stepGeo: shadeFaces(new THREE.BoxGeometry(CELL * 1.0, TH / 4, CELL / 4 + 0.06)),
-    cheekGeo: shadeFaces(new THREE.BoxGeometry(0.2, 0.32, CELL * 1.18)),
+    cheekGeo: shadeFaces(new THREE.BoxGeometry(0.2, 0.32, CELL * 1.0)),
     bracketGeo: new THREE.BoxGeometry(0.14, 0.6, 0.14),
     bowlGeo: new THREE.CylinderGeometry(0.4, 0.2, 0.42, 8),
     postGeo: new THREE.CylinderGeometry(0.09, 0.11, 1.3, 6),
@@ -348,8 +433,15 @@ function getShared(): SharedRes {
     vineGeo,
     linkGeo: new THREE.BoxGeometry(0.07, 0.34, 0.16),
     mossGeo,
+    colGeo,
+    leafGeo,
+    leafMat,
+    wispGeo,
+    runeGeo,
     vineMat,
     mossMat,
+    wispMat,
+    runeMat,
     portalGeo: new THREE.PlaneGeometry(1.8, 2.4),
     beaconGeo: new THREE.OctahedronGeometry(0.45),
     // Lambert = diffuse-only lighting: matte stone doesn't need GGX, and it
@@ -713,6 +805,10 @@ export function buildWorld(l: Layout): WorldHandle {
     const mesh = new THREE.Mesh(R.portalGeo, R.portalMat);
     mesh.position.set(wx(l.door.x), l.door.tier * TH + 1.25, wz(l.door.y) + CELL / 2 - 0.18);
     group.add(mesh);
+    // glowing rune architrave carved into the lintel above the doorway
+    const rune = new THREE.Mesh(R.runeGeo, R.runeMat);
+    rune.position.set(wx(l.door.x), l.door.tier * TH + 2.95, wz(l.door.y) + CELL / 2 + 0.16);
+    group.add(rune);
   }
 
   // ---------------------------------------------------------------- bridge
@@ -787,8 +883,11 @@ export function buildWorld(l: Layout): WorldHandle {
   const rubble: Inst[] = [];
   const crates: Inst[] = [];
   const vines: Inst[] = [];
+  const leaves: Inst[] = [];
   const links: Inst[] = [];
   const moss: Inst[] = [];
+  const cols: Inst[] = [];
+  const decay = Math.min(1, Math.max(0, l.params?.decay ?? 0.5));
   {
     const totemCells = new Set(l.braziers.filter((b) => b.totem).map((b) => b.y * N + b.x));
     for (let y = 1; y < N - 1; y++) {
@@ -799,7 +898,7 @@ export function buildWorld(l: Layout): WorldHandle {
           const h = hash2(seed, c, 71);
           let nearRuin = false;
           for (let d = 0; d < 4; d++) if (l.ruinMask[gi(x + DX[d], y + DY[d])]) nearRuin = true;
-          if (h < (nearRuin ? 0.75 : 0.16)) {
+          if (h < (nearRuin ? 0.75 : 0.32 * decay)) {
             const n = 1 + Math.floor(hash2(seed, c, 72) * 3);
             // lean the cluster toward an adjacent wall, if any
             let ox = 0, oz = 0;
@@ -818,7 +917,7 @@ export function buildWorld(l: Layout): WorldHandle {
           }
           // moss creeping out of the shaded corners (top-down readable)
           const hm = hash2(seed, c, 78);
-          if (hm < 0.2) {
+          if (hm < 0.4 * decay) {
             let mx = 0, mz = 0;
             for (let d = 0; d < 4; d++) {
               if (kind[gi(x + DX[d], y + DY[d])] === WALL) { mx = DX[d] * 0.7; mz = DY[d] * 0.7; break; }
@@ -844,7 +943,7 @@ export function buildWorld(l: Layout): WorldHandle {
           }
         }
         // moss on wall-top walkways too
-        if (kind[c] === WALL && hash2(seed, c, 86) < 0.1) {
+        if (kind[c] === WALL && hash2(seed, c, 86) < 0.2 * decay) {
           const ha = hash2(seed, c, 87);
           stoneColor.setHSL(0.26, 0.32, 0.22 + ha * 0.08);
           const sc = 0.6 + ha * 0.9;
@@ -859,22 +958,54 @@ export function buildWorld(l: Layout): WorldHandle {
             const n = gi(x + DX[d], y + DY[d]);
             if (kind[n] !== FLOOR || wallTop[c] - tier[n] < 3) continue;
             const h = hash3(seed, c, d, 81);
-            if (h > 0.24) continue;
+            if (h > 0.5 * decay) continue;
             const half = wallHalf(x, y, d as Dir);
             const fx = DX[d], fz = DY[d];
-            const nStrips = 1 + Math.floor(hash3(seed, c, d, 82) * 3);
+            const nStrips = 1 + Math.floor(hash3(seed, c, d, 82) * 2);
             for (let k = 0; k < nStrips; k++) {
               const ha = hash3(seed, c, d * 7 + k, 83), hb = hash3(seed, c, d * 7 + k, 84);
-              const lat = (ha - 0.5) * 1.5;
-              stoneColor.setHSL(0.26 + hb * 0.06, 0.32, 0.2 + ha * 0.12);
-              vines.push(inst(
-                wx(x) + fx * (half + 0.06) + (fz !== 0 ? lat : 0),
-                wallTop[c] * TH - 0.1 - hb * 0.4,
-                wz(y) + fz * (half + 0.06) + (fx !== 0 ? lat : 0),
-                dirRotY(d as Dir), 0.7 + hb * 0.7, 0.5 + ha * 0.9, 1, stoneColor.getHex(),
-              ));
+              const lat = (ha - 0.5) * 1.3;
+              const px2 = wx(x) + fx * (half + 0.08) + (fz !== 0 ? lat : 0);
+              const pz2 = wz(y) + fz * (half + 0.08) + (fx !== 0 ? lat : 0);
+              const py2 = wallTop[c] * TH - 0.05 - hb * 0.3;
+              const rot = dirRotY(d as Dir);
+              const sw = 1.1 + hb * 0.9, sh = 0.75 + ha * 0.8;
+              stoneColor.setHSL(0.26 + hb * 0.06, 0.3, 0.2 + ha * 0.1);
+              vines.push(inst(px2, py2, pz2, rot, sw * 0.5, sh, 1, stoneColor.getHex()));
+              // the leaf cluster is what actually reads — brighter, bigger
+              stoneColor.setHSL(0.24 + hb * 0.07, 0.45, 0.42 + ha * 0.16);
+              leaves.push(inst(px2, py2, pz2, rot, sw, sh, sw, stoneColor.getHex()));
             }
           }
+        }
+      }
+    }
+    // ring of ancient columns around each medallion plaza — most broken, a few
+    // still crowned with their capital
+    for (let mIdx = 0; mIdx < l.medallions.length; mIdx++) {
+      const m = l.medallions[mIdx];
+      for (let k = 0; k < 8; k++) {
+        const a = (k / 8) * Math.PI * 2 + mIdx * 0.4;
+        const px2 = wx(m.x) + Math.cos(a) * (m.r + 0.55) * CELL;
+        const pz2 = wz(m.y) + Math.sin(a) * (m.r + 0.55) * CELL * 0.98;
+        const h = hash3(seed, mIdx * 31, k, 95);
+        if (h > 0.8) continue; // a few are gone entirely
+        const py2 = m.tier * TH + 0.12;
+        stoneColor.setHSL(0.09, 0.28, 0.4 + h * 0.12);
+        if (h < 0.35) {
+          // intact column with capital
+          const ch = 2.4 + h * 1.2;
+          cols.push(inst(px2, py2, pz2, h * 6.28, 1, ch, 1, stoneColor.getHex()));
+          blocks.push(inst(px2, py2 + ch + 0.12, pz2, h * 3, 0.26, 0.22, 0.26, stoneColor.getHex()));
+        } else {
+          // broken stump, slightly tilted, rubble at its foot
+          const ch = 0.5 + h * 1.6;
+          const q = new THREE.Quaternion().setFromEuler(new THREE.Euler((h - 0.5) * 0.1, h * 6.28, (h - 0.6) * 0.1));
+          const pos = new THREE.Vector3(px2, py2, pz2);
+          cols.push({ m: new THREE.Matrix4().compose(pos, q, new THREE.Vector3(1, ch, 1)), c: stoneColor.clone() });
+          const hr = hash3(seed, mIdx * 31, k, 96);
+          stoneColor.setHSL(0.08, 0.2, 0.26 + hr * 0.1);
+          rubble.push(inst(px2 + (hr - 0.5), py2 + 0.12, pz2 + (0.5 - hr), hr * 6, 0.7 + hr, 0.5, 0.7 + hr, stoneColor.getHex()));
         }
       }
     }
@@ -930,8 +1061,19 @@ export function buildWorld(l: Layout): WorldHandle {
   group.add(makeInstanced(R.rubbleGeo, R.stoneMat, rubble, true));
   group.add(makeInstanced(R.crateGeo, R.woodMat, crates, true));
   group.add(makeInstanced(R.vineGeo, R.vineMat, vines, false));
+  group.add(makeInstanced(R.leafGeo, R.leafMat, leaves, false));
   group.add(makeInstanced(R.linkGeo, R.woodMat, links, false));
   group.add(makeInstanced(R.mossGeo, R.mossMat, moss, false));
+  group.add(makeInstanced(R.colGeo, R.stoneMat, cols, true));
+  // smoke wisps rising from every flame
+  {
+    const wisps: Inst[] = [];
+    for (const a of flameAnchors) {
+      const h = hash2(seed, Math.round(a.x * 7 + a.z * 13), 97);
+      wisps.push(inst(a.x, a.y + 0.15, a.z, h * 6.28, 0.8 + h * 0.5, 0.8 + h * 0.6, 0.8 + h * 0.5, 0xffffff));
+    }
+    group.add(makeInstanced(R.wispGeo, R.wispMat, wisps, false));
+  }
 
   // ---------------------------------------------------------------- lights
   const lights: Array<{ light: THREE.PointLight; base: number; ph: number }> = [];

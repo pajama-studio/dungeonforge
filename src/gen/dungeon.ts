@@ -57,6 +57,8 @@ export interface Params {
   plazas: number;
   /** freestanding brazier totems scattered at corridor dead ends */
   totems: number;
+  /** age of the ruin: scales crumbled walls, rubble, moss and vines (0-1) */
+  decay: number;
 }
 
 export const DEFAULT_PARAMS: Params = {
@@ -71,6 +73,7 @@ export const DEFAULT_PARAMS: Params = {
   size: 15,
   plazas: 2,
   totems: 4,
+  decay: 0.5,
 };
 
 export interface Layout {
@@ -497,7 +500,7 @@ function attempt(p: Params, seed: number): Layout | string {
       const c = gi(x, y);
       if (kind[c] !== WALL || doorMask[c]) continue;
       if (y === 1 && Math.abs(x - gcx) <= 2) continue; // never ruin the temple
-      if (hash2(seed, c, 33) > 0.08) continue;
+      if (hash2(seed, c, 33) > 0.16 * p.decay) continue;
       let hi = -99;
       for (let d = 0; d < 4; d++) {
         const nx = x + DX[d], ny = y + DY[d];

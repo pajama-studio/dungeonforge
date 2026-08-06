@@ -52,8 +52,8 @@ function makeStoneMat(): THREE.MeshLambertNodeMaterial {
   // draw calls, and the shadow pass shares positionNode so silhouettes match.
   // Tiles/steps/merlons share this material but their vertices never reach
   // blockGeo's corner zone, so they opt out automatically.
+  const idf = instanceIndex.toFloat();
   {
-    const idf = instanceIndex.toFloat();
     const cornerW = smoothstep(0.6, 0.97, abs(pl.x).div(hw))
       .mul(smoothstep(0.6, 0.97, abs(pl.y).div(hh)))
       .mul(smoothstep(0.6, 0.97, abs(pl.z).div(hw)));
@@ -84,7 +84,8 @@ function makeStoneMat(): THREE.MeshLambertNodeMaterial {
   // weathered grain: three FINE scales only — a macro (low-frequency) term just
   // smears meaningless light/dark clouds across whole walls
   const g46 = triNoise3D(positionWorld.mul(4.6), 0, 0);
-  const grain = triNoise3D(positionWorld.mul(0.6), 0, 0).mul(0.16)
+  const g06 = triNoise3D(positionWorld.mul(0.6), 0, 0);
+  const grain = g06.mul(0.16)
     .add(triNoise3D(positionWorld.mul(1.8), 0, 0).mul(0.13))
     .add(g46.mul(0.09));
   // Per-brick WEAR — every arris abraded a little differently. Edge proximity
@@ -99,9 +100,19 @@ function makeStoneMat(): THREE.MeshLambertNodeMaterial {
   const ny2 = smoothstep(0.14, 0.02, dEdge.y);
   const nz2 = smoothstep(0.14, 0.02, dEdge.z);
   const arris = nx2.mul(ny2).add(ny2.mul(nz2)).add(nx2.mul(nz2)).clamp(0, 1);
-  const severity = hash(instanceIndex.toFloat().add(0.91)).mul(0.85).add(0.3);
+  const severity = hash(idf.add(0.91)).mul(0.85).add(0.3);
   const wear = arris.mul(smoothstep(0.4, 0.78, cutRaw)).mul(severity);
   const pits = smoothstep(0.78, 0.92, g46).mul(severity);
+  // RANDOM CRACKS — iso-contours of the cut noise already sampled above, so
+  // this costs pure arithmetic. Each cracked brick (~1/3) picks its OWN iso
+  // value, which is why a crack never continues across the mortar joint onto
+  // the neighbor; the fine grain octave jags the path and the macro octave
+  // fades strands out mid-face so cracks terminate instead of wrapping.
+  const crackOn = smoothstep(0.5, 0.62, hash(idf.add(7.31)));
+  const iso = hash(idf.add(9.17)).mul(0.22).add(0.34); // stay near the field median so the contour actually crosses the brick
+  const dLine = abs(cutRaw.sub(iso)).add(g46.sub(0.5).mul(0.07)).max(0);
+  const strand = float(1).sub(smoothstep(0.008, 0.06, dLine));
+  const crack = strand.mul(smoothstep(0.18, 0.45, g06)).mul(crackOn);
   // Carved relief — pure math, no textures. An analytic height field whose
   // gradient perturbs the normal: a chiselled egg-crate frieze band every 5th
   // course + a faint tool-mark ripple everywhere. h is differentiable, so the
@@ -133,7 +144,8 @@ function makeStoneMat(): THREE.MeshLambertNodeMaterial {
     .mul(cavity.mul(0.09).add(0.955))
     .mul(float(1).sub(streak.mul(0.22)))
     .add(wear.mul(0.16))                     // abraded arrises go pale
-    .mul(float(1).sub(pits.mul(0.4)));       // pockmarks go dark
+    .mul(float(1).sub(pits.mul(0.4)))        // pockmarks go dark
+    .mul(float(1).sub(crack.mul(0.55)));     // crack shadow line
   mat.colorNode = vec3(albedo);
   return mat;
 }

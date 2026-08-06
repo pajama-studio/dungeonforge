@@ -2,7 +2,11 @@
 // three.js WebGPURenderer + TSL; MRT emissive bloom; deterministic seeds.
 
 import * as THREE from "three/webgpu";
-import { pass, screenUV, float, smoothstep, hash, time, floor as tslFloor } from "three/tsl";
+import {
+  pass, screenUV, float, smoothstep, vec3, vec4, int, Loop, hash, time, exp,
+  color, getViewPosition, cameraProjectionMatrixInverse, cameraWorldMatrix,
+  cameraPosition, triNoise3D,
+} from "three/tsl";
 import { bloom } from "three/addons/tsl/display/BloomNode.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { DEFAULT_PARAMS, type Layout, type Params } from "./gen/dungeon";
@@ -52,16 +56,37 @@ const postProcessing = new THREE.PostProcessing(renderer);
 const scenePass = pass(scene, camera);
 const scenePassColor = scenePass.getTextureNode();
 const bloomPass = bloom(scenePassColor, 0.9, 0.4, 1.1);
-// cinematic finish: gentle vignette pulls the eye to the lit heart of the
-// maze; a whisper of animated film grain breaks up the flat night gradients
+// volumetric ground fog: a depth-aware raymarch through an animated low-lying
+// density slab — walls occlude it correctly, wisps roll through corridors, and
+// looking toward the moon brightens the fog (cheap forward scattering).
+const depthTex = scenePass.getTextureNode("depth");
+const vp = getViewPosition(screenUV, depthTex, cameraProjectionMatrixInverse);
+const wp = cameraWorldMatrix.mul(vec4(vp, 1)).xyz;
+const ro = cameraPosition;
+const delta = wp.sub(ro);
+const distGeo = delta.length();
+const maxDist = distGeo.min(110);
+const rd = delta.div(distGeo);
+const STEPS = 9;
+const stepLen = maxDist.div(STEPS);
+const jitter = hash(screenUV.x.mul(1213.7).add(screenUV.y.mul(771.1))); // static dither hides banding
+const trans = float(1).toVar();
+Loop({ type: "int", start: 0, end: STEPS, condition: "<" }, ({ i }) => {
+  const t = float(i).add(jitter).mul(stepLen);
+  const p = ro.add(rd.mul(t));
+  const hFall = smoothstep(2.8, -5.5, p.y); // slab: dense below the fortress floor, gone above
+  const n = triNoise3D(p.mul(0.021).add(vec3(time.mul(0.009), 0, time.mul(0.006))), 0.3, time);
+  const dens = hFall.mul(n.mul(0.8).add(0.2)).mul(0.05);
+  trans.mulAssign(exp(dens.mul(stepLen).negate()));
+});
+const moonDirV = new THREE.Vector3(-46, 48, -22).normalize();
+const scatter = rd.dot(vec3(moonDirV.x, moonDirV.y, moonDirV.z)).clamp(0, 1).pow(5).mul(0.5).add(1);
+const fogCol = color(0x27476b).mul(scatter).mul(0.85);
+
+// cinematic finish: gentle vignette pulls the eye to the lit heart of the maze
 const vig = float(1).sub(smoothstep(0.5, 1.02, screenUV.sub(0.5).length().mul(1.35)).mul(0.45));
-// quantize to a pixel grid before hashing — hashing a smooth linear input
-// produces coherent diagonal banding, not grain
-const gx = tslFloor(screenUV.x.mul(1600));
-const gy = tslFloor(screenUV.y.mul(900));
-const gt = tslFloor(time.mul(24));
-const grain = hash(gx.mul(7.93).add(gy.mul(513.71)).add(gt.mul(77.7))).sub(0.5).mul(0.016);
-postProcessing.outputNode = scenePassColor.add(bloomPass).mul(vig).add(grain);
+const composed = scenePassColor.add(bloomPass);
+postProcessing.outputNode = composed.mul(trans).add(fogCol.mul(float(1).sub(trans))).mul(vig);
 
 const env = buildEnvironment(scene, 1); // env is seed-stable; kept across regens
 

@@ -246,33 +246,39 @@ function makeMedallionMat(theme: number, phase: number): THREE.MeshStandardNodeM
 function buildBrambleGeo(seedNum: number): THREE.BufferGeometry {
   const rng = mulberry32(seedNum);
   const parts: THREE.BufferGeometry[] = [];
-  interface Walker { x: number; y: number; ang: number; depth: number; steps: number }
-  const queue: Walker[] = [{ x: 0, y: 0, ang: Math.PI / 2 + (rng() - 0.5) * 0.6, depth: 0, steps: 13 }];
+  // tendrils run HORIZONTALLY, girdling the wall like a thorn belt — they hug
+  // the face (tiny z offsets, short thorns) and only rarely arc upward
+  interface Walker { x: number; y: number; ang: number; home: number; depth: number; steps: number }
+  const queue: Walker[] = [
+    { x: 0, y: 0, ang: (rng() - 0.5) * 0.5, home: 0, depth: 0, steps: 11 },
+    { x: 0, y: 0.25 + rng() * 0.3, ang: Math.PI + (rng() - 0.5) * 0.5, home: Math.PI, depth: 0, steps: 9 },
+  ];
   let thornSide = 1;
   while (queue.length > 0) {
     const w = queue.pop()!;
     for (let i = 0; i < w.steps; i++) {
-      const L = 0.2 + rng() * 0.16;
+      const L = 0.2 + rng() * 0.14;
       const dx = Math.cos(w.ang), dy = Math.sin(w.ang);
       const mx = w.x + dx * L * 0.5, my = w.y + dy * L * 0.5;
       const seg = new THREE.BoxGeometry(0.042, L * 1.15, 0.042);
       seg.rotateZ(w.ang - Math.PI / 2);
-      seg.translate(mx, my, 0.06 + rng() * 0.07);
+      seg.translate(mx, my, 0.035 + rng() * 0.04);
       parts.push(seg);
-      // thorn spikes, alternating sides, pointing away from the stem
       if (rng() < 0.85) {
         thornSide = -thornSide;
-        const t = new THREE.ConeGeometry(0.028, 0.16, 4);
+        const t = new THREE.ConeGeometry(0.026, 0.12, 4);
         t.rotateZ(w.ang - Math.PI / 2 + thornSide * (Math.PI / 2 + 0.35));
-        t.translate(mx + -dy * thornSide * 0.05, my + dx * thornSide * 0.05, 0.09 + rng() * 0.05);
+        t.translate(mx + -dy * thornSide * 0.045, my + dx * thornSide * 0.045, 0.055 + rng() * 0.035);
         parts.push(t);
       }
       w.x += dx * L; w.y += dy * L;
-      w.ang += (rng() - 0.5) * 1.15;
-      // droop long runners back toward horizontal so the tangle hugs the wall
-      w.ang = w.ang * 0.86 + (Math.PI / 2) * 0.14;
-      if (w.depth < 2 && rng() < 0.24) {
-        queue.push({ x: w.x, y: w.y, ang: w.ang + (rng() < 0.5 ? 1 : -1) * (0.7 + rng() * 0.6), depth: w.depth + 1, steps: 3 + Math.floor(rng() * 5) });
+      w.ang += (rng() - 0.5) * 0.95;
+      w.ang = w.ang * 0.8 + w.home * 0.2; // relax back to the horizontal run
+      // stay inside a low band: fold the walk back if it strays vertically
+      if (my > 0.8) w.ang = w.home - Math.abs(w.ang - w.home) * 0.5;
+      if (my < -0.55) w.ang = w.home + Math.abs(w.ang - w.home) * 0.5;
+      if (w.depth < 2 && rng() < 0.2) {
+        queue.push({ x: w.x, y: w.y, ang: w.ang + (rng() < 0.5 ? 1 : -1) * (0.5 + rng() * 0.5), home: w.home, depth: w.depth + 1, steps: 3 + Math.floor(rng() * 4) });
       }
     }
   }
@@ -1091,17 +1097,18 @@ export function buildWorld(l: Layout): WorldHandle {
             const fx = DX[d], fz = DY[d];
             const ha = hash3(seed, c, d, 102), hbv = hash3(seed, c, d, 103);
             const lat = (ha - 0.5) * 1.2;
-            // outer tangles sprawl near the rim; inner ones climb from the floor
+            // girdle bands: outer ones ride below the rim, inner ones hover
+            // low over the corridor floor — never poking past the silhouette
             const baseY = outer
-              ? wallTop[c] * TH - 2.2 - hbv * 1.6
-              : tier[gi(nx, ny)] * TH + 0.25;
-            const sc = 0.85 + hbv * 0.75;
+              ? wallTop[c] * TH - 1.5 - hbv * 1.4
+              : tier[gi(nx, ny)] * TH + 0.5 + hbv * 0.8;
+            const sc = 0.85 + hbv * 0.6;
             stoneColor.setHSL(0.07 + ha * 0.02, 0.25, 0.16 + ha * 0.08);
             const item = inst(
               wx(x) + fx * (half + 0.04) + (fz !== 0 ? lat : 0),
               baseY,
               wz(y) + fz * (half + 0.04) + (fx !== 0 ? lat : 0),
-              dirRotY(d as Dir), sc * (ha < 0.5 ? 1 : -1), sc * (0.8 + ha * 0.5), sc, stoneColor.getHex(),
+              dirRotY(d as Dir), sc * (ha < 0.5 ? 1 : -1), sc * (0.75 + ha * 0.35), sc, stoneColor.getHex(),
             );
             (hbv < 0.5 ? bramblesA : bramblesB).push(item);
           }

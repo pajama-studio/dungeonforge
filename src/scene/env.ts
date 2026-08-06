@@ -43,7 +43,9 @@ export function buildEnvironment(scene: THREE.Scene, seed: number): {
   const fogBase = float(ABYSS * TH - 8);
   const noise = triNoise3D(positionWorld.mul(0.014), 0.25, time).mul(5.0);
   const fogTop = float(2.2).add(noise);
-  const ground = fogTop.sub(positionWorld.y).div(fogTop.sub(fogBase)).saturate().mul(0.96);
+  // material-level ground fog dialed back — the post-pass volumetric raymarch
+  // now owns the low mist; this only keeps distant aerial perspective coherent
+  const ground = fogTop.sub(positionWorld.y).div(fogTop.sub(fogBase)).saturate().mul(0.55);
   const haze = densityFogFactor(float(0.008));
   const combined = ground.oneMinus().mul(haze.oneMinus()).oneMinus();
   scene.fogNode = fog(fogColor, combined);

@@ -194,9 +194,14 @@ function makeStoneMat(): THREE.MeshLambertNodeMaterial {
   mat.normalNode = transformNormalToView(nl.sub(gT).normalize());
 
   const cavity = band.mul(sx.mul(sz)).mul(0.5).add(0.5);
+  // rain streaks: columnar (y-independent) noise → dark weathering runs down
+  // the side faces, like water has been bleeding off the walkways for ages
+  const streak = smoothstep(0.58, 0.78, triNoise3D(vec3(positionWorld.x.mul(0.9), 0, positionWorld.z.mul(0.9)), 0, 0))
+    .mul(sideMask);
   const albedo = float(0.86).add(grain)
     .mul(float(1).sub(mortar.mul(0.42)))
-    .mul(cavity.mul(0.09).add(0.955));
+    .mul(cavity.mul(0.09).add(0.955))
+    .mul(float(1).sub(streak.mul(0.22)));
   mat.colorNode = vec3(albedo);
   return mat;
 }
@@ -230,7 +235,9 @@ function getShared(): SharedRes {
   const bannerGeo = new THREE.PlaneGeometry(1.35, 2.55, 1, 10);
   bannerGeo.translate(0, -1.275, 0);
 
-  const bannerMat = new THREE.MeshStandardNodeMaterial({ side: THREE.DoubleSide, roughness: 0.9 });
+  const bannerMat = new THREE.MeshStandardNodeMaterial({
+    side: THREE.DoubleSide, roughness: 0.9, transparent: true, alphaTest: 0.4,
+  });
   {
     const ph = hash(instanceIndex.toFloat().add(0.71)).mul(6.2832);
     const w = uv().y.oneMinus(); // 0 at the rod, 1 at the free bottom edge
@@ -247,6 +254,9 @@ function getShared(): SharedRes {
     const base = color(0x2a55c8).mul(v.mul(0.45).add(0.62));
     bannerMat.colorNode = mix(base, gold, max(border.mul(0.85), sig.add(circ).clamp(0, 1)));
     bannerMat.emissiveNode = gold.mul(sig.add(circ)).mul(0.4);
+    // centuries of wind: a ragged, per-banner torn bottom edge
+    const tear = triNoise3D(vec3(u.mul(4.2), ph, 0), 0, 0).mul(0.2);
+    bannerMat.opacityNode = smoothstep(0.0, 0.1, v.sub(tear));
   }
 
   const wallGlowMat = new THREE.MeshBasicNodeMaterial({
@@ -497,7 +507,7 @@ export function buildWorld(l: Layout): WorldHandle {
           const nx = x + DX[d], ny = y + DY[d];
           if (nx < 0 || ny < 0 || nx >= N || ny >= N || kind[gi(nx, ny)] === VOID) { voidDir = d; break; }
         }
-        if (voidDir >= 0 && !tower && !l.doorMask[c]) {
+        if (voidDir >= 0 && !tower && !l.doorMask[c] && !l.ruinMask[c]) {
           const alongX = DY[voidDir] !== 0; // rim runs perpendicular to the void
           for (const off of [-0.58, 0.58]) {
             stoneColor.setHSL(0.09, 0.34, 0.38 + hash2(seed, c, 9) * 0.1);
@@ -787,7 +797,9 @@ export function buildWorld(l: Layout): WorldHandle {
         // rubble scattered where corridors meet walls — centuries of spall
         if (kind[c] === FLOOR && !l.stairMask[c] && !l.plazaMask[c] && !totemCells.has(c)) {
           const h = hash2(seed, c, 71);
-          if (h < 0.16) {
+          let nearRuin = false;
+          for (let d = 0; d < 4; d++) if (l.ruinMask[gi(x + DX[d], y + DY[d])]) nearRuin = true;
+          if (h < (nearRuin ? 0.75 : 0.16)) {
             const n = 1 + Math.floor(hash2(seed, c, 72) * 3);
             // lean the cluster toward an adjacent wall, if any
             let ox = 0, oz = 0;

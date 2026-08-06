@@ -84,6 +84,7 @@ export interface Layout {
   wallBase: Int8Array;   // wall cells: base tier (ABYSS when facing the void)
   support: Int8Array;    // floor cells: tier to fill masonry down to (== tier when flush)
   stairMask: Uint8Array;
+  ruinMask: Uint8Array;  // wall cells with a crumbled top
   redMask: Uint8Array;
   templeMask: Uint8Array;
   plazaMask: Uint8Array;
@@ -489,6 +490,26 @@ function attempt(p: Params, seed: number): Layout | string {
     }
   }
 
+  // -- Stage 8.5: ruin — some walls have crumbled over the centuries.
+  const ruinMask = new Uint8Array(N * N);
+  for (let y = 1; y < N - 1; y++) {
+    for (let x = 1; x < N - 1; x++) {
+      const c = gi(x, y);
+      if (kind[c] !== WALL || doorMask[c]) continue;
+      if (y === 1 && Math.abs(x - gcx) <= 2) continue; // never ruin the temple
+      if (hash2(seed, c, 33) > 0.08) continue;
+      let hi = -99;
+      for (let d = 0; d < 4; d++) {
+        const nx = x + DX[d], ny = y + DY[d];
+        if (nx >= 0 && ny >= 0 && nx < N && ny < N && kind[gi(nx, ny)] === FLOOR) hi = Math.max(hi, tier[gi(nx, ny)]);
+      }
+      if (hi < -90) continue;
+      const drop = 1 + (hash2(seed, c, 34) < 0.4 ? 1 : 0);
+      const newTop = Math.max(hi + 1, wallTop[c] - drop);
+      if (newTop < wallTop[c]) { wallTop[c] = newTop; ruinMask[c] = 1; }
+    }
+  }
+
   // -- Stage 9: towers.
   const towers: Tower[] = [];
   for (const [tx, ty] of [[0, 0], [N - 1, 0], [0, N - 1], [N - 1, N - 1]] as const) {
@@ -642,7 +663,7 @@ function attempt(p: Params, seed: number): Layout | string {
   return {
     seed, name: makeName(rng), N, params: p,
     kind, tier, wallTop, wallBase, support,
-    stairMask, redMask, templeMask, plazaMask, doorMask,
+    stairMask, ruinMask, redMask, templeMask, plazaMask, doorMask,
     stairs, torches, banners, towers, medallions, braziers, bridge, door,
     entrance,
     temple: { cx: gcx, platformTier, buildTop },

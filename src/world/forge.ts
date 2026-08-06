@@ -191,6 +191,7 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   ctx.hud.seed.textContent = `seed ${seed} · ${nIsl} block${nIsl > 1 ? "s" : ""} · ${floorSum} floor · ${layouts[0].stats.genMs}ms`;
   const url = new URL(location.href);
   url.searchParams.set("seed", String(seed));
+  url.searchParams.delete("mode"); // chain forge is the default mode
   history.replaceState(null, "", url);
 }
 

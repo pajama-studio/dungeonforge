@@ -214,7 +214,7 @@ function generateAsync(s: number, overrides: Partial<Params> = {}): Promise<Layo
 {
   const panel = document.getElementById("params")!;
   const defs: Array<{ key: keyof Params; label: string; min: number; max: number; step: number }> = [
-    { key: "islands", label: "linked blocks", min: 1, max: 6, step: 1 },
+    { key: "islands", label: "linked blocks", min: 1, max: 24, step: 1 },
     { key: "size", label: "dungeon size", min: 9, max: 21, step: 2 },
     { key: "plazas", label: "teleport plazas", min: 0, max: 4, step: 1 },
     { key: "totems", label: "brazier totems", min: 0, max: 10, step: 1 },
@@ -290,7 +290,7 @@ const ISLAND_GAP = 15; // world units of abyss between linked blocks
 async function forge(newSeed: number): Promise<void> {
   if (endless) return; // roaming owns the world in endless mode
   seed = newSeed >>> 0 || 1;
-  const nIsl = Math.max(1, Math.min(6, Math.round(genParams.islands)));
+  const nIsl = Math.max(1, Math.min(24, Math.round(genParams.islands)));
 
   // -- macro layout: blocks GROW on a coarse grid like WFC tiles — each new
   //    block attaches to a random placed block on a free side. Gates open
@@ -306,12 +306,13 @@ async function forge(newSeed: number): Promise<void> {
   const MDX = [1, -1, 0, 0, 0], MDZ = [0, 0, 1, -1, 0], MDK = [0, 0, 0, 0, 1];
   for (let k = 1; k < nIsl; k++) {
     let placedOk = false;
-    for (let attempt = 0; attempt < 14 && !placedOk; attempt++) {
+    for (let attempt = 0; attempt < 26 && !placedOk; attempt++) {
       const p = h32(k, attempt) % macro.length;
       // guarantee at least one stacked layer once the chain is big enough
       const needStack = nIsl >= 3 && k === nIsl - 1 && !macro.some((m) => m.dirFromParent === 4);
       const d = needStack && attempt < 7 ? 4 : h32(k, attempt + 100) % 5;
       const mi = macro[p].mi + MDX[d], mj = macro[p].mj + MDZ[d], mk = macro[p].mk + MDK[d];
+      if (mk > 2) continue; // three layers max — sky castles need a skyline, not a ladder
       if (occupied.has(`${mi},${mj},${mk}`)) continue;
       occupied.add(`${mi},${mj},${mk}`);
       macro.push({ mi, mj, mk, parent: p, dirFromParent: d });
@@ -403,7 +404,7 @@ async function forge(newSeed: number): Promise<void> {
         const fx = [1, -1, 0, 0][d], fz = [0, 0, 1, -1][d];
         ox = pp.ox + fx * (pHalf + ISLAND_GAP + half);
         oz = pp.oz + fz * (pHalf + ISLAND_GAP + half);
-        oy = pp.oy + (((h32(i, 141) >>> 4) % 1000) / 1000 - 0.5) * 5.2;
+        oy = pp.oy + (((h32(i, 141) >>> 4) % 1000) / 1000 - 0.5) * 8.4;
         // slide on the cross axis so the two gates face each other
         const pg = layouts[pIdx].gates.find((g) => g.dir === d);
         const cg = l.gates.find((g) => g.dir === (d ^ 1));

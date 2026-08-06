@@ -10,7 +10,7 @@ import {
 import { bloom } from "three/addons/tsl/display/BloomNode.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { DEFAULT_PARAMS, type Layout, type Params } from "./gen/dungeon";
-import { buildWorld, buildBridgeLink, type WorldHandle } from "./scene/build";
+import { buildWorld, buildBridgeLink, pruneSlots, setSlotDetail, type WorldHandle } from "./scene/build";
 import { Player, type GroundSampler } from "./player/player";
 import { FLOOR } from "./gen/dungeon";
 import { buildEnvironment, TH } from "./scene/env";
@@ -69,7 +69,7 @@ const delta = wp.sub(ro);
 const distGeo = delta.length();
 const maxDist = distGeo.min(110);
 const rd = delta.div(distGeo);
-const STEPS = 9;
+const STEPS = 7;
 const stepLen = maxDist.div(STEPS);
 const jitter = hash(screenUV.x.mul(1213.7).add(screenUV.y.mul(771.1))); // static dither hides banding
 const trans = float(1).toVar();
@@ -94,9 +94,37 @@ const env = buildEnvironment(scene, 1); // env is seed-stable; kept across regen
 
 const worlds: WorldHandle[] = [];
 
+// FIXED global light pool: three's WebGPU forward path recompiles every
+// pipeline whenever the scene's light count changes — so the count never does.
+// Islands submit LightSpecs; the pool re-aims existing lights at them.
+import type { LightSpec } from "./scene/build";
+const LIGHT_POOL_SIZE = 28;
+const lightPool: THREE.PointLight[] = [];
+for (let i = 0; i < LIGHT_POOL_SIZE; i++) {
+  const pl = new THREE.PointLight(0xff9a45, 0, 15, 2);
+  lightPool.push(pl);
+  scene.add(pl);
+}
+let poolSpecs: LightSpec[] = [];
+function assignLights(specs: LightSpec[]): void {
+  poolSpecs = specs.slice(0, LIGHT_POOL_SIZE);
+  for (let i = 0; i < LIGHT_POOL_SIZE; i++) {
+    const pl = lightPool[i];
+    const s2 = poolSpecs[i];
+    if (s2) {
+      pl.position.set(s2.x, s2.y, s2.z);
+      pl.color.setHex(s2.color);
+      pl.distance = s2.dist;
+      pl.intensity = s2.base;
+    } else {
+      pl.intensity = 0;
+    }
+  }
+}
+
 // walkability data captured at forge time for the third-person mode
 const TH_W = 1.85;
-interface IslandWalk { l: Layout; ox: number; oz: number; stairDir: Map<number, number> }
+interface IslandWalk { l: Layout; ox: number; oy: number; oz: number; stairDir: Map<number, number> }
 interface LinkWalk { a: THREE.Vector3; b: THREE.Vector3; sag: number }
 const walkIslands: IslandWalk[] = [];
 const walkLinks: LinkWalk[] = [];
@@ -108,8 +136,11 @@ const sampleGround: GroundSampler = (x, z) => {
     const gy = Math.round((z - oz) / CELL + (l.N - 1) / 2);
     if (gx < 0 || gy < 0 || gx >= l.N || gy >= l.N) continue;
     const c = gy * l.N + gx;
-    if (l.kind[c] !== FLOOR) return { y: 0, ok: false };
-    let y = l.tier[c] * TH_W + 0.16;
+    // walls are solid barriers; VOID cells (ravine) fall through to the links
+    // check below, then to open air
+    if (l.kind[c] === 2) return { y: 0, ok: false, solid: true };
+    if (l.kind[c] !== FLOOR) break;
+    let y = l.tier[c] * TH_W + 0.16 + isl.oy;
     const sd = isl.stairDir.get(c);
     if (sd !== undefined) {
       // ramp across the stair cell toward the higher neighbor
@@ -162,7 +193,7 @@ function generateAsync(s: number, overrides: Partial<Params> = {}): Promise<Layo
 {
   const panel = document.getElementById("params")!;
   const defs: Array<{ key: keyof Params; label: string; min: number; max: number; step: number }> = [
-    { key: "islands", label: "linked blocks", min: 1, max: 4, step: 1 },
+    { key: "islands", label: "linked blocks", min: 1, max: 6, step: 1 },
     { key: "size", label: "dungeon size", min: 9, max: 21, step: 2 },
     { key: "plazas", label: "teleport plazas", min: 0, max: 4, step: 1 },
     { key: "totems", label: "brazier totems", min: 0, max: 10, step: 1 },
@@ -204,83 +235,174 @@ const ISLAND_GAP = 15; // world units of abyss between linked blocks
 
 async function forge(newSeed: number): Promise<void> {
   seed = newSeed >>> 0 || 1;
-  const nIsl = Math.max(1, Math.min(4, Math.round(genParams.islands)));
+  const nIsl = Math.max(1, Math.min(6, Math.round(genParams.islands)));
 
-  // generate the whole chain IN PARALLEL across the worker pool
+  // -- macro layout: blocks GROW on a coarse grid like WFC tiles — each new
+  //    block attaches to a random placed block on a free side. Gates open
+  //    toward tree neighbors (bridged) plus extra random sides that dangle
+  //    over the abyss (step out and you fall).
   const tok = ++forgeToken;
-  const layouts = await Promise.all(Array.from({ length: nIsl }, (_, i) => {
-    const s = i === 0 ? seed : ((Math.imul(seed, 0x85ebca6b) ^ Math.imul(i, 0x9e3779b1)) >>> 0) || 1;
-    const gateSides = nIsl === 1 ? [] : i === 0 ? [0] : i === nIsl - 1 ? [1] : [1, 0];
-    const overrides: Partial<Params> = i === 0
-      ? { gateSides }
-      : {
-          gateSides,
-          size: Math.max(9, Math.round(genParams.size * 0.6)) | 1,
-          plazas: 1,
-          totems: Math.min(2, genParams.totems),
-        };
-    return generateAsync(s, overrides);
-  }));
-  if (tok !== forgeToken) return; // a newer forge superseded this one
-
-  for (const w of worlds) w.dispose();
-  worlds.length = 0;
-  walkIslands.length = 0;
-  walkLinks.length = 0;
-
-  // chain layout: place each block east of the previous, aligning gate rows
-  let minX = Infinity, maxX = -Infinity;
-  let prevEast: { x: number; z: number; y: number } | null = null;
-  let ox = 0, oz = 0;
-  for (let i = 0; i < layouts.length; i++) {
-    const l = layouts[i];
-    const half = (l.N * CELL) / 2;
-    const localPos = (g: { x: number; y: number; tier: number }) => ({
-      x: (g.x - (l.N - 1) / 2) * CELL,
-      z: (g.y - (l.N - 1) / 2) * CELL,
-      y: g.tier * 1.85 + 0.1,
-    });
-    const west = l.gates.find((g) => g.dir === 1);
-    const east = l.gates.find((g) => g.dir === 0);
-    if (i > 0 && prevEast) {
-      ox += ISLAND_GAP + half + (layouts[i - 1].N * CELL) / 2;
-      oz = west ? prevEast.z - localPos({ ...west, tier: 0 }).z : oz;
+  const h32 = (a: number, b: number) => (Math.imul(seed ^ a, 0x9e3779b1) ^ Math.imul(b, 0x85ebca6b)) >>> 0;
+  const macro: Array<{ mi: number; mj: number; parent: number; dirFromParent: number }> = [
+    { mi: 0, mj: 0, parent: -1, dirFromParent: -1 },
+  ];
+  const occupied = new Set(["0,0"]);
+  const MDX = [1, -1, 0, 0], MDZ = [0, 0, 1, -1];
+  for (let k = 1; k < nIsl; k++) {
+    let placedOk = false;
+    for (let attempt = 0; attempt < 12 && !placedOk; attempt++) {
+      const p = h32(k, attempt) % macro.length;
+      const d = h32(k, attempt + 100) % 4;
+      const mi = macro[p].mi + MDX[d], mj = macro[p].mj + MDZ[d];
+      if (occupied.has(`${mi},${mj}`)) continue;
+      occupied.add(`${mi},${mj}`);
+      macro.push({ mi, mj, parent: p, dirFromParent: d });
+      placedOk = true;
     }
-    const w = buildWorld(l);
-    w.group.position.set(ox, 0, oz);
-    scene.add(w.group);
-    worlds.push(w);
-    walkIslands.push({
-      l, ox, oz,
-      stairDir: new Map(l.stairs.map((s) => [s.y * l.N + s.x, s.dir])),
-    });
-    minX = Math.min(minX, ox - half);
-    maxX = Math.max(maxX, ox + half);
-    // bridge back to the previous island
-    if (i > 0 && prevEast && west) {
-      const wp = localPos(west);
-      const from = new THREE.Vector3(prevEast.x + 0.3, prevEast.y, prevEast.z);
-      const to = new THREE.Vector3(ox + wp.x - CELL / 2 - 0.3 + 0, wp.y, oz + wp.z);
-      worlds.push(buildBridgeLink(from, to));
-      scene.add(worlds[worlds.length - 1].group);
-      walkLinks.push({ a: from.clone(), b: to.clone(), sag: Math.min(2.2, from.distanceTo(to) * 0.06) });
-    }
-    if (east) {
-      const ep = localPos(east);
-      prevEast = { x: ox + ep.x + CELL / 2 + 0.3, z: oz + ep.z, y: ep.y };
-    } else {
-      prevEast = null;
+    if (!placedOk) break;
+  }
+
+  // gate sides per block: toward parent, toward children, plus dangling extras
+  const gateSets: Array<Set<number>> = macro.map(() => new Set());
+  for (let k = 1; k < macro.length; k++) {
+    const d = macro[k].dirFromParent;
+    gateSets[macro[k].parent].add(d);
+    gateSets[k].add(d ^ 1);
+  }
+  for (let k = 0; k < macro.length; k++) {
+    for (let d = 0; d < 4; d++) {
+      if (!gateSets[k].has(d) && h32(k * 7, d + 300) % 100 < 35) gateSets[k].add(d); // broken sky-door
     }
   }
 
+  // per-block VARIATION: satellites differ in size, growth style and age
+  const layouts = await Promise.all(macro.map((_, i) => {
+    const s = i === 0 ? seed : (h32(i, 1) || 1);
+    const gateSides = [...gateSets[i]];
+    if (i === 0) return generateAsync(seed, { gateSides });
+    const v = (n: number) => h32(i, n + 40) % 1000 / 1000;
+    return generateAsync(s, {
+      gateSides,
+      size: [9, 11, 13][h32(i, 50) % 3] | 1,
+      plazas: h32(i, 51) % 3 === 0 ? 0 : 1,
+      totems: h32(i, 52) % 4,
+      decay: Math.min(1, Math.max(0.1, genParams.decay + (v(3) - 0.5) * 0.5)),
+      heightAmp: Math.max(0.5, genParams.heightAmp + (v(4) - 0.5) * 1.6),
+      newest: Math.min(1, Math.max(0.2, genParams.newest + (v(5) - 0.5) * 0.5)),
+      mound: i === 0 ? genParams.mound : genParams.mound * 0.4, // one temple rules the skyline
+    });
+  }));
+  if (tok !== forgeToken) return; // a newer forge superseded this one
+
+  worlds.length = 0; // slot pools persist; pruneSlots() hides the unused ones
+  walkIslands.length = 0;
+  walkLinks.length = 0;
+  const activeSlots = new Set<number>();
+  // building an island costs 10-20ms of instance filling on the main thread —
+  // spread the chain across frames instead of stalling one frame with all of it
+  const nextFrame = () => new Promise<void>((r) => requestAnimationFrame(() => r()));
+
+  // tree layout: place blocks in BFS order along their parent edges, sliding
+  // each child so the two facing gates line up; bridge every parent-child pair
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  const allLights: LightSpec[] = [];
+  const positions: Array<{ ox: number; oy: number; oz: number }> = [];
+  const gateWorld = (i: number, dir: number) => {
+    const l = layouts[i];
+    const g = l.gates.find((gg) => gg.dir === dir);
+    if (!g) return null;
+    const p = positions[i];
+    const fx = [1, -1, 0, 0][dir], fz = [0, 0, 1, -1][dir];
+    return new THREE.Vector3(
+      p.ox + (g.x - (l.N - 1) / 2) * CELL + fx * (CELL / 2 + 0.3),
+      p.oy + g.tier * TH_W + 0.1,
+      p.oz + (g.y - (l.N - 1) / 2) * CELL + fz * (CELL / 2 + 0.3),
+    );
+  };
+
+  for (let i = 0; i < layouts.length; i++) {
+    const l = layouts[i];
+    const half = (l.N * CELL) / 2;
+    const oy = i === 0 ? 0 : (((h32(i, 141) >>> 4) % 1000) / 1000 - 0.5) * 5.2;
+    let ox = 0, oz = 0;
+    const pIdx = macro[i].parent;
+    if (pIdx >= 0) {
+      const d = macro[i].dirFromParent;
+      const pp = positions[pIdx];
+      const pHalf = (layouts[pIdx].N * CELL) / 2;
+      const fx = [1, -1, 0, 0][d], fz = [0, 0, 1, -1][d];
+      ox = pp.ox + fx * (pHalf + ISLAND_GAP + half);
+      oz = pp.oz + fz * (pHalf + ISLAND_GAP + half);
+      // slide on the cross axis so the two gates face each other
+      const pg = layouts[pIdx].gates.find((g) => g.dir === d);
+      const cg = l.gates.find((g) => g.dir === (d ^ 1));
+      if (pg && cg) {
+        if (fx !== 0) {
+          const pz2 = pp.oz + (pg.y - (layouts[pIdx].N - 1) / 2) * CELL;
+          oz = pz2 - (cg.y - (l.N - 1) / 2) * CELL;
+        } else {
+          const px2 = pp.ox + (pg.x - (layouts[pIdx].N - 1) / 2) * CELL;
+          ox = px2 - (cg.x - (l.N - 1) / 2) * CELL;
+        }
+      }
+    }
+    positions.push({ ox, oy, oz });
+
+    const w = buildWorld(l, i, scene);
+    activeSlots.add(i);
+    w.group.position.set(ox, oy, oz);
+    scene.add(w.group);
+    worlds.push(w);
+    for (const ls of w.lights) allLights.push({ ...ls, x: ls.x + ox, y: ls.y + oy, z: ls.z + oz });
+    walkIslands.push({
+      l, ox, oy, oz,
+      stairDir: new Map(l.stairs.map((s) => [s.y * l.N + s.x, s.dir])),
+    });
+    if (l.bridge) {
+      // the island's own ravine bridge is walkable too
+      const b = l.bridge;
+      const bz = oz + (b.y - (l.N - 1) / 2) * CELL;
+      const by = oy + b.tier * TH_W + 0.1;
+      walkLinks.push({
+        a: new THREE.Vector3(ox + (b.x0 - (l.N - 1) / 2) * CELL + CELL * 0.4, by, bz),
+        b: new THREE.Vector3(ox + (b.x1 - (l.N - 1) / 2) * CELL - CELL * 0.4, by, bz),
+        sag: 0.7,
+      });
+    }
+    minX = Math.min(minX, ox - half); maxX = Math.max(maxX, ox + half);
+    minZ = Math.min(minZ, oz - half); maxZ = Math.max(maxZ, oz + half);
+
+    if (pIdx >= 0) {
+      const from = gateWorld(pIdx, macro[i].dirFromParent);
+      const to = gateWorld(i, macro[i].dirFromParent ^ 1);
+      if (from && to) {
+        worlds.push(buildBridgeLink(from, to, 1000 + i, scene));
+        activeSlots.add(1000 + i);
+        walkLinks.push({ a: from.clone(), b: to.clone(), sag: Math.min(2.2, from.distanceTo(to) * 0.06) });
+      }
+    }
+    // bake per island: spreads shadow-variant pipeline/bind-group creation
+    // across the same frames the incremental build already occupies
+    env.bakeShadows();
+    if (i < layouts.length - 1) {
+      await nextFrame();
+      if (tok !== forgeToken) return; // superseded mid-build
+    }
+  }
+
+  pruneSlots(activeSlots);
+  assignLights(allLights);
   const centerX = (minX + maxX) / 2;
-  const half = Math.max((maxX - minX) / 2, (layouts[0].N * CELL) / 2) + 4;
-  env.fit(Math.hypot(half, (layouts[0].N * CELL) / 2), centerX);
+  const centerZ = (minZ + maxZ) / 2;
+  const half = Math.max((maxX - minX) / 2, (maxZ - minZ) / 2, (layouts[0].N * CELL) / 2) + 4;
+  env.fit(half * 1.2, centerX, centerZ);
   if (Math.abs(lastExtent - half) > 1) {
-    controls.target.set(centerX, 3 * TH, 0);
-    camera.position.set(centerX + half * 0.75, half * 0.62, half * 1.1);
+    controls.target.set(centerX, 3 * TH, centerZ);
+    camera.position.set(centerX + half * 0.75, half * 0.62, centerZ + half * 1.1);
     controls.maxDistance = half * 5;
     lastExtent = half;
+    // fill rate is the budget: bigger worlds render at a slightly lower ratio
+    renderer.setPixelRatio(Math.min(devicePixelRatio, half > 95 ? 1.25 : 1.5));
   }
   env.bakeShadows();
   nameEl.textContent = layouts[0].name + (nIsl > 1 ? ` +${nIsl - 1}` : "");
@@ -305,6 +427,7 @@ addEventListener("resize", () => {
 // ---- third-person mode ------------------------------------------------------
 let player: Player | null = null;
 let playing = false;
+let spawnX = 0, spawnZ = 0;
 let camYaw = 0.6;
 let camDist = 8.5;
 const keys = new Set<string>();
@@ -338,9 +461,9 @@ async function enterPlay(): Promise<void> {
   // spawn on the first medallion plaza when there is one (open, photogenic);
   // fall back to the entrance corridor
   const spawnCell = l0.l.medallions[0] ?? l0.l.entrance;
-  const ex = l0.ox + (spawnCell.x - (l0.l.N - 1) / 2) * CELL;
-  const ez = l0.oz + (spawnCell.y - (l0.l.N - 1) / 2) * CELL;
-  player.place(ex, ez, sampleGround);
+  spawnX = l0.ox + (spawnCell.x - (l0.l.N - 1) / 2) * CELL;
+  spawnZ = l0.oz + (spawnCell.y - (l0.l.N - 1) / 2) * CELL;
+  player.place(spawnX, spawnZ, sampleGround);
   scene.add(player.group);
   playing = true;
   controls.enabled = false;
@@ -371,6 +494,7 @@ async function boot(): Promise<void> {
       const f = (keys.has("w") || keys.has("arrowup") ? 1 : 0) - (keys.has("s") || keys.has("arrowdown") ? 1 : 0);
       const s = (keys.has("d") || keys.has("arrowright") ? 1 : 0) - (keys.has("a") || keys.has("arrowleft") ? 1 : 0);
       player.update(dt, { f, s }, camYaw, sampleGround);
+      if (player.group.position.y < -42) player.place(spawnX, spawnZ, sampleGround); // the abyss returns what it takes
       const p = player.group.position;
       const tx = p.x - Math.sin(camYaw) * camDist;
       const tz = p.z - Math.cos(camYaw) * camDist;
@@ -381,7 +505,21 @@ async function boot(): Promise<void> {
       controls.update();
     }
     for (const w of worlds) w.tick(t);
+    // distance LOD: far islands drop their small-detail layers
+    for (let i = 0; i < walkIslands.length; i++) {
+      const isl = walkIslands[i];
+      const half = (isl.l.N * CELL) / 2;
+      const d2 = Math.hypot(camera.position.x - isl.ox, camera.position.z - isl.oz) - half;
+      setSlotDetail(i, d2 < 95);
+    }
+    for (let i = 0; i < poolSpecs.length; i++) {
+      const s2 = poolSpecs[i];
+      lightPool[i].intensity = s2.base * (0.82 + 0.12 * Math.sin(t * 7.3 + s2.ph) + 0.06 * Math.sin(t * 13.1 + s2.ph * 1.7));
+    }
+    const r0 = performance.now();
     postProcessing.render();
+    const rDur = performance.now() - r0;
+    if (rDur > 100) console.log(`[frame] render() blocked ${rDur.toFixed(0)}ms`);
   });
 }
 

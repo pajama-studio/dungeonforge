@@ -15,7 +15,7 @@ export const TH = 1.85;   // world height per tier
 export const CELL = 2.2;  // world size per grid cell
 
 export function buildEnvironment(scene: THREE.Scene, seed: number): {
-  fit: (half: number, centerX?: number) => void; bakeShadows: () => void; dispose: () => void;
+  fit: (half: number, centerX?: number, centerZ?: number) => void; bakeShadows: () => void; dispose: () => void;
 } {
   const group = new THREE.Group();
   group.name = "environment";
@@ -209,18 +209,18 @@ export function buildEnvironment(scene: THREE.Scene, seed: number): {
 
   return {
     /** refit shadows, canyon ring and haze to the current chain extent/centre */
-    fit(half: number, centerX = 0) {
+    fit(half: number, centerX = 0, centerZ = 0) {
       const r = half + 12;
       if (Math.abs(sc.right - r) >= 1) {
         sc.left = -r; sc.right = r; sc.top = r; sc.bottom = -r;
         sc.updateProjectionMatrix();
-        moon.position.set(-46 + centerX, 48, -22);
-        moon.target.position.set(centerX, 0, 0);
+        moon.position.set(-46 + centerX, 48, -22 + centerZ);
+        moon.target.position.set(centerX, 0, centerZ);
       }
       // the mesa/mist/ruin ring was authored around a ~40-unit island — recentre
       // on the chain and push it outward so cliffs never intersect the blocks
       const s = Math.max(1, (half + 26) / 72);
-      ringGroup.position.x = centerX;
+      ringGroup.position.set(centerX, 0, centerZ);
       ringGroup.scale.set(s, 1, s);
       // longer sightlines need thinner air or the far blocks drown in haze
       hazeU.value = Math.min(0.008, Math.max(0.002, 0.5 / (half * 2.4)));

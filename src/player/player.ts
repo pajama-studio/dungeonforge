@@ -6,7 +6,7 @@ import * as THREE from "three/webgpu";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { color, uv, length, smoothstep } from "three/tsl";
 
-export interface GroundHit { y: number; ok: boolean }
+export interface GroundHit { y: number; ok: boolean; solid?: boolean }
 export type GroundSampler = (x: number, z: number) => GroundHit;
 
 export interface PlayerInput { f: number; s: number } // forward, strafe in [-1,1]
@@ -23,6 +23,8 @@ export class Player {
   private runAction: THREE.AnimationAction | null = null;
   private running = false;
   private heading = 0;
+  private vy = 0;
+  falling = false;
   readonly lantern: THREE.PointLight;
 
   constructor() {
@@ -59,10 +61,19 @@ export class Player {
   place(x: number, z: number, ground: GroundSampler): void {
     const g = ground(x, z);
     this.group.position.set(x, g.ok ? g.y : 0, z);
+    this.falling = false;
+    this.vy = 0;
   }
 
   update(dt: number, input: PlayerInput, camYaw: number, ground: GroundSampler): void {
     const p = this.group.position;
+    if (this.falling) {
+      // stepped through a broken sky-door — the abyss takes it from here
+      this.vy -= 30 * dt;
+      p.y += this.vy * dt;
+      this.mixer?.update(dt);
+      return;
+    }
     const mag = Math.hypot(input.f, input.s);
     if (mag > 0.05) {
       const inv = 1 / Math.max(1, mag);
@@ -72,7 +83,14 @@ export class Player {
       const step = SPEED * dt;
       const tryMove = (mx: number, mz: number): boolean => {
         const g = ground(p.x + mx, p.z + mz);
-        if (!g.ok || Math.abs(g.y - p.y) > STEP_LIMIT) return false;
+        if (!g.ok) {
+          if (g.solid) return false; // a wall blocks
+          p.x += mx; p.z += mz;      // open void: walk out — and drop
+          this.falling = true;
+          this.vy = 0;
+          return true;
+        }
+        if (Math.abs(g.y - p.y) > STEP_LIMIT) return false;
         p.x += mx; p.z += mz;
         p.y += (g.y - p.y) * Math.min(1, dt * 14);
         return true;

@@ -59,13 +59,30 @@ function makeStoneMat(): THREE.MeshLambertNodeMaterial {
     .add(smoothstep(0.06, 0.015, abs(pl.z.sub(off.mul(-0.7)))))
     .mul(sideMask);
   // hand-cut seams: modulate the mortar so joints vary in depth along their run
-  const cut = triNoise3D(positionWorld.mul(2.2), 0, 0).mul(0.5).add(0.65);
+  const cutRaw = triNoise3D(positionWorld.mul(2.2), 0, 0);
+  const cut = cutRaw.mul(0.5).add(0.65);
   const mortar = ex.add(ez).add(line).add(vseam).clamp(0, 1).mul(cut);
   // weathered grain: three FINE scales only — a macro (low-frequency) term just
   // smears meaningless light/dark clouds across whole walls
+  const g46 = triNoise3D(positionWorld.mul(4.6), 0, 0);
   const grain = triNoise3D(positionWorld.mul(0.6), 0, 0).mul(0.16)
     .add(triNoise3D(positionWorld.mul(1.8), 0, 0).mul(0.13))
-    .add(triNoise3D(positionWorld.mul(4.6), 0, 0).mul(0.09));
+    .add(g46.mul(0.09));
+  // Per-brick WEAR — every arris abraded a little differently. Edge proximity
+  // in LOCAL space (sized to blockGeo; floor tiles & steps catch their
+  // vertical corners, small props opt out naturally) × the world-noise breakup
+  // × a per-instance severity hash: some bricks stay near-pristine while their
+  // neighbors are battered. Worn arrises read LIGHTER (bruised stone) and
+  // their normals round off; sparse pits pock the faces. Reuses the noise
+  // samples above — no extra fragment cost to speak of.
+  const dEdge = vec3(hw, (COURSE * 1.02) / 2, hw).sub(abs(pl));
+  const nx2 = smoothstep(0.14, 0.02, dEdge.x);
+  const ny2 = smoothstep(0.14, 0.02, dEdge.y);
+  const nz2 = smoothstep(0.14, 0.02, dEdge.z);
+  const arris = nx2.mul(ny2).add(ny2.mul(nz2)).add(nx2.mul(nz2)).clamp(0, 1);
+  const severity = hash(instanceIndex.toFloat().add(0.91)).mul(0.85).add(0.3);
+  const wear = arris.mul(smoothstep(0.4, 0.78, cutRaw)).mul(severity);
+  const pits = smoothstep(0.78, 0.92, g46).mul(severity);
   // Carved relief — pure math, no textures. An analytic height field whose
   // gradient perturbs the normal: a chiselled egg-crate frieze band every 5th
   // course + a faint tool-mark ripple everywhere. h is differentiable, so the
@@ -83,7 +100,9 @@ function makeStoneMat(): THREE.MeshLambertNodeMaterial {
   const dhdz = band.mul(sx.mul(czn).mul(kx * 0.13)).add(ripple.mul(-kq * 0.012));
   const g = vec3(dhdx, 0, dhdz);
   const gT = g.sub(nl.mul(g.dot(nl)));
-  mat.normalNode = transformNormalToView(nl.sub(gT).normalize());
+  // worn edges round toward the corner direction — under raking moonlight the
+  // arris softens instead of staying a machine-crisp bevel
+  mat.normalNode = transformNormalToView(nl.sub(gT).add(pl.normalize().mul(wear.mul(0.55))).normalize());
 
   const cavity = band.mul(sx.mul(sz)).mul(0.5).add(0.5);
   // rain streaks: columnar (y-independent) noise → dark weathering runs down
@@ -93,7 +112,9 @@ function makeStoneMat(): THREE.MeshLambertNodeMaterial {
   const albedo = float(0.86).add(grain)
     .mul(float(1).sub(mortar.mul(0.42)))
     .mul(cavity.mul(0.09).add(0.955))
-    .mul(float(1).sub(streak.mul(0.22)));
+    .mul(float(1).sub(streak.mul(0.22)))
+    .add(wear.mul(0.16))                     // abraded arrises go pale
+    .mul(float(1).sub(pits.mul(0.4)));       // pockmarks go dark
   mat.colorNode = vec3(albedo);
   return mat;
 }

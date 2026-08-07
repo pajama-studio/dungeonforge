@@ -44,7 +44,7 @@ const dirRotY = (d: Dir): number => (d === 0 ? Math.PI / 2 : d === 1 ? -Math.PI 
 
 /** A free-spanning rope bridge between two islands' gates. Shares the kit's
  *  geometries/materials; only per-span rope tubes are owned (and disposed). */
-export function buildBridgeLink(a: THREE.Vector3, b: THREE.Vector3, slot: number, sceneRoot: THREE.Object3D): WorldHandle {
+export function buildBridgeLink(a: THREE.Vector3, b: THREE.Vector3, slot: number, sceneRoot: THREE.Object3D, riseDelay = 0): WorldHandle {
   const R = getKit();
   const pool = getSlot(slot, sceneRoot);
   const group = pool.group;
@@ -111,7 +111,7 @@ export function buildBridgeLink(a: THREE.Vector3, b: THREE.Vector3, slot: number
   putInstanced(pool, "linkBowls", R.bowlGeo, R.woodMat, bowls, false);
   putInstanced(pool, "linkFlames", R.flameGeo, R.flameWarm, flames, false);
 
-  const rise = makeRise(group);
+  const rise = makeRise(group, riseDelay);
   return {
     group,
     lights: [],
@@ -122,12 +122,14 @@ export function buildBridgeLink(a: THREE.Vector3, b: THREE.Vector3, slot: number
 
 /** forge reveal: freshly built content rises out of the abyss with a whisper
  *  of overshoot (easeOutBack). Group-transform only — costs nothing, and the
- *  handle is recreated per build, so re-forges replay it naturally. */
-function makeRise(group: THREE.Group): (t: number) => void {
+ *  handle is recreated per build, so re-forges replay it naturally. `delay`
+ *  staggers the reveal: building is frame-budget-batched for speed, but each
+ *  island still surfaces in sequence. */
+function makeRise(group: THREE.Group, delay = 0): (t: number) => void {
   let born = -1, baseY = 0;
   return (t: number) => {
     if (born < 0) { born = t; baseY = group.position.y; }
-    const k = Math.min(1, (t - born) / 1.15);
+    const k = Math.min(1, Math.max(0, (t - born - delay) / 1.15));
     const u = k - 1;
     const e = 1 + 2.70158 * u * u * u + 1.70158 * u * u;
     group.position.y = baseY - 26 * (1 - e);
@@ -138,7 +140,7 @@ function makeRise(group: THREE.Group): (t: number) => void {
 // Per-layout build.
 // ---------------------------------------------------------------------------
 
-export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, rootScale = 1): WorldHandle {
+export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, rootScale = 1, riseDelay = 0): WorldHandle {
   const R = getKit();
   const { N, kind, tier, wallTop, wallBase, support } = l;
   const gi = (x: number, y: number) => y * N + x;
@@ -988,7 +990,7 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   }
 
   // ---------------------------------------------------------------- handle
-  const rise = makeRise(group);
+  const rise = makeRise(group, riseDelay);
   return {
     group,
     lights,

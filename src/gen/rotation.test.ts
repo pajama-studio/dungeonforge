@@ -31,11 +31,11 @@ describe("layout rotation", () => {
       for (const [side, row] of [[0, 7], [2, 15]] as const) {
         const g = l.gates.find((gg) => gg.dir === side);
         expect(g, `rot=${k} side=${side}`).toBeTruthy();
-        const t = side <= 1 ? g!.y : g!.x;
+        const t = side === 0 ? g!.y : g!.x;
         expect(Math.abs(t - row), `rot=${k} side=${side} row=${t}`).toBeLessThanOrEqual(4);
         // the gate must sit on the correct boundary and open onto floor
-        const bx = side === 0 ? l.N - 1 : side === 1 ? 0 : g!.x;
-        expect(g!.x).toBe(side <= 1 ? bx : g!.x);
+        if (side === 0) expect(g!.x).toBe(l.N - 1);
+        else expect(g!.y).toBe(l.N - 1);
         const ix = g!.x - DX[side], iy = g!.y - DY[side];
         expect(l.kind[iy * l.N + ix]).toBe(FLOOR);
       }

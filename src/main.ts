@@ -183,7 +183,7 @@ async function startWalk(): Promise<void> {
   walkU = 0;
   walkEndAt = 0;
   player.setFirstPerson(false);
-  lantern.intensity = 15;
+  lantern.intensity = 11;
   setBloom(0.5); // close-up flames would bloom too hot at full strength
   walking = true;
   controls.enabled = false;
@@ -311,7 +311,7 @@ async function boot(): Promise<void> {
       p.y -= 0.45; // the route tube floats a little above the floor
       const heading = Math.atan2(ahead.x - p.x, ahead.z - p.z);
       player.driveTo(p, heading, dt, walkU >= 1 ? "idle" : steep ? "walk" : "run");
-      lantern.position.set(p.x, p.y + 2.2, p.z);
+      lantern.position.set(p.x, p.y + 3.1, p.z);
       // chase cam: high and pulled back — and never inside a wall column:
       // if the camera's cell is masonry, lift it above that wall's top
       const back = new THREE.Vector3(p.x - ahead.x, 0, p.z - ahead.z).normalize();

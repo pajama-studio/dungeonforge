@@ -65,7 +65,7 @@ controls.autoRotate = true;
 controls.autoRotateSpeed = 0.35;
 renderer.domElement.addEventListener("pointerdown", () => { controls.autoRotate = false; });
 
-const postProcessing = createPost(renderer, scene, camera);
+const { post: postProcessing, setBloom } = createPost(renderer, scene, camera);
 
 // ---- world context ----------------------------------------------------------
 const env = buildEnvironment(scene, 1); // env is seed-stable; kept across regens
@@ -183,7 +183,8 @@ async function startWalk(): Promise<void> {
   walkU = 0;
   walkEndAt = 0;
   player.setFirstPerson(false);
-  lantern.intensity = 26;
+  lantern.intensity = 15;
+  setBloom(0.5); // close-up flames would bloom too hot at full strength
   walking = true;
   controls.enabled = false;
   controls.autoRotate = false;
@@ -208,6 +209,7 @@ function stopWalk(): void {
   if (!walking) return;
   walking = false;
   lantern.intensity = 0;
+  setBloom(0.9);
   player?.group.position.set(0, -600, 0);
   controls.enabled = true;
 }
@@ -314,7 +316,13 @@ async function boot(): Promise<void> {
       // if the camera's cell is masonry, lift it above that wall's top
       const back = new THREE.Vector3(p.x - ahead.x, 0, p.z - ahead.z).normalize();
       const desired = new THREE.Vector3(p.x + back.x * 10, p.y + 9.5, p.z + back.z * 10);
-      desired.y = Math.max(desired.y, camClearY(desired.x, desired.z, p.y) + 2.4);
+      // clear the SIGHT LINE, not just the camera cell: sample wall tops along
+      // camera→skeleton and rise above the tallest blocker
+      for (const s of [1, 0.66, 0.33]) {
+        const sx = p.x + (desired.x - p.x) * s;
+        const sz = p.z + (desired.z - p.z) * s;
+        desired.y = Math.max(desired.y, camClearY(sx, sz, p.y) + 2.6);
+      }
       camera.position.lerp(desired, Math.min(1, dt * 3.2));
       camera.lookAt(p.x, p.y + 1.4, p.z);
       if (walkU >= 1 && walkEndAt === 0) walkEndAt = t;

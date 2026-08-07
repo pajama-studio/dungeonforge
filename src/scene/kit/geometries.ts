@@ -103,6 +103,7 @@ export interface GeoKit {
   brambleGeoB: THREE.BufferGeometry;
   wispGeo: THREE.BufferGeometry;
   runeGeo: THREE.BufferGeometry;
+  arrowGeo: THREE.BufferGeometry;
   plugGeo: THREE.BufferGeometry;
   emberGeo: THREE.BufferGeometry;
   beamGeo: THREE.BufferGeometry;
@@ -195,6 +196,21 @@ export function makeGeometries(): GeoKit {
   // glowing rune architrave above the temple door
   const runeGeo = new THREE.PlaneGeometry(2.6, 0.42);
 
+  // navigation chevron: two flat wings meeting in a tip that points along +z
+  const arrowGeo = (() => {
+    const wingL = new THREE.PlaneGeometry(0.46, 0.15);
+    wingL.rotateX(-Math.PI / 2);
+    wingL.rotateY(0.75);
+    wingL.translate(-0.145, 0, -0.03);
+    const wingR = new THREE.PlaneGeometry(0.46, 0.15);
+    wingR.rotateX(-Math.PI / 2);
+    wingR.rotateY(-0.75);
+    wingR.translate(0.145, 0, -0.03);
+    const merged = BufferGeometryUtils.mergeGeometries([wingL, wingR]);
+    wingL.dispose(); wingR.dispose();
+    return merged;
+  })();
+
   // craggy root spike under each island — nobody should see a flat underside
   const plugGeo = (() => {
     const g = new THREE.CylinderGeometry(1, 0.06, 1, 8, 4);
@@ -242,6 +258,7 @@ export function makeGeometries(): GeoKit {
     brambleGeoB: buildBrambleGeo(0x7708a2),
     wispGeo,
     runeGeo,
+    arrowGeo,
     plugGeo,
     emberGeo,
     beamGeo,

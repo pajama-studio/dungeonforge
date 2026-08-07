@@ -23,8 +23,7 @@ interface Portal {
 }
 
 export class RoutePath {
-  private mesh: THREE.Mesh | null = null;
-  private geo: THREE.BufferGeometry | null = null;
+  private mesh: THREE.InstancedMesh | null = null;
   private shownToken = -1;
   private curve: THREE.CatmullRomCurve3 | null = null;
   private curveLen = 0;
@@ -49,10 +48,28 @@ export class RoutePath {
     if (this.visible) return;
     const rc = this.ensure();
     if (!rc) return;
-    this.geo = new THREE.TubeGeometry(rc.curve, Math.min(1600, rc.points * 2), 0.14, 5);
-    this.mesh = new THREE.Mesh(this.geo, getKit().routeMat);
-    this.mesh.frustumCulled = false;
-    this.ctx.scene.add(this.mesh);
+    // one flat chevron every ~1.7 units of arc, oriented along the tangent —
+    // wayfinding decals hovering just above the floor, not a glowing rail
+    const R = getKit();
+    const n = Math.max(2, Math.floor(rc.length / 1.7));
+    const mesh = new THREE.InstancedMesh(R.arrowGeo, R.arrowMat, n);
+    const m = new THREE.Matrix4();
+    const q = new THREE.Quaternion();
+    const up = new THREE.Vector3(0, 1, 0);
+    const s = new THREE.Vector3(1, 1, 1);
+    for (let i = 0; i < n; i++) {
+      const u = (i + 0.5) / n;
+      const p = rc.curve.getPointAt(u);
+      const tan = rc.curve.getTangentAt(u);
+      p.y -= 0.28; // settle toward the pavement (curve floats at +0.55)
+      q.setFromAxisAngle(up, Math.atan2(tan.x, tan.z));
+      m.compose(p, q, s);
+      mesh.setMatrixAt(i, m);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.frustumCulled = false;
+    this.mesh = mesh;
+    this.ctx.scene.add(mesh);
     this.shownToken = this.ctx.state.token;
     this.visible = true;
   }
@@ -63,9 +80,11 @@ export class RoutePath {
   }
 
   hide(): void {
-    if (this.mesh) { this.mesh.removeFromParent(); this.mesh = null; }
-    this.geo?.dispose();
-    this.geo = null;
+    if (this.mesh) {
+      this.mesh.removeFromParent();
+      this.mesh.dispose(); // instance buffers only — geometry/material are kit-shared
+      this.mesh = null;
+    }
     this.visible = false;
   }
 

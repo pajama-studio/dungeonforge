@@ -60,6 +60,9 @@ export class Player {
       if ((o as THREE.Mesh).isMesh) {
         o.castShadow = false;
         o.receiveShadow = false;
+        // no self-glow: some pack materials ship with emissive set
+        const mat = (o as THREE.Mesh).material as THREE.MeshStandardMaterial;
+        if (mat && "emissive" in mat) { mat.emissive.setRGB(0, 0, 0); mat.emissiveIntensity = 0; }
         // never culled: compileAsync only compiles what survives the frustum
         // test, and the player preloads PARKED off-world — culling him there
         // would defer the skinned-pipeline compile to the first Enter (a

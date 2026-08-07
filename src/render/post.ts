@@ -12,9 +12,15 @@ import {
 import { bloom } from "three/addons/tsl/display/BloomNode.js";
 import { MOON_DIR } from "../scene/env";
 
+export interface PostChain {
+  post: THREE.PostProcessing;
+  /** live bloom strength — close-up modes (the skeleton walk) dial it down */
+  setBloom: (s: number) => void;
+}
+
 export function createPost(
   renderer: THREE.WebGPURenderer, scene: THREE.Scene, camera: THREE.Camera,
-): THREE.PostProcessing {
+): PostChain {
   const postProcessing = new THREE.PostProcessing(renderer);
   const scenePass = pass(scene, camera);
   const scenePassColor = scenePass.getTextureNode();
@@ -53,5 +59,8 @@ export function createPost(
   const vig = float(1).sub(smoothstep(0.5, 1.02, screenUV.sub(0.5).length().mul(1.35)).mul(0.45));
   const composed = scenePassColor.add(bloomPass);
   postProcessing.outputNode = composed.mul(trans).add(fogCol.mul(float(1).sub(trans))).mul(vig);
-  return postProcessing;
+  return {
+    post: postProcessing,
+    setBloom: (s: number) => { bloomPass.strength.value = s; },
+  };
 }

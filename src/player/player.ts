@@ -29,20 +29,18 @@ export class Player {
   lastSafeX = 0;
   lastSafeZ = 0;
 
-  /** first-person: hide the body (the lantern stays with you) */
+  /** first-person: hide the body (the orchestrator's lantern stays with you) */
   setFirstPerson(fp: boolean): void {
     if (this.model) this.model.visible = !fp;
     for (const c of this.group.children) {
       if ((c as THREE.Mesh).geometry instanceof THREE.CircleGeometry) c.visible = !fp;
     }
   }
-  readonly lantern: THREE.PointLight;
 
   constructor() {
-    // warm lantern so the hero carries their own pool of light through the maze
-    this.lantern = new THREE.PointLight(0xffa050, 26, 11, 2);
-    this.lantern.position.set(0, 2.2, 0);
-    this.group.add(this.lantern);
+    // NOTE: the warm lantern light lives permanently in the SCENE (owned by
+    // main.ts), not in this group — adding/removing a light recompiles every
+    // pipeline in three's WebGPU forward path, which made ⚔ Enter hitch.
     // soft blob contact shadow (baked moon shadows can't follow a moving actor)
     const blobMat = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false });
     blobMat.colorNode = color(0x000000);
@@ -57,7 +55,15 @@ export class Player {
     const gltf = await new GLTFLoader().loadAsync(url);
     this.model = gltf.scene;
     this.model.traverse((o) => {
-      if ((o as THREE.Mesh).isMesh) { o.castShadow = false; o.receiveShadow = false; }
+      if ((o as THREE.Mesh).isMesh) {
+        o.castShadow = false;
+        o.receiveShadow = false;
+        // never culled: compileAsync only compiles what survives the frustum
+        // test, and the player preloads PARKED off-world — culling him there
+        // would defer the skinned-pipeline compile to the first Enter (a
+        // visible ~1s hitch). A handful of meshes, negligible to keep live.
+        o.frustumCulled = false;
+      }
     });
     this.group.add(this.model);
     this.mixer = new THREE.AnimationMixer(this.model);

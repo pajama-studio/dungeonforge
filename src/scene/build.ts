@@ -622,26 +622,29 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   }
 
   // ---------------------------------------------------------------- smoke
+  // mist banks: FEW and BROAD. Many small puffs read as scattered crumbs from
+  // afar — a handful of wide, flat banks hugging below floor level read as one
+  // weather system settling over the whole fortress.
   const smokes: THREE.Sprite[] = [];
-  for (let k = 0; k < 18; k++) {
+  for (let k = 0; k < 8; k++) {
     const s = new THREE.Sprite(R.smokeMat);
     const a = hash2(seed, k, 41) * Math.PI * 2;
-    const rad = 18 + hash2(seed, k, 42) * 26;
-    if (k < 7 && l.bridge) {
+    const rad = 16 + hash2(seed, k, 42) * 22;
+    if (k < 4 && l.bridge) {
       // mist banks pooling in the ravine, near the bridge (either axis)
       const b = l.bridge;
       const mid = ((b.s0 + b.s1) / 2 - (N - 1) / 2) * CELL;
       const at = (b.at - (N - 1) / 2) * CELL;
-      const jx = (hash2(seed, k, 43) - 0.5) * 8, jz = (hash2(seed, k, 45) - 0.5) * 18;
+      const jx = (hash2(seed, k, 43) - 0.5) * 10, jz = (hash2(seed, k, 45) - 0.5) * 22;
       s.position.set(
-        (b.axis === 0 ? mid : at) + jx, -1 - hash2(seed, k, 44) * 5,
+        (b.axis === 0 ? mid : at) + jx, -1.5 - hash2(seed, k, 44) * 5,
         (b.axis === 0 ? at : mid) + jz,
       );
     } else {
-      s.position.set(Math.cos(a) * rad, -2 - hash2(seed, k, 46) * 6, Math.sin(a) * rad);
+      s.position.set(Math.cos(a) * rad, -2.5 - hash2(seed, k, 46) * 5, Math.sin(a) * rad);
     }
-    const sc = 9 + hash2(seed, k, 47) * 9;
-    s.scale.set(sc, sc * 0.62, 1);
+    const sc = 26 + hash2(seed, k, 47) * 20;
+    s.scale.set(sc, sc * 0.38, 1);
     (s.userData as { ph: number }).ph = hash2(seed, k, 48) * Math.PI * 2;
     (s.userData as { bx: number }).bx = s.position.x;
     smokes.push(s);

@@ -1,11 +1,11 @@
 // 3×3×3 cube demo — 27 blocks in a solid lattice: every horizontal neighbor
 // pair bridges, every vertical pair gets a spiral stair shaft. The showcase build.
 
-import { buildWorld, buildBridgeLink, type LightSpec } from "../scene/build";
+import { buildWorld, buildBridgeLink, buildSupportPiers, type LightSpec } from "../scene/build";
 import { pruneSlots } from "../scene/slots";
-import { CELL, ISLAND_GAP, PR_LARGE } from "../config";
+import { CELL, ISLAND_GAP, PR_LARGE, linkArc } from "../config";
 import type { Ctx } from "./context";
-import { gateWorld, linkSag, findShaftAnyhow, nextFrame } from "./helpers";
+import { gateWorld, findShaftAnyhow, nextFrame } from "./helpers";
 
 export async function forgeCube(ctx: Ctx): Promise<void> {
   if (ctx.state.endless) return;
@@ -74,13 +74,15 @@ export async function forgeCube(ctx: Ctx): Promise<void> {
       if (!from || !to) continue;
       ctx.worlds.push(buildBridgeLink(from, to, edgeSlot, ctx.scene));
       activeSlots.add(edgeSlot++);
-      ctx.walk.addLink(from.clone(), to.clone(), linkSag(from.distanceTo(to)));
+      ctx.walk.addLink(from.clone(), to.clone(), linkArc(from.distanceTo(to)));
     }
-    // stair shafts: every vertical pair, first clear shaft wins
+    // stair shafts + carrying piers: every vertical pair
     const jUp = cellAt(c.mi, c.mj, c.mk + 1);
     if (jUp >= 0) {
       const shaft = findShaftAnyhow(ctx.walk.islands[i], ctx.walk.islands[jUp]);
       if (shaft) ctx.stairs.build(shaft.x, shaft.z, shaft.y0, shaft.y1);
+      ctx.worlds.push(buildSupportPiers(ctx.walk.islands[i], ctx.walk.islands[jUp], edgeSlot, ctx.scene));
+      activeSlots.add(edgeSlot++);
     }
   }
 

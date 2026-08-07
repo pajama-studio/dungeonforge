@@ -11,7 +11,7 @@ import * as THREE from "three/webgpu";
 import type { Layout, Dir } from "../gen/dungeon";
 import { FLOOR, WALL, VOID, ABYSS, DX, DY } from "../gen/dungeon";
 import { hash2, hash3 } from "../gen/rng";
-import { TH, CELL, COURSE } from "../config";
+import { TH, CELL, COURSE, linkArc } from "../config";
 import { getKit } from "./kit";
 import { getSlot, putInstanced, isDecorSuppressed } from "./slots";
 import { InstList } from "./instances";
@@ -42,84 +42,140 @@ const dirRotY = (d: Dir): number => (d === 0 ? Math.PI / 2 : d === 1 ? -Math.PI 
 // Bridge links.
 // ---------------------------------------------------------------------------
 
-/** A free-spanning rope bridge between two islands' gates. Shares the kit's
- *  geometries/materials; only per-span rope tubes are owned (and disposed). */
+/** A stone ARCH bridge between two islands' gates. Blocks must read as
+ *  physically connected from any distance — a thin rope bridge disappears at
+ *  range and the chain looks like disconnected floating islands. Deck rises
+ *  along linkArc (the walkmap/nav sampler uses the SAME function, so the
+ *  drawn deck is exactly the surface the walker stands on). */
 export function buildBridgeLink(a: THREE.Vector3, b: THREE.Vector3, slot: number, sceneRoot: THREE.Object3D, riseDelay = 0): WorldHandle {
   const R = getKit();
   const pool = getSlot(slot, sceneRoot);
   const group = pool.group;
   group.name = "bridge-link";
-  const suppress = isDecorSuppressed();
-  const ownGeos = pool.perBuildGeos;
   const delta = new THREE.Vector3().subVectors(b, a);
   const dist = delta.length();
   const dirN = delta.clone().normalize();
   const rotY = Math.atan2(dirN.z, dirN.x) * -1;
   const perp = new THREE.Vector3(-dirN.z, 0, dirN.x);
-  const sagMax = Math.min(2.2, dist * 0.06);
+  const rise = linkArc(dist);
+  const seed = (slot * 0x9e3779b1) >>> 0;
 
-  const planks = new InstList();
-  const nP = Math.max(6, Math.round(dist / 0.58));
-  const plankW = 0.41; // plankGeo x-size × 0.8 packing
-  for (let i = 0; i < nP; i++) {
-    const t = (i + 0.5) / nP;
-    const px = a.x + (b.x - a.x) * t;
-    const py = a.y + (b.y - a.y) * t;
-    const pz = a.z + (b.z - a.z) * t;
-    const h1 = hash3(0x9a7b, i, nP, 7);
-    planks.pushY(
-      px, py - Math.sin(t * Math.PI) * sagMax, pz,
-      rotY + (h1 - 0.5) * 0.07, (dist / nP / plankW) * 0.82, 1.2, 1.45, hex(0x4a3624),
-    );
-  }
-  putInstanced(pool, "bridgePlanks", R.plankGeo, R.woodMat, planks, true);
-
-  // rope rails: tied at the POST TOPS, easing off gently (sin^1.7 keeps the
-  // first stretch high so it clears the stone abutment instead of stabbing
-  // through it) and slumping to hand height mid-span
-  for (const side of [-0.8, 0.8]) {
-    const pts: THREE.Vector3[] = [];
-    for (let i = 0; i <= 12; i++) {
-      const t = i / 12;
-      const p = new THREE.Vector3().lerpVectors(a, b, t);
-      const drop = Math.pow(Math.sin(t * Math.PI), 1.7) * (sagMax + 1.2);
-      pts.push(new THREE.Vector3(p.x + perp.x * side, p.y + 1.55 - drop, p.z + perp.z * side));
-    }
-    const geo = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 24, 0.05, 5);
-    ownGeos.push(geo);
-    const rope = new THREE.Mesh(geo, R.ropeMat);
-    if (suppress) rope.visible = false;
-    group.add(rope);
-    pool.perBuild.push(rope);
-  }
-
-  const posts = new InstList();
   const stones = new InstList();
   const flames = new InstList();
   const bowls = new InstList();
   const c = new THREE.Color();
-  for (const [end, sgn] of [[a, 1], [b, -1]] as const) {
-    for (const side of [-0.8, 0.8]) {
-      posts.pushY(end.x + perp.x * side, end.y + 0.7, end.z + perp.z * side, rotY, 1.25, 1.5, 1.25, hex(0x3a2c1c));
+  const deckY = (t: number) => a.y + (b.y - a.y) * t + Math.sin(t * Math.PI) * rise;
+
+  const nC = Math.max(4, Math.round(dist / (CELL * 0.5)));
+  const segLen = dist / nC / CELL; // in blockGeo x-units
+  for (let i = 0; i < nC; i++) {
+    const t = (i + 0.5) / nC;
+    const px = a.x + (b.x - a.x) * t, pz = a.z + (b.z - a.z) * t;
+    const y = deckY(t);
+    const h1 = hash3(seed, i, 3, 1);
+    // deck slabs
+    c.setHSL(0.088, 0.2, 0.33 + hash3(seed, i, 4, 2) * 0.09);
+    stones.pushY(px, y - 0.3, pz, rotY + (h1 - 0.5) * 0.03, segLen * 1.08, 0.65, 1.55, c);
+    // arch soffit: courses hang deeper toward the abutments — the classic
+    // spring-line silhouette that sells "masonry", not "plank"
+    const drop = (1 - Math.sin(t * Math.PI)) * Math.min(3.2, dist * 0.17) + 0.7;
+    c.setHSL(0.088, 0.18, 0.27 + hash3(seed, i, 5, 3) * 0.07);
+    stones.pushY(px, y - 0.45 - drop / 2, pz, rotY, segLen * 1.02, drop / COURSE, 1.1, c);
+    // low parapet walls
+    c.setHSL(0.088, 0.2, 0.37 + hash3(seed, i, 6, 4) * 0.08);
+    for (const side of [-1.75, 1.75]) {
+      stones.pushY(px + perp.x * side, y + 0.22, pz + perp.z * side, rotY + (h1 - 0.5) * 0.03, segLen * 0.94, 0.55, 0.16, c);
     }
-    c.setHSL(0.09, 0.3, 0.4);
-    stones.pushY(end.x + dirN.x * sgn * 0.4, end.y - 0.4, end.z + dirN.z * sgn * 0.4, rotY, 0.85, 1.2, 1.9, c);
-    // lantern: a small bowl seated ON the post top, flame rising out of it
-    bowls.pushY(end.x + perp.x * 0.8, end.y + 1.72, end.z + perp.z * 0.8, 0, 0.7, 0.6, 0.7, hex(0x241d16));
-    flames.pushY(end.x + perp.x * 0.8, end.y + 1.82, end.z + perp.z * 0.8, 0, 0.8, 0.85, 0.8, hex(0xffffff));
   }
-  putInstanced(pool, "bridgePosts", R.postGeo, R.woodMat, posts, true);
+
+  // abutment pylons: broad footings that grip both islands' edges, crowned
+  // by the lantern fire that marks every crossing
+  for (const [end, sgn] of [[a, 1], [b, -1]] as const) {
+    for (let k = 0; k < 3; k++) {
+      const w = 2.0 - k * 0.25;
+      c.setHSL(0.088, 0.2, 0.3 + hash3(seed, k, sgn + 2, 5) * 0.08);
+      stones.pushY(
+        end.x + dirN.x * sgn * 0.5, end.y - 0.9 + k * COURSE, end.z + dirN.z * sgn * 0.5,
+        rotY + (hash3(seed, k, sgn + 4, 6) - 0.5) * 0.06, w * 0.62, 1, w, c,
+      );
+    }
+    // lantern: a small bowl seated on the parapet, flame rising out of it
+    bowls.pushY(end.x + perp.x * 1.75, end.y + 0.75, end.z + perp.z * 1.75, 0, 0.7, 0.6, 0.7, hex(0x241d16));
+    flames.pushY(end.x + perp.x * 1.75, end.y + 0.85, end.z + perp.z * 1.75, 0, 0.8, 0.85, 0.8, hex(0xffffff));
+  }
   putInstanced(pool, "linkStones", R.blockGeo, R.stoneMat, stones, true);
   putInstanced(pool, "linkBowls", R.bowlGeo, R.woodMat, bowls, false);
   putInstanced(pool, "linkFlames", R.flameGeo, R.flameWarm, flames, false);
 
-  const rise = makeRise(group, riseDelay);
+  const rise2 = makeRise(group, riseDelay);
   return {
     group,
     lights: [],
-    tick: rise,
+    tick: rise2,
     dispose() { /* slots persist — pruneSlots() hides unused ones */ },
   };
+}
+
+/** Massive masonry piers carrying a STACKED block: without them the upper
+ *  layers levitate and the whole chain reads as a nonsense sky-city. Four
+ *  corner piers (plus edge piers on big footprints) rise from the lower
+ *  block's masonry to bite into the upper block's underside. */
+export function buildSupportPiers(
+  par: { l: Layout; ox: number; oy: number; oz: number },
+  chi: { l: Layout; ox: number; oy: number; oz: number },
+  slot: number, sceneRoot: THREE.Object3D, riseDelay = 0,
+): WorldHandle {
+  const R = getKit();
+  const pool = getSlot(slot, sceneRoot);
+  pool.group.name = "support-piers";
+  const bricks = new InstList();
+  const c = new THREE.Color();
+  // piers stand on the OVERLAP of the two footprints (stacked pairs share it
+  // fully; monument layers overlap by quadrants), inset from its corners
+  const halfC = (chi.l.N * CELL) / 2, halfP = (par.l.N * CELL) / 2;
+  const x0 = Math.max(chi.ox - halfC, par.ox - halfP), x1 = Math.min(chi.ox + halfC, par.ox + halfP);
+  const z0 = Math.max(chi.oz - halfC, par.oz - halfP), z1 = Math.min(chi.oz + halfC, par.oz + halfP);
+  const inset = CELL * 1.7;
+  const sites: Array<[number, number]> = [];
+  if (x1 - x0 > inset * 2 + CELL && z1 - z0 > inset * 2 + CELL) {
+    sites.push(
+      [x0 + inset, z0 + inset], [x1 - inset, z0 + inset],
+      [x0 + inset, z1 - inset], [x1 - inset, z1 - inset],
+    );
+    if (x1 - x0 > 13 * CELL) sites.push([(x0 + x1) / 2, z0 + inset], [(x0 + x1) / 2, z1 - inset]);
+  } else {
+    sites.push([(x0 + x1) / 2, (z0 + z1) / 2]); // sliver overlap: one central pier
+  }
+  const seed = (slot * 0x85ebca6b) >>> 0;
+  for (let s = 0; s < sites.length; s++) {
+    const px = sites[s][0], pz = sites[s][1];
+    // footing: the parent cell's masonry top or ground under the pier —
+    // outside the parent grid it sinks to the parent's base plane instead
+    const gx = Math.round((px - par.ox) / CELL + (par.l.N - 1) / 2);
+    const gy = Math.round((pz - par.oz) / CELL + (par.l.N - 1) / 2);
+    let baseY = par.oy - TH;
+    if (gx >= 0 && gy >= 0 && gx < par.l.N && gy < par.l.N) {
+      const ci = gy * par.l.N + gx;
+      baseY = par.oy + (par.l.kind[ci] === WALL ? par.l.wallTop[ci] - 1 : par.l.tier[ci]) * TH;
+    }
+    const topY = chi.oy + TH * 0.6; // bite into the child's masonry — no seam
+    const n = Math.max(2, Math.ceil((topY - baseY) / COURSE));
+    for (let k = 0; k < n; k++) {
+      const t = k / (n - 1 || 1);
+      const h1 = hash3(seed, s, k, 5);
+      // entasis: broad footing and flared capital, slimmer waist
+      const w = 1.85 - Math.sin(t * Math.PI) * 0.55 + (h1 - 0.5) * 0.1;
+      c.setHSL(0.088, 0.18, 0.28 + hash3(seed, s, k, 6) * 0.09);
+      bricks.pushY(
+        px + (hash3(seed, s, k, 7) - 0.5) * 0.12, baseY + (k + 0.5) * COURSE,
+        pz + (hash3(seed, s, k, 8) - 0.5) * 0.12,
+        (h1 - 0.5) * 0.35, w, 1.02, w, c,
+      );
+    }
+  }
+  putInstanced(pool, "blocks", R.blockGeo, R.stoneMat, bricks, true);
+  const rise = makeRise(pool.group, riseDelay);
+  return { group: pool.group, lights: [], tick: rise, dispose() {} };
 }
 
 /** forge reveal: freshly built content rises out of the abyss with a whisper

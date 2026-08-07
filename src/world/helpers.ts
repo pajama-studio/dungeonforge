@@ -20,8 +20,6 @@ export function gateWorld(l: Layout, p: Origin, dir: number): THREE.Vector3 | nu
   );
 }
 
-/** rope-bridge sag for a given span */
-export const linkSag = (dist: number): number => Math.min(2.2, dist * 0.06);
 
 /** find a clear elevator shaft joining a stacked pair: a cell that is open
  *  floor in BOTH layers — searched outward from the child's center.

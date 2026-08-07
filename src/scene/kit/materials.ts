@@ -233,6 +233,7 @@ export interface MatKit {
   medallionMat: THREE.MeshStandardNodeMaterial;
   smokeMat: THREE.SpriteNodeMaterial;
   arrowMat: THREE.MeshBasicNodeMaterial;
+  navMat: THREE.MeshBasicNodeMaterial;
 }
 
 export function makeMaterials(): MatKit {
@@ -407,6 +408,12 @@ export function makeMaterials(): MatKit {
     arrowMat.opacityNode = wave.mul(0.35).add(0.5);
   }
 
+  // navmesh overlay: flat translucent cells, tinted per instance (walkable /
+  // stair / portal). LDR and additive-free — a debug layer, not a light.
+  const navMat = new THREE.MeshBasicNodeMaterial({
+    transparent: true, depthWrite: false, opacity: 0.3, side: THREE.DoubleSide,
+  });
+
   return {
     stoneMat: makeStoneMat(),
     // spiral stair towers share the masonry face-shading via vertex colors
@@ -440,5 +447,6 @@ export function makeMaterials(): MatKit {
     medallionMat: makeMedallionMat(),
     smokeMat,
     arrowMat,
+    navMat,
   };
 }

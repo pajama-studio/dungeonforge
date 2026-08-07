@@ -104,6 +104,7 @@ export interface GeoKit {
   wispGeo: THREE.BufferGeometry;
   runeGeo: THREE.BufferGeometry;
   arrowGeo: THREE.BufferGeometry;
+  navCellGeo: THREE.BufferGeometry;
   plugGeo: THREE.BufferGeometry;
   emberGeo: THREE.BufferGeometry;
   beamGeo: THREE.BufferGeometry;
@@ -196,6 +197,10 @@ export function makeGeometries(): GeoKit {
   // glowing rune architrave above the temple door
   const runeGeo = new THREE.PlaneGeometry(2.6, 0.42);
 
+  // navmesh overlay cell: a thin quad per walkable cell
+  const navCellGeo = new THREE.PlaneGeometry(CELL * 0.94, CELL * 0.94);
+  navCellGeo.rotateX(-Math.PI / 2);
+
   // navigation chevron: two flat wings meeting in a tip that points along +z
   const arrowGeo = (() => {
     const wingL = new THREE.PlaneGeometry(0.46, 0.15);
@@ -260,6 +265,7 @@ export function makeGeometries(): GeoKit {
     wispGeo,
     runeGeo,
     arrowGeo,
+    navCellGeo,
     plugGeo,
     emberGeo,
     beamGeo,

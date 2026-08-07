@@ -29,11 +29,21 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   const MDX = [1, -1, 0, 0, 0], MDZ = [0, 0, 1, -1, 0], MDK = [0, 0, 0, 0, 1];
   for (let k = 1; k < nIsl; k++) {
     let placedOk = false;
+    // default worlds top out the full six layers: if the remaining blocks are
+    // only just enough to finish the spire, force-stack on the current summit
+    const maxMk = macro.reduce((a, m) => Math.max(a, m.mk), 0);
+    const mustSpire = nIsl >= 8 && maxMk < 5 && nIsl - k <= 5 - maxMk;
     for (let attempt = 0; attempt < 26 && !placedOk; attempt++) {
-      const p = h32(k, attempt) % macro.length;
-      // guarantee at least one stacked layer once the chain is big enough
-      const needStack = nIsl >= 3 && k === nIsl - 1 && !macro.some((m) => m.dirFromParent === 4);
-      const d = needStack && attempt < 7 ? 4 : h32(k, attempt + 100) % 5;
+      let p: number, d: number;
+      if (mustSpire && attempt < 13) {
+        const tops = macro.map((m, i) => (m.mk === maxMk ? i : -1)).filter((i) => i >= 0);
+        p = tops[h32(k, attempt) % tops.length];
+        d = 4;
+      } else {
+        p = h32(k, attempt) % macro.length;
+        // ~30% of growth goes UP — six layers should be the norm, not a treat
+        d = h32(k, attempt + 100) % 100 < 30 ? 4 : h32(k, attempt + 200) % 4;
+      }
       const mi = macro[p].mi + MDX[d], mj = macro[p].mj + MDZ[d], mk = macro[p].mk + MDK[d];
       if (mk > 5) continue; // six layers max — a proper sky-spire, not an endless ladder
       if (occupied.has(`${mi},${mj},${mk}`)) continue;

@@ -33,7 +33,9 @@ export interface Banner { x: number; y: number; dir: Dir; tier: number; top: num
 export interface Tower { x: number; y: number; top: number; beacon: boolean; scale: number }
 export interface Medallion { x: number; y: number; r: number; tier: number; kind: "blue" | "gold" }
 export interface Brazier { x: number; y: number; tier: number; kind: "blue" | "gold" | "red"; totem?: boolean }
-export interface Bridge { y: number; x0: number; x1: number; tier: number }
+/** rope bridge across the ravine: spans s0..s1 (bank cells) along `axis`
+ *  (0 = x-span at row `at`, 1 = y-span at column `at`) */
+export interface Bridge { axis: 0 | 1; at: number; s0: number; s1: number; tier: number }
 export interface Gate { x: number; y: number; dir: Dir; tier: number }
 
 export interface Params {
@@ -67,6 +69,14 @@ export interface Params {
   /** requested boundary row per gate side (streaming: neighbors agree on the
    *  row via a shared edge hash, so independently-generated blocks line up) */
   gateRows?: number[];
+  /** rotate the finished layout by rot×90° — orientation variety. Gates are
+   *  requested in WORLD space; the request is unrotated internally so carved
+   *  gates land on the requested sides/rows regardless of rot. */
+  rot?: number;
+  /** stamp the temple ziggurat + doorway (default true) */
+  templeOn?: boolean;
+  /** carve the ravine + rope bridge (default true) */
+  ravineOn?: boolean;
 }
 
 export const DEFAULT_PARAMS: Params = {
@@ -110,8 +120,12 @@ export interface Layout {
   braziers: Brazier[];
   bridge: Bridge | null;
   door: { x: number; y: number; tier: number; top: number } | null;
+  /** which way the temple doorway faces (into the forecourt) — rotates with the layout */
+  doorDir: Dir;
+  /** grid indices of the temple-building wall cells (facade/warm-tint lookups) */
+  templeCells: number[];
   entrance: { x: number; y: number };
-  temple: { cx: number; platformTier: number; buildTop: number } | null;
+  temple: { platformTier: number; buildTop: number } | null;
   stats: { floor: number; wall: number; attempts: number; genMs: number };
 }
 
@@ -232,33 +246,42 @@ function attempt(p: Params, seed: number): Layout | string {
   const redMask = new Uint8Array(N * N);
   const doorMask = new Uint8Array(N * N);
 
-  // Temple ziggurat: stepped platform across the north-center, building on top.
-  let B = 0;
-  for (let j = 0; j <= 3; j++) for (let i = ci - 3; i <= ci + 3; i++) {
-    if (i >= 0 && i < M) B = Math.max(B, mTier[mi(i, j)]);
-  }
-  B = Math.max(3, Math.min(5, B));
-  const platformTier = B + 2;
-  const tX0 = gcx - 5, tX1 = gcx + 5; // 11 cells wide
-  for (let gy = 1; gy <= 5; gy++) {
-    for (let gx = tX0; gx <= tX1; gx++) {
-      const t = gy <= 1 ? B + 2 : gy <= 3 ? B + 1 : B;
-      setFloor(gx, gy, t);
-      templeMask[gi(gx, gy)] = 1;
+  // Temple ziggurat (optional): stepped platform across the north-center,
+  // building on top. Satellites without a temple get a very different skyline.
+  const templeOn = p.templeOn !== false;
+  let door: { x: number; y: number; tier: number; top: number } | null = null;
+  let temple: { platformTier: number; buildTop: number } | null = null;
+  const templeCells: number[] = [];
+  if (templeOn) {
+    let B = 0;
+    for (let j = 0; j <= 3; j++) for (let i = ci - 3; i <= ci + 3; i++) {
+      if (i >= 0 && i < M) B = Math.max(B, mTier[mi(i, j)]);
     }
+    B = Math.max(3, Math.min(5, B));
+    const platformTier = B + 2;
+    const tX0 = gcx - 5, tX1 = gcx + 5; // 11 cells wide
+    for (let gy = 1; gy <= 5; gy++) {
+      for (let gx = tX0; gx <= tX1; gx++) {
+        const t = gy <= 1 ? B + 2 : gy <= 3 ? B + 1 : B;
+        setFloor(gx, gy, t);
+        templeMask[gi(gx, gy)] = 1;
+      }
+    }
+    // forecourt link: make sure the row south of the platform can reach tier B
+    for (let gx = tX0; gx <= tX1; gx++) {
+      if (kind[gi(gx, 6)] === FLOOR && Math.abs(tier[gi(gx, 6)] - B) > 1) tier[gi(gx, 6)] = B;
+    }
+    // building: 5 wall cells on the top terrace, doorway at center
+    const buildTop = platformTier + 4;
+    for (let gx = gcx - 2; gx <= gcx + 2; gx++) {
+      kind[gi(gx, 1)] = WALL;
+      templeMask[gi(gx, 1)] = 0;
+      templeCells.push(gi(gx, 1));
+    }
+    doorMask[gi(gcx, 1)] = 1;
+    door = { x: gcx, y: 1, tier: platformTier, top: buildTop };
+    temple = { platformTier, buildTop };
   }
-  // forecourt link: make sure the row south of the platform can reach tier B
-  for (let gx = tX0; gx <= tX1; gx++) {
-    if (kind[gi(gx, 6)] === FLOOR && Math.abs(tier[gi(gx, 6)] - B) > 1) tier[gi(gx, 6)] = B;
-  }
-  // building: 5 wall cells on the top terrace, doorway at center
-  const buildTop = platformTier + 4;
-  for (let gx = gcx - 2; gx <= gcx + 2; gx++) {
-    kind[gi(gx, 1)] = WALL;
-    templeMask[gi(gx, 1)] = 0;
-  }
-  doorMask[gi(gcx, 1)] = 1;
-  const door = { x: gcx, y: 1, tier: platformTier, top: buildTop };
 
   // Medallion plazas: circular clearings flattened to one tier.
   const medallions: Medallion[] = [];
@@ -280,14 +303,19 @@ function attempt(p: Params, seed: number): Layout | string {
     const anchors: Array<[number, number]> = [[0.18, 0.72], [0.82, 0.45], [0.22, 0.32], [0.78, 0.8]];
     const kinds: Array<"blue" | "gold"> = ["blue", "gold", "gold", "blue"];
     const nPlazas = Math.max(0, Math.min(4, Math.round(p.plazas)));
+    const jit = (k: number, salt: number) => (hash2(seed, k, salt) - 0.5) * 0.16;
     for (let k = 0; k < nPlazas; k++) {
-      stampPlaza(Math.round(M * anchors[k][0]), Math.round(M * anchors[k][1]), kinds[k]);
+      // anchors drift per seed so plazas don't sit in the same spot every time
+      const ax = Math.min(0.86, Math.max(0.14, anchors[k][0] + jit(k, 210)));
+      const ay = Math.min(0.86, Math.max(0.2, anchors[k][1] + jit(k, 211)));
+      stampPlaza(Math.round(M * ax), Math.round(M * ay), kinds[k]);
     }
   }
 
-  // Red chamber: sunken 2×2 maze cells, dropped one tier.
+  // Red chamber: sunken 2×2 maze cells, dropped one tier — position drifts per seed.
   {
-    const ri = Math.round(M * 0.6), rj = Math.round(M * 0.78);
+    const ri = Math.max(1, Math.min(M - 3, Math.round(M * (0.6 + (hash2(seed, 1, 212) - 0.5) * 0.3))));
+    const rj = Math.max(Math.round(M * 0.42), Math.min(M - 3, Math.round(M * (0.78 + (hash2(seed, 2, 213) - 0.5) * 0.24))));
     let lo = 9;
     for (let j = rj; j <= rj + 1; j++) for (let i = ri; i <= ri + 1; i++) lo = Math.min(lo, mTier[mi(i, j)]);
     const rt = Math.max(0, lo - 1);
@@ -300,23 +328,25 @@ function attempt(p: Params, seed: number): Layout | string {
     }
   }
 
-  // Ravine: a void band biting in from the south edge, west of center.
-  const rvX = 2 * Math.round(M * 0.3); // wall-lattice column → band [rvX, rvX+2]
-  const rvYEnd = Math.round(N * 0.55);
-  for (let gy = N - 1; gy >= rvYEnd; gy--) {
-    for (let gx = rvX; gx <= rvX + 2; gx++) {
-      if (templeMask[gi(gx, gy)] || plazaMask[gi(gx, gy)] || redMask[gi(gx, gy)]) continue;
-      kind[gi(gx, gy)] = VOID;
-    }
-  }
-  // Bridge: northernmost ravine row where both banks are floor at equal tier.
+  // Ravine (optional): a void band biting in from the south edge, west of center.
   let bridge: Bridge | null = null;
-  for (let gy = rvYEnd; gy < N - 1 && !bridge; gy++) {
-    const a = gi(rvX - 1, gy), b = gi(rvX + 3, gy);
-    if (kind[a] === FLOOR && kind[b] === FLOOR && tier[a] === tier[b]) {
-      let clear = true;
-      for (let gx = rvX; gx <= rvX + 2; gx++) if (kind[gi(gx, gy)] !== VOID) clear = false;
-      if (clear) bridge = { y: gy, x0: rvX - 1, x1: rvX + 3, tier: tier[a] };
+  if (p.ravineOn !== false) {
+    const rvX = 2 * Math.round(M * 0.3); // wall-lattice column → band [rvX, rvX+2]
+    const rvYEnd = Math.round(N * 0.55);
+    for (let gy = N - 1; gy >= rvYEnd; gy--) {
+      for (let gx = rvX; gx <= rvX + 2; gx++) {
+        if (templeMask[gi(gx, gy)] || plazaMask[gi(gx, gy)] || redMask[gi(gx, gy)]) continue;
+        kind[gi(gx, gy)] = VOID;
+      }
+    }
+    // Bridge: northernmost ravine row where both banks are floor at equal tier.
+    for (let gy = rvYEnd; gy < N - 1 && !bridge; gy++) {
+      const a = gi(rvX - 1, gy), b = gi(rvX + 3, gy);
+      if (kind[a] === FLOOR && kind[b] === FLOOR && tier[a] === tier[b]) {
+        let clear = true;
+        for (let gx = rvX; gx <= rvX + 2; gx++) if (kind[gi(gx, gy)] !== VOID) clear = false;
+        if (clear) bridge = { axis: 0, at: gy, s0: rvX - 1, s1: rvX + 3, tier: tier[a] };
+      }
     }
   }
 
@@ -401,7 +431,7 @@ function attempt(p: Params, seed: number): Layout | string {
 
   // reachability of the temple terrace from the entrance is implied by nc==1,
   // but assert it explicitly (it's the whole point of the fortress):
-  if (comp[gi(entrance.x, entrance.y)] !== comp[gi(gcx, 2)]) return "temple unreachable";
+  if (templeOn && comp[gi(entrance.x, entrance.y)] !== comp[gi(gcx, 2)]) return "temple unreachable";
 
   // -- Stage 5.5: gates — openings in the outer wall where bridges dock.
   const gates: Gate[] = [];
@@ -497,15 +527,17 @@ function attempt(p: Params, seed: number): Layout | string {
     // stragglers (fully enclosed): flat default
     for (let c = 0; c < N * N; c++) if (kind[c] === WALL && !done[c]) { wallTop[c] = 3; wallBase[c] = 0; }
     // temple building override
-    for (let gx = gcx - 2; gx <= gcx + 2; gx++) {
-      const c = gi(gx, 1);
-      wallTop[c] = buildTop;
-      wallBase[c] = platformTier - 1;
-    }
-    // north backdrop behind the building
-    for (let gx = gcx - 3; gx <= gcx + 3; gx++) {
-      const c = gi(gx, 0);
-      if (kind[c] === WALL) { wallTop[c] = Math.max(wallTop[c], buildTop - 1); }
+    if (temple) {
+      for (let gx = gcx - 2; gx <= gcx + 2; gx++) {
+        const c = gi(gx, 1);
+        wallTop[c] = temple.buildTop;
+        wallBase[c] = temple.platformTier - 1;
+      }
+      // north backdrop behind the building
+      for (let gx = gcx - 3; gx <= gcx + 3; gx++) {
+        const c = gi(gx, 0);
+        if (kind[c] === WALL) { wallTop[c] = Math.max(wallTop[c], temple.buildTop - 1); }
+      }
     }
     // silhouette variety on long outer walls
     for (let k = 1; k < N - 1; k++) {
@@ -613,8 +645,8 @@ function attempt(p: Params, seed: number): Layout | string {
     }
   }
   // temple doorway sconces
-  for (const gx of [gcx - 1, gcx + 1]) {
-    torches.push({ x: gx, y: 1, dir: 2, tier: platformTier });
+  if (temple) for (const gx of [gcx - 1, gcx + 1]) {
+    torches.push({ x: gx, y: 1, dir: 2, tier: temple.platformTier });
   }
 
   // -- Stage 11: banners on tall wall faces (their own spacing lattice).
@@ -639,8 +671,8 @@ function attempt(p: Params, seed: number): Layout | string {
       }
     }
     // forced pair flanking the temple door
-    for (const gx of [gcx - 2, gcx + 2]) {
-      banners.push({ x: gx, y: 1, dir: 2, tier: platformTier, top: buildTop });
+    if (temple) for (const gx of [gcx - 2, gcx + 2]) {
+      banners.push({ x: gx, y: 1, dir: 2, tier: temple.platformTier, top: temple.buildTop });
     }
   }
 
@@ -655,7 +687,7 @@ function attempt(p: Params, seed: number): Layout | string {
       if (kind[c] === FLOOR && !stairMask[c]) braziers.push({ x: bx, y: by, tier: tier[c], kind: m.kind });
     }
   }
-  for (const rx of [gcx - 3, gcx + 3]) braziers.push({ x: rx, y: 2, tier: platformTier, kind: "gold" });
+  if (temple) for (const rx of [gcx - 3, gcx + 3]) braziers.push({ x: rx, y: 2, tier: temple.platformTier, kind: "gold" });
   {
     // one red brazier at the heart of the red chamber
     let cx = 0, cy = 0, n = 0;
@@ -708,8 +740,9 @@ function attempt(p: Params, seed: number): Layout | string {
     kind, tier, wallTop, wallBase, support,
     stairMask, ruinMask, redMask, templeMask, plazaMask, doorMask,
     stairs, gates, torches, banners, towers, medallions, braziers, bridge, door,
+    doorDir: 2, templeCells,
     entrance,
-    temple: { cx: gcx, platformTier, buildTop },
+    temple,
     stats: { floor, wall, attempts: 1, genMs: 0 },
   };
 }
@@ -718,16 +751,88 @@ function medallionCenter(meds: Medallion[], x: number, y: number): boolean {
   return meds.some((m) => Math.hypot(m.x - x, m.y - y) < 1.5);
 }
 
+// ---------------------------------------------------------------------------
+// Rotation — orientation variety. One application of R maps (x,y) → (y, N-1-x);
+// every grid, feature position and direction maps through it, so a rotated
+// Layout is indistinguishable from a natively-generated one downstream.
+
+const DIR_MAP: readonly Dir[] = [3, 2, 0, 1]; // where dir d points after one R
+
+function rotateOnce(l: Layout): Layout {
+  const N = l.N;
+  const gi = (x: number, y: number) => y * N + x;
+  const mapGrid = <T extends Uint8Array | Int8Array>(g: T): T => {
+    const out = new (g.constructor as new (n: number) => T)(g.length);
+    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) out[gi(y, N - 1 - x)] = g[gi(x, y)];
+    return out;
+  };
+  const mp = <F extends { x: number; y: number }>(f: F): F => ({ ...f, x: f.y, y: N - 1 - f.x });
+  const md = (d: Dir): Dir => DIR_MAP[d];
+  const bridge: Bridge | null = l.bridge === null ? null
+    : l.bridge.axis === 0
+      ? { axis: 1, at: l.bridge.at, s0: N - 1 - l.bridge.s1, s1: N - 1 - l.bridge.s0, tier: l.bridge.tier }
+      : { axis: 0, at: N - 1 - l.bridge.at, s0: l.bridge.s0, s1: l.bridge.s1, tier: l.bridge.tier };
+  return {
+    ...l,
+    kind: mapGrid(l.kind), tier: mapGrid(l.tier), wallTop: mapGrid(l.wallTop),
+    wallBase: mapGrid(l.wallBase), support: mapGrid(l.support),
+    stairMask: mapGrid(l.stairMask), ruinMask: mapGrid(l.ruinMask), redMask: mapGrid(l.redMask),
+    templeMask: mapGrid(l.templeMask), plazaMask: mapGrid(l.plazaMask), doorMask: mapGrid(l.doorMask),
+    stairs: l.stairs.map((s) => ({ ...mp(s), dir: md(s.dir) })),
+    gates: l.gates.map((g) => ({ ...mp(g), dir: md(g.dir) })),
+    torches: l.torches.map((t) => ({ ...mp(t), dir: md(t.dir) })),
+    banners: l.banners.map((b) => ({ ...mp(b), dir: md(b.dir) })),
+    towers: l.towers.map(mp),
+    medallions: l.medallions.map(mp),
+    braziers: l.braziers.map(mp),
+    bridge,
+    door: l.door === null ? null : mp(l.door),
+    doorDir: md(l.doorDir),
+    templeCells: l.templeCells.map((c) => {
+      const x = c % N, y = Math.floor(c / N);
+      return gi(y, N - 1 - x);
+    }),
+    entrance: mp(l.entrance),
+  };
+}
+
+/** unrotate a world-space gate request so that after `k` rotations the carved
+ *  gate lands on the requested side (and near the requested row) */
+function unrotateGates(sides: number[], rows: number[] | undefined, k: number, N: number):
+{ gateSides: number[]; gateRows?: number[] } {
+  const inv = (x: number, y: number): [number, number] => [N - 1 - y, x]; // R⁻¹
+  const outS: number[] = [], outR: number[] = [];
+  sides.forEach((side, idx) => {
+    const t = rows?.[idx] ?? Math.floor(N / 2);
+    let x = side === 0 ? N - 1 : side === 1 ? 0 : t;
+    let y = side === 2 ? N - 1 : side === 3 ? 0 : t;
+    for (let i = 0; i < k; i++) [x, y] = inv(x, y);
+    const s0 = x === N - 1 ? 0 : x === 0 ? 1 : y === N - 1 ? 2 : 3;
+    outS.push(s0);
+    outR.push(s0 <= 1 ? y : x);
+  });
+  return { gateSides: outS, gateRows: rows ? outR : undefined };
+}
+
 export function generate(input: number | Partial<Params>): Layout {
   const p: Params = typeof input === "number"
     ? { ...DEFAULT_PARAMS, seed: input }
     : { ...DEFAULT_PARAMS, ...input };
   const t0 = performance.now();
+  const k = ((Math.round(p.rot ?? 0) % 4) + 4) % 4;
+  // gates are requested in world space — unrotate the request before the
+  // pipeline so post-rotation gates land where the caller asked
+  const N = 2 * (Math.max(7, Math.min(23, Math.round(p.size))) | 0) + 1;
+  const pGen = k > 0 && p.gateSides
+    ? { ...p, ...unrotateGates(p.gateSides, p.gateRows, k, N) }
+    : p;
   const reasons: string[] = [];
   for (let a = 0; a < 6; a++) {
     const s = (Math.imul(p.seed + a, 0x9e3779b1) ^ Math.imul(a, 0x85ebca6b)) >>> 0;
-    const r = attempt(p, s === 0 ? 1 : s);
+    let r = attempt(pGen, s === 0 ? 1 : s);
     if (typeof r === "string") { reasons.push(r); continue; }
+    for (let i = 0; i < k; i++) r = rotateOnce(r);
+    r.params = p; // report the world-space params
     r.stats.attempts = a + 1;
     r.stats.genMs = Math.round((performance.now() - t0) * 100) / 100;
     (r as { seed: number }).seed = p.seed; // report the user-facing seed

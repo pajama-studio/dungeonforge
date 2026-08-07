@@ -76,6 +76,9 @@ export class EndlessWorld {
     for (const { e, side } of edges) if (e.has) { gateSides.push(side); gateRows.push(e.row); }
     const l = await ctx.gen.generate(this.eh32(mi, mj, 0x11) || 1, ctx.genParams, {
       gateSides, gateRows, size,
+      rot: this.eh32(mi, mj, 0x44) % 4,
+      templeOn: this.eh32(mi, mj, 0x55) % 100 < 65,
+      ravineOn: this.eh32(mi, mj, 0x66) % 100 < 75,
       mound: mi === 0 && mj === 0 ? ctx.genParams.mound : ctx.genParams.mound * 0.45,
       plazas: this.eh32(mi, mj, 0x33) % 3 === 0 ? 2 : 1,
     });

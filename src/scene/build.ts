@@ -160,7 +160,8 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   const redTiles = new InstList();
   const stoneColor = new THREE.Color();
 
-  const isTempleBuilding = (x: number, y: number) => y === 1 && l.temple !== null && Math.abs(x - l.temple.cx) <= 2;
+  const templeCellSet = new Set(l.templeCells);
+  const isTempleBuilding = (x: number, y: number) => templeCellSet.has(gi(x, y));
   const towerAt = new Map<number, Layout["towers"][number]>(l.towers.map((t) => [t.y * N + t.x, t]));
 
   // Interior maze walls are slimmer than the corridors they divide: thin across
@@ -304,19 +305,26 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
     }
   }
 
-  // temple facade: pilasters flanking the doorway + a proud lintel course
+  // temple facade: pilasters flanking the doorway + a proud lintel course.
+  // Oriented by doorDir — rotated layouts put the temple on any side.
   if (l.temple && l.door) {
     const T = l.temple;
-    const faceZ = wz(1) + CELL / 2 + 0.14;
-    for (const px of [wx(T.cx - 1) + CELL * 0.38, wx(T.cx + 1) - CELL * 0.38]) {
+    const fdx = DX[l.doorDir], fdz = DY[l.doorDir];
+    const pxd = -fdz, pzd = fdx; // along the facade
+    const rotF = dirRotY(l.doorDir);
+    const fx0 = wx(l.door.x) + fdx * (CELL / 2 + 0.14);
+    const fz0 = wz(l.door.y) + fdz * (CELL / 2 + 0.14);
+    for (const sgn of [-1, 1]) {
+      const bx = fx0 + pxd * sgn * 0.62 * CELL;
+      const bz = fz0 + pzd * sgn * 0.62 * CELL;
       const nC = Math.round(((T.buildTop - T.platformTier) * TH - 0.4) / COURSE);
       for (let k = 0; k < nC; k++) {
         stoneColor.setHSL(0.1, 0.46, 0.5 + hash3(seed, k, 5, 8) * 0.1);
-        blocks.pushY(px, T.platformTier * TH + (k + 0.5) * COURSE, faceZ, 0, 0.34, 0.98, 0.22, stoneColor);
+        blocks.pushY(bx, T.platformTier * TH + (k + 0.5) * COURSE, bz, rotF, 0.34, 0.98, 0.22, stoneColor);
       }
     }
     stoneColor.setHSL(0.1, 0.48, 0.56);
-    blocks.pushY(wx(T.cx), l.door.tier * TH + 2.75, faceZ, 0, 1.55, 0.85, 0.24, stoneColor);
+    blocks.pushY(fx0, l.door.tier * TH + 2.75, fz0, rotF, 1.55, 0.85, 0.24, stoneColor);
   }
   // pavilion roof slabs on towers
   for (const t of l.towers) {
@@ -528,29 +536,44 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
 
   // ---------------------------------------------------------------- temple portal
   if (l.door) {
+    const fdx = DX[l.doorDir], fdz = DY[l.doorDir];
+    const rotF = dirRotY(l.doorDir);
     const mesh = new THREE.Mesh(R.portalGeo, R.portalMat);
-    mesh.position.set(wx(l.door.x), l.door.tier * TH + 1.25, wz(l.door.y) + CELL / 2 - 0.18);
+    mesh.position.set(
+      wx(l.door.x) + fdx * (CELL / 2 - 0.18), l.door.tier * TH + 1.25,
+      wz(l.door.y) + fdz * (CELL / 2 - 0.18),
+    );
+    mesh.rotation.y = rotF;
     addUnique(mesh);
     // glowing rune architrave carved into the lintel above the doorway
     const rune = new THREE.Mesh(R.runeGeo, R.runeMat);
-    rune.position.set(wx(l.door.x), l.door.tier * TH + 2.95, wz(l.door.y) + CELL / 2 + 0.16);
+    rune.position.set(
+      wx(l.door.x) + fdx * (CELL / 2 + 0.16), l.door.tier * TH + 2.95,
+      wz(l.door.y) + fdz * (CELL / 2 + 0.16),
+    );
+    rune.rotation.y = rotF;
     addUnique(rune);
   }
 
   // ---------------------------------------------------------------- bridge
   if (l.bridge) {
     const b = l.bridge;
-    const x0 = wx(b.x0) + CELL * 0.4, x1 = wx(b.x1) - CELL * 0.4;
-    const z = wz(b.y);
+    // span runs along x (axis 0) or z (axis 1) — rotated layouts flip it
+    const atW = (b.at - (N - 1) / 2) * CELL;
+    const s0 = (b.s0 - (N - 1) / 2) * CELL + CELL * 0.4;
+    const s1 = (b.s1 - (N - 1) / 2) * CELL - CELL * 0.4;
+    const bX = (s: number, off: number) => (b.axis === 0 ? s : atW + off);
+    const bZ = (s: number, off: number) => (b.axis === 0 ? atW + off : s);
+    const rotB = b.axis === 0 ? 0 : Math.PI / 2;
     const yTop = b.tier * TH + 0.1;
     const planks = new InstList();
     const nP = 14;
     for (let i = 0; i < nP; i++) {
       const t = (i + 0.5) / nP;
-      const x = x0 + (x1 - x0) * t;
+      const s = s0 + (s1 - s0) * t;
       const sag = Math.sin(t * Math.PI) * 0.7;
       const h1 = hash3(seed, 999, i, 7);
-      planks.pushY(x, yTop - sag, z, (h1 - 0.5) * 0.1, 1, 1.2, 1.45, hex(0x4a3624));
+      planks.pushY(bX(s, 0), yTop - sag, bZ(s, 0), rotB + (h1 - 0.5) * 0.1, 1, 1.2, 1.45, hex(0x4a3624));
     }
     putInstanced(pool, "ravinePlanks", R.plankGeo, R.woodMat, planks, true);
     // rope rails from post top to hand height (same easing as buildBridgeLink)
@@ -558,24 +581,25 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
       const pts: THREE.Vector3[] = [];
       for (let i = 0; i <= 8; i++) {
         const t = i / 8;
+        const s = s0 + (s1 - s0) * t;
         const drop = Math.pow(Math.sin(t * Math.PI), 1.7) * 1.7;
-        pts.push(new THREE.Vector3(x0 + (x1 - x0) * t, yTop + 1.5 - drop, z + side));
+        pts.push(new THREE.Vector3(bX(s, side), yTop + 1.5 - drop, bZ(s, side)));
       }
       const geo = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 16, 0.05, 5);
       perBuildGeos.push(geo);
       addUnique(new THREE.Mesh(geo, R.ropeMat));
     }
     const posts = new InstList();
-    for (const px of [x0, x1]) for (const side of [-0.8, 0.8]) {
-      posts.pushY(px, yTop + 0.7, z + side, 0, 1.25, 1.45, 1.25, hex(0x3a2c1c));
+    for (const s of [s0, s1]) for (const side of [-0.8, 0.8]) {
+      posts.pushY(bX(s, side), yTop + 0.7, bZ(s, side), rotB, 1.25, 1.45, 1.25, hex(0x3a2c1c));
     }
     putInstanced(pool, "ravinePosts", R.postGeo, R.woodMat, posts, true);
     // stone abutments anchoring both ends + a lantern flame on each near post
-    for (const [ax, sgn] of [[x0, -1], [x1, 1]] as const) {
+    for (const [s, sgn] of [[s0, -1], [s1, 1]] as const) {
       stoneColor.setHSL(0.09, 0.3, 0.4);
-      blocks.pushY(ax + sgn * 0.5, yTop - 0.35, z, 0, 0.75, 1.15, 1.9, stoneColor);
-      warmFlames.pushY(ax, yTop + 1.55, z + 0.8, 0, 0.8, 0.85, 0.8, hex(0xffffff));
-      flameAnchors.push({ x: ax, y: yTop + 1.7, z: z + 0.8 });
+      blocks.pushY(bX(s + sgn * 0.5, 0), yTop - 0.35, bZ(s + sgn * 0.5, 0), rotB, 0.75, 1.15, 1.9, stoneColor);
+      warmFlames.pushY(bX(s, 0.8), yTop + 1.55, bZ(s, 0.8), 0, 0.8, 0.85, 0.8, hex(0xffffff));
+      flameAnchors.push({ x: bX(s, 0.8), y: yTop + 1.7, z: bZ(s, 0.8) });
     }
   }
 
@@ -595,7 +619,15 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
     const a = hash2(seed, k, 41) * Math.PI * 2;
     const rad = 18 + hash2(seed, k, 42) * 26;
     if (k < 7 && l.bridge) {
-      s.position.set(wx(l.bridge.x0 + 2) + (hash2(seed, k, 43) - 0.5) * 8, -1 - hash2(seed, k, 44) * 5, wz(Math.round(N * 0.75)) + (hash2(seed, k, 45) - 0.5) * 18);
+      // mist banks pooling in the ravine, near the bridge (either axis)
+      const b = l.bridge;
+      const mid = ((b.s0 + b.s1) / 2 - (N - 1) / 2) * CELL;
+      const at = (b.at - (N - 1) / 2) * CELL;
+      const jx = (hash2(seed, k, 43) - 0.5) * 8, jz = (hash2(seed, k, 45) - 0.5) * 18;
+      s.position.set(
+        (b.axis === 0 ? mid : at) + jx, -1 - hash2(seed, k, 44) * 5,
+        (b.axis === 0 ? at : mid) + jz,
+      );
     } else {
       s.position.set(Math.cos(a) * rad, -2 - hash2(seed, k, 46) * 6, Math.sin(a) * rad);
     }

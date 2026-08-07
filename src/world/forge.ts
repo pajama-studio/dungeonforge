@@ -69,6 +69,17 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
     }
   }
 
+  // a block "has ground" only if NO block occupies the macro cell beneath it —
+  // dirFromParent===4 alone misses horizontally-attached upper-layer blocks
+  // that happen to sit over another branch (they'd grow a rock cone plunging
+  // toward the roof below)
+  const idxByKey = new Map(macro.map((m, i) => [`${m.mi},${m.mj},${m.mk}`, i] as const));
+  const belowIdx = new Map<number, number>();
+  for (let i = 0; i < macro.length; i++) {
+    const b = idxByKey.get(`${macro[i].mi},${macro[i].mj},${macro[i].mk - 1}`);
+    if (b !== undefined) belowIdx.set(i, b);
+  }
+
   const tForge = performance.now();
   // per-block VARIATION: satellites differ in size, growth style and age.
   // Layouts are awaited ONE AT A TIME inside the build loop (parents come
@@ -123,7 +134,7 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
       if (ensureGate(layouts[macro[i].parent], macro[i].dirFromParent)) {
         // parent is already built — rebuild its slot with the carved doorway
         const pi = macro[i].parent;
-        const wp = buildWorld(layouts[pi], pi, ctx.scene, macro[pi].dirFromParent === 4 ? 0 : 1, -1);
+        const wp = buildWorld(layouts[pi], pi, ctx.scene, belowIdx.has(pi) ? 0 : 1, -1);
         wp.group.position.set(positions[pi].ox, positions[pi].oy, positions[pi].oz);
         ctx.worlds[handleIdx[pi]] = wp;
       }
@@ -165,8 +176,8 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
     positions.push({ ox, oy, oz });
     maxOy = Math.max(maxOy, oy);
 
-    // no rock cone under stacked blocks — there is a block directly beneath
-    const w = buildWorld(l, i, ctx.scene, macro[i].dirFromParent === 4 ? 0 : 1, i * 0.05);
+    // no rock cone wherever a block sits directly beneath
+    const w = buildWorld(l, i, ctx.scene, belowIdx.has(i) ? 0 : 1, i * 0.05);
     activeSlots.add(i);
     w.group.position.set(ox, oy, oz);
     ctx.scene.add(w.group);
@@ -206,6 +217,19 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
       if (tok !== state.token) return; // superseded mid-build
       frameStart = performance.now();
     }
+  }
+
+  // second pass: piers for over-another-branch blocks (not their d=4 parent —
+  // those were piered in-loop). The block below may be built LATER in BFS
+  // order, so its position only exists once the loop is done.
+  for (const [i, b] of belowIdx) {
+    if (macro[i].dirFromParent === 4 && macro[i].parent === b) continue;
+    if (!positions[i] || !positions[b]) continue;
+    ctx.worlds.push(buildSupportPiers(
+      { l: layouts[b], ...positions[b] }, { l: layouts[i], ...positions[i] },
+      3000 + i, ctx.scene, i * 0.05,
+    ));
+    activeSlots.add(3000 + i);
   }
 
   pruneSlots(activeSlots);

@@ -196,26 +196,52 @@ export class NavMesh {
     return pts;
   }
 
-  /** the GRAND TOUR: visit EVERY reachable block. Islands are ordered by DFS
-   *  pre-order over the adjacency graph; consecutive targets are joined by
-   *  shortest paths (backtracking naturally re-walks known corridors). */
+  /** island-hop BFS distances over the adjacency graph */
+  private islandBFS(src: number): number[] {
+    const d = new Array<number>(this.islands.length).fill(-1);
+    d[src] = 0;
+    const q = [src];
+    for (let h = 0; h < q.length; h++) {
+      for (const j of this.adj[q[h]]) if (d[j] < 0) { d[j] = d[q[h]] + 1; q.push(j); }
+    }
+    return d;
+  }
+
+  /** the GRAND TOUR: visit EVERY reachable block, END TO END. The two tour
+   *  endpoints are the graph diameter (double BFS), so the walk starts at one
+   *  extremity of the chain and finishes at the opposite one — side branches
+   *  are cleared along the way (DFS pre-order, the branch toward the far
+   *  endpoint deferred last), consecutive targets joined by shortest paths. */
   tour(): { pts: THREE.Vector3[]; unreachable: number[] } | null {
     if (!this.ensure()) return null;
     const islands = this.islands;
+    const d0 = this.islandBFS(0);
+    let A = 0;
+    for (let i = 0; i < d0.length; i++) if (d0[i] > d0[A]) A = i;
+    const dA = this.islandBFS(A);
+    let B = A;
+    for (let i = 0; i < dA.length; i++) if (dA[i] > dA[B]) B = i;
+    const dB = this.islandBFS(B);
     const order: number[] = [];
-    const seen = new Set<number>([0]);
-    const stack = [0];
+    const seen = new Set<number>([A]);
+    const stack = [A];
     while (stack.length > 0) {
       const i = stack.pop()!;
       order.push(i);
-      const kids = [...this.adj[i]].filter((j) => !seen.has(j)).sort((a2, b2) => b2 - a2);
+      // pushed FIRST = explored LAST: the child nearest B sinks to the bottom
+      // of the stack, so the tour drains every side branch before the finale
+      const kids = [...this.adj[i]].filter((j) => !seen.has(j))
+        .sort((a2, b2) => (dB[a2] - dB[b2]) || (b2 - a2));
       for (const j of kids) { seen.add(j); stack.push(j); }
     }
+    // cycles can surface B early — force it to stay the closing target
+    const bAt = order.indexOf(B);
+    if (bAt >= 0 && bAt !== order.length - 1) { order.splice(bAt, 1); order.push(B); }
     const unreachable = islands.map((_, i) => i).filter((i) => !seen.has(i));
     if (unreachable.length > 0) {
       console.warn(`[nav] UNREACHABLE islands: ${unreachable.join(", ")} — repairs should have prevented this`);
     }
-    let cur = this.spawnKey();
+    let cur = this.repCell(A);
     if (cur === null) return null;
     const all: THREE.Vector3[] = [];
     for (const iIsl of order) {

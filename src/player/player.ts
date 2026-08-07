@@ -55,14 +55,19 @@ export class Player {
   async load(url: string): Promise<void> {
     const gltf = await new GLTFLoader().loadAsync(url);
     this.model = gltf.scene;
-    this.model.scale.setScalar(0.85); // a touch smaller than the corridors suggest
+    this.model.scale.setScalar(0.72); // a touch smaller than the corridors suggest
     this.model.traverse((o) => {
       if ((o as THREE.Mesh).isMesh) {
         o.castShadow = false;
         o.receiveShadow = false;
-        // no self-glow: some pack materials ship with emissive set
+        // no self-glow, and matte bone: kill emissive, push roughness up
         const mat = (o as THREE.Mesh).material as THREE.MeshStandardMaterial;
-        if (mat && "emissive" in mat) { mat.emissive.setRGB(0, 0, 0); mat.emissiveIntensity = 0; }
+        if (mat && "emissive" in mat) {
+          mat.emissive.setRGB(0, 0, 0);
+          mat.emissiveIntensity = 0;
+          mat.roughness = 0.95;
+          mat.metalness = 0;
+        }
         // never culled: compileAsync only compiles what survives the frustum
         // test, and the player preloads PARKED off-world — culling him there
         // would defer the skinned-pipeline compile to the first Enter (a

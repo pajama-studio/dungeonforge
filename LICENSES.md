@@ -14,7 +14,7 @@ All original code in this repository is released under the **MIT License** (see 
 
 | Asset | Author | License | Source |
 |---|---|---|---|
-| `public/assets/skeleton.glb` — Skeleton Warrior character (KayKit Skeletons Character Pack 1.0) | Kay Lousberg | **CC0 1.0** (public domain) | https://kaylousberg.com · https://github.com/KayKit-Game-Assets/KayKit-Character-Pack-Skeletons-1.0 |
+| `public/assets/skeleton.glb` — Skeleton Minion character (KayKit Skeletons Character Pack 1.0) | Kay Lousberg | **CC0 1.0** (public domain) | https://kaylousberg.com · https://github.com/KayKit-Game-Assets/KayKit-Character-Pack-Skeletons-1.0 |
 
 KayKit assets are CC0 — free for personal, educational and commercial use with
 no attribution required. We credit **Kay Lousberg (kaylousberg.com)** anyway,

@@ -208,6 +208,7 @@ export function makeGeometries(): GeoKit {
     wingR.translate(0.145, 0, -0.03);
     const merged = BufferGeometryUtils.mergeGeometries([wingL, wingR]);
     wingL.dispose(); wingR.dispose();
+    merged.rotateY(Math.PI); // tip forward (+z = direction of travel)
     return merged;
   })();
 

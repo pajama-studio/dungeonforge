@@ -18,6 +18,11 @@ export type Environment = ReturnType<typeof buildEnvironment>;
  *  post-pass fog forward scattering (env owns it; nobody re-derives it) */
 export const MOON_DIR = new THREE.Vector3(-46, 48, -22).normalize();
 
+/** the ONE horizon-air color. The sky's below-horizon fog band and the post
+ *  pass's aerial haze both converge to it — any mismatch between the two shows
+ *  up as a hard seam along the abyss plane's edge / the far silhouette line. */
+export const HORIZON_FOG = 0x102841;
+
 export function buildEnvironment(scene: THREE.Scene, seed: number): {
   fit: (half: number, centerX?: number, centerZ?: number, top?: number) => void;
   bakeShadows: () => void;
@@ -45,10 +50,16 @@ export function buildEnvironment(scene: THREE.Scene, seed: number): {
     const md = dir.dot(vec3(MOON_DIR.x, MOON_DIR.y, MOON_DIR.z)).clamp(0, 1);
     const disc = smoothstep(0.99955, 0.99985, md).mul(2.6);
     const halo = md.pow(220).mul(0.5);
-    scene.backgroundNode = base
+    const skyRaw = base
       .add(vec3(stars))
       .add(color(0x8fa3d8).mul(milky))
       .add(color(0xdfe8ff).mul(disc.add(halo)));
+    // horizon fog band: below the true horizon the sky settles into the same
+    // hazy air the post-pass paints on far geometry. Without this the abyss
+    // plane's far edge meets a FLAT navy below-horizon sky as a hard straight
+    // seam — the two sides must converge to one color so no edge can show.
+    const hband = smoothstep(0.2, -0.03, dir.y);
+    scene.backgroundNode = mix(skyRaw, color(HORIZON_FOG), hband.mul(0.96));
   }
 
   // -- Fog: animated ground fog pooling below the fortress + gentle distance haze.
@@ -213,7 +224,10 @@ export function buildEnvironment(scene: THREE.Scene, seed: number): {
   //    at the origin showed its edge as a hard diagonal under big chains.
   {
     const mat = new THREE.MeshLambertNodeMaterial({ color: 0x0a0e1a });
-    const plane = new THREE.Mesh(new THREE.PlaneGeometry(500, 500), mat);
+    // 900: the far edge must sit past the fog-band convergence distance even
+    // under big chains (ringGroup scales it further) — a visible edge reads
+    // as a hard diagonal across the horizon
+    const plane = new THREE.Mesh(new THREE.PlaneGeometry(900, 900), mat);
     plane.rotation.x = -Math.PI / 2;
     plane.position.y = ABYSS * TH - 12;
     ringGroup.add(plane);

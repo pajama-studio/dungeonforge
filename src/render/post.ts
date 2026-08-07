@@ -10,7 +10,7 @@ import {
   cameraPosition, triNoise3D,
 } from "three/tsl";
 import { bloom } from "three/addons/tsl/display/BloomNode.js";
-import { MOON_DIR } from "../scene/env";
+import { MOON_DIR, HORIZON_FOG } from "../scene/env";
 
 export interface PostChain {
   post: THREE.PostProcessing;
@@ -69,8 +69,22 @@ export function createPost(
     .mul(exp(ro.y.mul(-HAZE_B)))
     .mul(float(1).sub(exp(dy.mul(dFar).mul(-HAZE_B))))
     .div(dy);
-  const hazeAmt = float(1).sub(exp(od.negate())).clamp(0, 0.8);
-  const hazeCol = color(0x2c4a6e).mul(scatter).mul(0.9);
+  // convergence floor: everything FAR and BELOW the horizon — abyss plane, its
+  // far-plane cut, the mesa silhouette belt, the sky behind them — is pushed to
+  // ≥97% haze, i.e. to HORIZON_FOG itself. The sky's fog band is the SAME
+  // color, so no boundary between geometry and background can render as a
+  // seam. The exp integral alone stalls near 40% at glancing angles, which
+  // left the dark silhouette belt meeting a brighter sky band as a hard line.
+  // belowH MUST ramp over the same dir.y range as the sky's fog band
+  // (smoothstep(0.2, -0.03) in env.ts): far silhouettes poke ABOVE the true
+  // horizon, and if the sky reaches fog color before the geometry behind the
+  // same screen row does, the silhouette line renders as a dark belt.
+  const isBg = smoothstep(170, 260, distGeo);
+  const belowH = smoothstep(0.2, -0.03, rd.y);
+  const hazeAmt = float(1).sub(exp(od.negate()))
+    .max(isBg.mul(belowH).mul(0.97))
+    .clamp(0, 0.97);
+  const hazeCol = color(HORIZON_FOG).mul(scatter);
 
   // cinematic finish: gentle vignette pulls the eye to the lit heart of the maze
   const vig = float(1).sub(smoothstep(0.5, 1.02, screenUV.sub(0.5).length().mul(1.35)).mul(0.45));

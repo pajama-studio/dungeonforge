@@ -60,7 +60,7 @@ export class NavMesh {
     // the rest of the forge. Counts form a cheap live topology revision.
     const signature = [
       this.ctx.state.token, islands.length, this.ctx.walk.links.length,
-      this.ctx.stairs.towers.length, this.ctx.walk.blockers.length,
+      this.ctx.stairs.towers.length, this.ctx.walk.blockers.length, this.ctx.walk.revision,
     ].join(":");
     if (this.builtSignature === signature) return true;
     this.portals.clear();
@@ -300,6 +300,7 @@ export class NavMesh {
 export class NavOverlay {
   private mesh: THREE.InstancedMesh | null = null;
   private shownToken = -1;
+  private shownRevision = -1;
   visible = false;
 
   constructor(private ctx: Ctx, private nav: NavMesh) {}
@@ -349,6 +350,7 @@ export class NavOverlay {
     this.mesh = mesh;
     this.ctx.scene.add(mesh);
     this.shownToken = this.ctx.state.token;
+    this.shownRevision = this.ctx.walk.revision;
     this.visible = true;
   }
 
@@ -362,6 +364,8 @@ export class NavOverlay {
   }
 
   tick(): void {
-    if (this.visible && this.ctx.state.token !== this.shownToken) this.hide();
+    if (this.visible && (
+      this.ctx.state.token !== this.shownToken || this.ctx.walk.revision !== this.shownRevision
+    )) this.hide();
   }
 }

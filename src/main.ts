@@ -33,6 +33,7 @@ import { Cinematic } from "./world/cinematic";
 import { RoutePath } from "./world/route";
 import { NavMesh, NavOverlay } from "./world/nav";
 import { EndlessWorld } from "./world/stream";
+import { GpuDestruction } from "./world/destruction";
 import { buildPanel } from "./ui/panel";
 import { mulberry32 } from "./gen/rng";
 import { TH, CELL, PR_BASE, PR_LARGE, LOD_NEAR, LOD_FAR } from "./config";
@@ -108,6 +109,10 @@ const cine = new Cinematic(ctx);
 const nav = new NavMesh(ctx);
 const navOverlay = new NavOverlay(ctx, nav);
 const route = new RoutePath(ctx, nav);
+const destruction = new GpuDestruction(
+  scene, camera, renderer, renderer.domElement,
+  () => ctx.walk.touch(),
+);
 
 // ---- UI ---------------------------------------------------------------------
 // Hierarchy: the WORLD (bottom-left: ⚄ New, seed, mode segments) · the VIEW
@@ -180,6 +185,7 @@ const btnCine = document.getElementById("btnCine") as HTMLButtonElement;
 const btnRoute = document.getElementById("btnRoute") as HTMLButtonElement;
 const btnNav = document.getElementById("btnNav") as HTMLButtonElement;
 const btnWalk = document.getElementById("btnWalk") as HTMLButtonElement;
+const btnBreak = document.getElementById("btnBreak") as HTMLButtonElement;
 btnCine.addEventListener("click", (e) => {
   e.stopPropagation();
   if (cine.active) cine.stop();
@@ -188,6 +194,13 @@ btnCine.addEventListener("click", (e) => {
 btnRoute.addEventListener("click", () => { if (!ctx.state.endless) route.toggle(); });
 btnNav.addEventListener("click", () => { if (!ctx.state.endless) navOverlay.toggle(); });
 btnWalk.addEventListener("click", () => { if (walking) stopWalk(); else void startWalk(); });
+btnBreak.addEventListener("click", () => {
+  destruction.toggle();
+  btnBreak.classList.toggle("active", destruction.enabled);
+  document.getElementById("tip")!.textContent = destruction.enabled
+    ? "click masonry to fracture · drag still orbits · X exits"
+    : "drag to orbit · scroll to zoom · Esc stops";
+});
 
 // ⚙ params panel: collapsed by default, slides in from the right
 const paramsEl = document.getElementById("params")!;
@@ -326,6 +339,7 @@ function preloadPlayer(): Promise<void> {
 }
 addEventListener("keydown", (e: KeyboardEvent) => {
   if (e.key === "Escape" && walking) stopWalk();
+  if (e.key.toLowerCase() === "x" && !(e.target instanceof HTMLInputElement)) btnBreak.click();
   if (cine.active) cine.stop();
 });
 renderer.domElement.addEventListener("pointerdown", () => { cine.stop(); });
@@ -364,6 +378,7 @@ function adaptResolution(t: number, rawMs: number): void {
 
 async function boot(): Promise<void> {
   await renderer.init();
+  await destruction.warmup();
   // TWO-WAVE first paint. The cold-load wall is driver pipeline compilation
   // (~25 node materials with a 28-light loop each). Wave 1 hides every
   // decorative layer (vegetation, banners, glows, medallions, smoke, ropes…)
@@ -476,12 +491,14 @@ async function boot(): Promise<void> {
     }
     for (const w of ctx.worlds) w.tick(t);
     ctx.actors.tick(t, dt);
+    destruction.tick(dt);
     // distance LOD: far islands drop their small-detail layers. TRUE 3D
     // distance — a camera hovering 200 units above a spire is far from every
     // island even when its xz distance is small
     if (lodToken !== ctx.state.token) {
       lodToken = ctx.state.token;
       slotDetail.clear();
+      destruction.reset();
     }
     let nearestD = Infinity;
     let lodSlot = -1, lodWant = false, lodPriority = Infinity;
@@ -516,6 +533,7 @@ async function boot(): Promise<void> {
     btnRoute.classList.toggle("active", route.visible);
     btnNav.classList.toggle("active", navOverlay.visible);
     btnWalk.classList.toggle("active", walking);
+    btnBreak.classList.toggle("active", destruction.enabled);
     // distance calms the flicker: near 60 units torches dance at full
     // amplitude; past ~150 they settle to a steady candle glow (dozens of
     // asynchronous flickers read as an uncomfortable shimmer from afar)
@@ -544,6 +562,7 @@ void boot();
   get walking() { return walking; },
   get walkU() { return walkU; },
   get decorReady() { return decorReady; },
+  destruction,
   setAllDetail(visible: boolean) {
     for (const island of ctx.walk.islands) setSlotDetail(island.slot, visible);
   },

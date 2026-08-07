@@ -10,6 +10,8 @@ const drawsPerLoop = Number(opts.get("--draws") ?? 6);
 const label = opts.get("--label") ?? "browser";
 const output = opts.get("--output");
 const screenshot = opts.get("--screenshot");
+const destruction = opts.get("--destruction") === "true";
+const forceDestruction = opts.get("--force-destruction") === "true";
 const urlNeedle = opts.get("--url") ?? "127.0.0.1:4173";
 
 const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
@@ -54,9 +56,18 @@ const expression = `(async () => {
   while ((!window.__df || !window.__df.decorReady) && performance.now() < deadline) await sleep(100);
   if (!window.__df) throw new Error("Dungeonforge dev hook did not initialize");
   if (!window.__df.decorReady) throw new Error("Decor pipelines did not finish warming within 30 seconds");
-  await sleep(500);
+  // Player/skinning pipelines are intentionally compiled in the background
+  // after first paint. Let that one-time work finish before sampling or the
+  // first half of a 100-loop run measures compilation, not steady rendering.
+  await sleep(4000);
   const { ctx, postProcessing } = window.__df;
   ctx.renderer.setAnimationLoop(null);
+  if (${forceDestruction} && window.__df.destruction) {
+    // Benchmark-only worst case: keep the fixed compute pool awake for every
+    // measured draw. TypeScript-private fields remain normal JS properties.
+    window.__df.destruction.activeUntil = Infinity;
+    window.__df.destruction.mesh.visible = true;
+  }
   window.__df.setAllDetail(true);
   window.__df.controls.autoRotate = false;
   const target = window.__df.controls.target;
@@ -69,7 +80,11 @@ const expression = `(async () => {
   window.__df.camera.lookAt(target);
   const queue = ctx.renderer.backend && ctx.renderer.backend.device && ctx.renderer.backend.device.queue;
   const waitGpu = queue && queue.onSubmittedWorkDone ? () => queue.onSubmittedWorkDone() : () => Promise.resolve();
-  const draw = async () => { postProcessing.render(); await waitGpu(); };
+  const draw = async () => {
+    ${destruction ? "window.__df.destruction?.tick(1 / 60);" : ""}
+    postProcessing.render();
+    await waitGpu();
+  };
   for (let i = 0; i < ${warmup}; i++) await draw();
   const samples = [];
   for (let loop = 1; loop <= ${rounds}; loop++) {
@@ -85,7 +100,12 @@ const expression = `(async () => {
     const pos = o.geometry && o.geometry.getAttribute && o.geometry.getAttribute("position");
     if (pos) triangles += (o.geometry.index ? o.geometry.index.count : pos.count) / 3 * (o.isInstancedMesh ? o.count : 1);
   });
-  return { samples, instances, visibleRenderObjects, triangles, gpuWait: Boolean(queue && queue.onSubmittedWorkDone) };
+  return {
+    samples, instances, visibleRenderObjects, triangles,
+    gpuWait: Boolean(queue && queue.onSubmittedWorkDone),
+    destructionCompute: ${destruction},
+    destructionStats: window.__df.destruction ? { ...window.__df.destruction.stats } : null,
+  };
 })()`;
 const evaluated = await call("Runtime.evaluate", {
   expression,

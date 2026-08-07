@@ -14,18 +14,21 @@ export class RoutePath {
   private curve: THREE.CatmullRomCurve3 | null = null;
   private curveLen = 0;
   private curveToken = -1;
+  private curveRevision = -1;
+  private shownRevision = -1;
   visible = false;
 
   constructor(private ctx: Ctx, private nav: NavMesh) {}
 
   /** compute (or reuse) the tour curve for the current world */
   ensure(): { curve: THREE.CatmullRomCurve3; length: number } | null {
-    if (this.curveToken !== this.ctx.state.token || !this.curve) {
+    if (this.curveToken !== this.ctx.state.token || this.curveRevision !== this.ctx.walk.revision || !this.curve) {
       const tour = this.nav.tour();
       if (!tour) return null;
       this.curve = new THREE.CatmullRomCurve3(tour.pts, false, "centripetal", 0.35);
       this.curveLen = this.curve.getLength();
       this.curveToken = this.ctx.state.token;
+      this.curveRevision = this.ctx.walk.revision;
     }
     return { curve: this.curve, length: this.curveLen };
   }
@@ -46,6 +49,7 @@ export class RoutePath {
     this.mesh = mesh;
     this.ctx.scene.add(mesh);
     this.shownToken = this.ctx.state.token;
+    this.shownRevision = this.ctx.walk.revision;
     this.visible = true;
   }
 
@@ -65,6 +69,8 @@ export class RoutePath {
 
   /** a re-forge invalidates the drawn route */
   tick(): void {
-    if (this.visible && this.ctx.state.token !== this.shownToken) this.hide();
+    if (this.visible && (
+      this.ctx.state.token !== this.shownToken || this.ctx.walk.revision !== this.shownRevision
+    )) this.hide();
   }
 }

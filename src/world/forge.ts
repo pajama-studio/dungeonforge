@@ -59,8 +59,12 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
     }
   }
 
-  // per-block VARIATION: satellites differ in size, growth style and age
-  const layouts = await Promise.all(macro.map((_, i) => {
+  const tForge = performance.now();
+  // per-block VARIATION: satellites differ in size, growth style and age.
+  // Layouts are awaited ONE AT A TIME inside the build loop (parents come
+  // first in BFS order), so generation and building pipeline instead of
+  // serializing: wall time is max(gen, build), not gen + build.
+  const layoutPromises = macro.map((_, i) => {
     const s = i === 0 ? seed : (h32(i, 1) || 1);
     const gateSides = [...gateSets[i]];
     if (i === 0) return ctx.gen.generate(seed, genParams, { gateSides, rot: h32(0, 61) % 4 });
@@ -80,8 +84,7 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
       newest: Math.min(1, Math.max(0.2, genParams.newest + (v(5) - 0.5) * 0.5)),
       mound: i === 0 ? genParams.mound : genParams.mound * 0.4, // one temple rules the skyline
     });
-  }));
-  if (tok !== state.token) return; // a newer forge superseded this one
+  });
 
   ctx.worlds.length = 0; // slot pools persist; pruneSlots() hides the unused ones
   ctx.walk.clear();
@@ -94,9 +97,15 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   let maxOy = 0;
   const allLights: LightSpec[] = [];
   const positions: Array<{ ox: number; oy: number; oz: number }> = [];
+  const layouts: Layout[] = [];
 
-  for (let i = 0; i < layouts.length; i++) {
-    const l = layouts[i];
+  // frame-budgeted batching: a warm island build is ~3ms, so several fit in
+  // one frame — yield only when the budget is spent instead of once per island
+  let frameStart = performance.now();
+  for (let i = 0; i < layoutPromises.length; i++) {
+    const l = await layoutPromises[i];
+    if (tok !== state.token) return; // superseded while generating
+    layouts.push(l);
     const half = (l.N * CELL) / 2;
     let ox = 0, oz = 0;
     let oy = 0;
@@ -133,7 +142,7 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
     positions.push({ ox, oy, oz });
     maxOy = Math.max(maxOy, oy);
 
-    const w = buildWorld(l, i, ctx.scene, macro[i].dirFromParent === 4 ? 0.22 : 1);
+    const w = buildWorld(l, i, ctx.scene, macro[i].dirFromParent === 4 ? 0.22 : 1, i * 0.05);
     activeSlots.add(i);
     w.group.position.set(ox, oy, oz);
     ctx.scene.add(w.group);
@@ -152,17 +161,18 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
       const from = gateWorld(layouts[pIdx], positions[pIdx], macro[i].dirFromParent);
       const to = gateWorld(l, positions[i], macro[i].dirFromParent ^ 1);
       if (from && to) {
-        ctx.worlds.push(buildBridgeLink(from, to, 1000 + i, ctx.scene));
+        ctx.worlds.push(buildBridgeLink(from, to, 1000 + i, ctx.scene, i * 0.05));
         activeSlots.add(1000 + i);
         ctx.walk.addLink(from.clone(), to.clone(), linkSag(from.distanceTo(to)));
       }
     }
-    // bake per island: spreads shadow-variant pipeline/bind-group creation
-    // across the same frames the incremental build already occupies
-    ctx.env.bakeShadows();
-    if (i < layouts.length - 1) {
+    // shadow bakes are a full scene render each — every 8th island is plenty
+    // (pipelines are warm after the first session compile)
+    if ((i & 7) === 7) ctx.env.bakeShadows();
+    if (performance.now() - frameStart > 24 && i < layoutPromises.length - 1) {
       await nextFrame();
       if (tok !== state.token) return; // superseded mid-build
+      frameStart = performance.now();
     }
   }
 
@@ -193,7 +203,8 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   setTimeout(() => { if (tok === state.token) ctx.env.bakeShadows(); }, 1500);
   ctx.hud.name.textContent = layouts[0].name + (nIsl > 1 ? ` +${nIsl - 1}` : "");
   const floorSum = layouts.reduce((s2, l) => s2 + l.stats.floor, 0);
-  ctx.hud.seed.textContent = `seed ${seed} · ${nIsl} block${nIsl > 1 ? "s" : ""} · ${floorSum} floor · ${layouts[0].stats.genMs}ms`;
+  const forgeMs = Math.round(performance.now() - tForge);
+  ctx.hud.seed.textContent = `seed ${seed} · ${nIsl} block${nIsl > 1 ? "s" : ""} · ${floorSum} floor · forged in ${forgeMs}ms`;
   const url = new URL(location.href);
   url.searchParams.set("seed", String(seed));
   url.searchParams.delete("mode"); // chain forge is the default mode

@@ -42,18 +42,23 @@ export async function forgeCube(ctx: Ctx): Promise<void> {
   const activeSlots = new Set<number>();
   const allLightsByCell: LightSpec[][] = [];
 
+  let frameStart = performance.now();
   for (let i = 0; i < cells.length; i++) {
     const c = cells[i], l = layouts[i];
     const ox = c.mi * pitch, oz = c.mj * pitch;
     const oy = c.mk * LAYER + ((ch(c.mi, c.mj, c.mk, 0x99) % 100) / 100 - 0.5) * 4.4;
-    const w = buildWorld(l, i, ctx.scene, c.mk === 0 ? 1 : 0.22);
+    const w = buildWorld(l, i, ctx.scene, c.mk === 0 ? 1 : 0.22, i * 0.04);
     activeSlots.add(i);
     w.group.position.set(ox, oy, oz);
     ctx.worlds.push(w);
     allLightsByCell.push(w.lights.map((ls) => ({ ...ls, x: ls.x + ox, y: ls.y + oy, z: ls.z + oz })));
     ctx.walk.addIsland(l, ox, oy, oz, i);
-    ctx.env.bakeShadows();
-    if (i < cells.length - 1) { await nextFrame(); if (tok !== state.token) return; }
+    if ((i & 7) === 7) ctx.env.bakeShadows();
+    if (performance.now() - frameStart > 24 && i < cells.length - 1) {
+      await nextFrame();
+      if (tok !== state.token) return;
+      frameStart = performance.now();
+    }
   }
 
   // bridges: every horizontally adjacent pair with facing gates

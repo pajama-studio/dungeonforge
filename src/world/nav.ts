@@ -221,6 +221,9 @@ export class NavMesh {
     const dA = this.islandBFS(A);
     let B = A;
     for (let i = 0; i < dA.length; i++) if (dA[i] > dA[B]) B = i;
+    // the journey reads left→right: of the two diameter endpoints, START at
+    // whichever block sits farther left (−x) and finish at the other
+    if (islands[B].ox < islands[A].ox) { const t = A; A = B; B = t; }
     const dB = this.islandBFS(B);
     const order: number[] = [];
     const seen = new Set<number>([A]);

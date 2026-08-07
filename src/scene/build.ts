@@ -148,16 +148,28 @@ export function buildSupportPiers(
   }
   const seed = (slot * 0x85ebca6b) >>> 0;
   for (let s = 0; s < sites.length; s++) {
-    const px = sites[s][0], pz = sites[s][1];
-    // footing: the parent cell's masonry top or ground under the pier —
-    // outside the parent grid it sinks to the parent's base plane instead
-    const gx = Math.round((px - par.ox) / CELL + (par.l.N - 1) / 2);
-    const gy = Math.round((pz - par.oz) / CELL + (par.l.N - 1) / 2);
-    let baseY = par.oy - TH;
-    if (gx >= 0 && gy >= 0 && gx < par.l.N && gy < par.l.N) {
-      const ci = gy * par.l.N + gx;
-      baseY = par.oy + (par.l.kind[ci] === WALL ? par.l.wallTop[ci] - 1 : par.l.tier[ci]) * TH;
+    // footing MUST land on SOLID parent ground — a pier standing over a VOID
+    // cell (ravine, eaten edge) hangs in mid-air. Search outward for the
+    // nearest solid cell and move the pier onto its center; none → no pier.
+    const N2 = par.l.N;
+    const gx0 = Math.round((sites[s][0] - par.ox) / CELL + (N2 - 1) / 2);
+    const gy0 = Math.round((sites[s][1] - par.oz) / CELL + (N2 - 1) / 2);
+    let fgx = -1, fgy = -1;
+    outer: for (let r = 0; r <= 2; r++) {
+      for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+        const gx = gx0 + dx, gy = gy0 + dy;
+        if (gx < 0 || gy < 0 || gx >= N2 || gy >= N2) continue;
+        if (par.l.kind[gy * N2 + gx] === VOID) continue;
+        fgx = gx; fgy = gy;
+        break outer;
+      }
     }
+    if (fgx < 0) continue;
+    const ci = fgy * N2 + fgx;
+    const px = par.ox + (fgx - (N2 - 1) / 2) * CELL;
+    const pz = par.oz + (fgy - (N2 - 1) / 2) * CELL;
+    const baseY = par.oy + (par.l.kind[ci] === WALL ? par.l.wallTop[ci] - 1 : par.l.tier[ci]) * TH;
     const topY = chi.oy + TH * 0.6; // bite into the child's masonry — no seam
     const n = Math.max(2, Math.ceil((topY - baseY) / COURSE));
     for (let k = 0; k < n; k++) {
@@ -718,6 +730,7 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   const links = new InstList();
   const moss = new InstList();
   const cols = new InstList();
+  const roots = new InstList();
   const decay = Math.min(1, Math.max(0, l.params?.decay ?? 0.5));
   {
     const totemCells = new Set(l.braziers.filter((b) => b.totem).map((b) => b.y * N + b.x));
@@ -941,16 +954,40 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
     }
   }
 
-  // underside root spike: hides the flat bottoms of the abyss columns.
+  // underside rock keel: hides the flat bottoms of the abyss columns. SHALLOW —
+  // a deep spike reads as a stalactite stabbing at whatever drifts below.
   // rootScale 0 skips it entirely — blocks with another block directly
   // beneath must NOT dangle a rock cone into their neighbor's sky.
   if (rootScale > 0) {
     const halfW = (N * CELL) / 2;
-    const depth = (26 + halfW * 0.5) * rootScale;
+    const depth = (9 + halfW * 0.28) * rootScale;
     const plug = new THREE.Mesh(R.plugGeo, R.plugMat);
-    plug.scale.set(halfW * 0.8, depth, halfW * 0.8);
+    plug.scale.set(halfW * 0.86, depth, halfW * 0.86);
     plug.position.y = ABYSS * TH + 1.5 - depth / 2;
     addUnique(plug);
+  }
+
+  // hanging roots: gnarled strands trailing from the underside rim — the
+  // fortress reads as something ANCIENT the earth still grips
+  {
+    const rim = ABYSS * TH + 2.4;
+    const nR = 10 + ((hash2(seed, 77, 1) * 8) | 0);
+    const _p = new THREE.Vector3(), _s = new THREE.Vector3();
+    const _q = new THREE.Quaternion(), _e = new THREE.Euler();
+    for (let k = 0; k < nR; k++) {
+      const side = (hash2(seed, k, 78) * 4) | 0;
+      const along = (hash2(seed, k, 79) - 0.5) * (N - 2) * CELL;
+      const fx = [1, -1, 0, 0][side], fz = [0, 0, 1, -1][side];
+      const px = fx !== 0 ? fx * ((N * CELL) / 2 - 0.2) : along;
+      const pz = fz !== 0 ? fz * ((N * CELL) / 2 - 0.2) : along;
+      const len = 3.5 + hash2(seed, k, 80) * 7.5;
+      const lean = 0.08 + hash2(seed, k, 81) * 0.25; // drift outward as they fall
+      stoneColor.setHSL(0.24 + hash2(seed, k, 82) * 0.09, 0.24, 0.1 + hash2(seed, k, 83) * 0.08);
+      _e.set(fz * lean, hash2(seed, k, 84) * Math.PI * 2, -fx * lean);
+      const w = 0.9 + hash2(seed, k, 85);
+      _mat4.compose(_p.set(px, rim, pz), _q.setFromEuler(_e), _s.set(w, len, w));
+      roots.pushMatrix(_mat4.elements, stoneColor);
+    }
   }
 
   // ------------------------------------------------------- instanced meshes
@@ -975,6 +1012,7 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   putInstanced(pool, "links", R.linkGeo, R.woodMat, links, false);
   putInstanced(pool, "moss", R.mossGeo, R.mossMat, moss, false);
   putInstanced(pool, "cols", R.colGeo, R.stoneMat, cols, true);
+  putInstanced(pool, "roots", R.rootGeo, R.brambleMat, roots, false);
   // smoke wisps rising from every flame
   {
     const wisps = new InstList();

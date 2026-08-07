@@ -124,6 +124,7 @@ export function decorWarmupRig(scene: THREE.Object3D): () => void {
   };
   inst(R.vineGeo, R.vineMat); inst(R.mossGeo, R.mossMat);
   inst(R.leafGeo, R.leafMat); inst(R.brambleGeoA, R.brambleMat);
+  inst(R.rootGeo, R.brambleMat);
   inst(R.wispGeo, R.wispMat); inst(R.emberGeo, R.emberMat);
   inst(R.wallGlowGeo, R.wallGlowMat); inst(R.floorGlowGeo, R.floorGlowMat);
   inst(R.bannerGeo, R.bannerMat); inst(R.tileGeo, R.redMat);
@@ -161,7 +162,7 @@ export function isDecorSuppressed(): boolean { return decorSuppressed; }
 
 const DETAIL_KEYS = [
   "merlons", "rubble", "moss", "vines", "leaves", "creepers", "bramblesA",
-  "bramblesB", "wisps", "links", "brackets", "cheeks", "wallGlows", "embers",
+  "bramblesB", "wisps", "links", "brackets", "cheeks", "wallGlows", "embers", "roots",
 ];
 
 /** distance LOD: hide the small-detail layers of a far-away slot and swap its

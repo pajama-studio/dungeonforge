@@ -75,11 +75,19 @@ export function buildEnvironment(scene: THREE.Scene, seed: number): {
   const combined = ground.oneMinus().mul(haze.oneMinus()).oneMinus();
   scene.fogNode = fog(fogColor, combined);
 
-  // -- Lights: cool hemisphere + one shadow-casting moon.
-  const hemi = new THREE.HemisphereLight(0x3d4c78, 0x33241a, 1.05);
+  // -- Lights, staged like a night exterior: a cool moon KEY with shadows, a
+  //    dimmer ambient FILL so darks actually go dark (contrast is what makes
+  //    the torch pools feel warm), and a faint counter-directional RIM that
+  //    lifts silhouettes off the abyss. All created here, before the first
+  //    compile — a changing scene light count recompiles every pipeline.
+  const hemi = new THREE.HemisphereLight(0x39497e, 0x2e2018, 0.72);
   group.add(hemi);
 
-  const moon = new THREE.DirectionalLight(0x93a9e8, 1.45);
+  const rim = new THREE.DirectionalLight(0x4f689f, 0.55);
+  rim.position.set(52, 20, 34); // low, opposite the moon — silhouette kisser
+  group.add(rim, rim.target);
+
+  const moon = new THREE.DirectionalLight(0x9db2ef, 1.75);
   moon.position.set(-46, 48, -22); // raking but high enough to light wall tops
   moon.castShadow = true;
   moon.shadow.mapSize.set(2048, 2048);
@@ -249,6 +257,8 @@ export function buildEnvironment(scene: THREE.Scene, seed: number): {
         sc.updateProjectionMatrix();
         moon.position.set(-46 * k + centerX, 48 * k, -22 * k + centerZ);
         moon.target.position.set(centerX, 0, centerZ);
+        rim.position.set(centerX + 52, 20 * k, centerZ + 34);
+        rim.target.position.set(centerX, 0, centerZ);
       }
       // the mesa/mist/ruin ring was authored around a ~40-unit island — recentre
       // on the chain and push it outward so cliffs never intersect the blocks

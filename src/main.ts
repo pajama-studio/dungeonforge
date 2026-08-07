@@ -52,7 +52,7 @@ renderer.setPixelRatio(Math.min(devicePixelRatio, PR_BASE));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFShadowMap; // static baked shadows — soft PCF not worth the taps
 renderer.toneMapping = THREE.AgXToneMapping;
-renderer.toneMappingExposure = 1.18;
+renderer.toneMappingExposure = 1.24; // key up: hemi fill dropped for contrast, torch pools carry the warmth
 app.appendChild(renderer.domElement);
 
 const controls = new OrbitControls(camera, renderer.domElement);

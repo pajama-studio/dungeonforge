@@ -75,15 +75,18 @@ export function createPost(
   // color, so no boundary between geometry and background can render as a
   // seam. The exp integral alone stalls near 40% at glancing angles, which
   // left the dark silhouette belt meeting a brighter sky band as a hard line.
-  // belowH MUST ramp over the same dir.y range as the sky's fog band
-  // (smoothstep(0.2, -0.03) in env.ts): far silhouettes poke ABOVE the true
-  // horizon, and if the sky reaches fog color before the geometry behind the
-  // same screen row does, the silhouette line renders as a dark belt.
-  const isBg = smoothstep(170, 260, distGeo);
+  // The floor must select the ABYSS LAYER only — low world height, at range,
+  // below the horizon. A pure distance test drowned the whole fortress once
+  // the camera stood 250+ units out: fortress tops must stay crisp at ANY
+  // distance, while mesas/plane/underworld sink into the fog sea.
+  // belowH ramps over the same dir.y range as the sky's fog band (env.ts) so
+  // silhouettes poking above the horizon can't render as a dark belt.
+  const wpLow = smoothstep(26, 5, wp.y);
+  const distF = smoothstep(120, 230, distGeo);
   const belowH = smoothstep(0.2, -0.03, rd.y);
   const hazeAmt = float(1).sub(exp(od.negate()))
-    .max(isBg.mul(belowH).mul(0.97))
-    .clamp(0, 0.97);
+    .max(wpLow.mul(distF).mul(belowH).mul(0.95))
+    .clamp(0, 0.95);
   const hazeCol = color(HORIZON_FOG).mul(scatter);
 
   // cinematic finish: gentle vignette pulls the eye to the lit heart of the maze

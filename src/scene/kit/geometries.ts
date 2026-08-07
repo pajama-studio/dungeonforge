@@ -97,6 +97,7 @@ export interface GeoKit {
   linkGeo: THREE.BufferGeometry;
   mossGeo: THREE.BufferGeometry;
   colGeo: THREE.BufferGeometry;
+  rootGeo: THREE.BufferGeometry;
   leafGeo: THREE.BufferGeometry;
   creeperGeo: THREE.BufferGeometry;
   brambleGeoA: THREE.BufferGeometry;
@@ -134,6 +135,22 @@ export function makeGeometries(): GeoKit {
   // ancient column (unit height, base at y=0, gentle entasis taper)
   const colGeo = new THREE.CylinderGeometry(0.16, 0.2, 1, 8);
   colGeo.translate(0, 0.5, 0);
+
+  // hanging root strand: unit length, origin at the rim, thick where it grips
+  // the stone and wandering as it trails into the abyss
+  const rootGeo = (() => {
+    const g = new THREE.CylinderGeometry(0.025, 0.15, 1, 5, 7, true);
+    g.translate(0, -0.5, 0);
+    const p = g.getAttribute("position");
+    for (let i = 0; i < p.count; i++) {
+      const y = p.getY(i); // -1..0, 0 at the rim
+      const sag = -y; // 0 at the grip, 1 at the tip
+      p.setX(i, p.getX(i) + (Math.sin(y * 9.4) * 0.09 + Math.sin(y * 4.1 + 1.7) * 0.13) * sag);
+      p.setZ(i, p.getZ(i) + Math.cos(y * 7.3) * 0.09 * sag);
+    }
+    g.computeVertexNormals();
+    return g;
+  })();
 
   // ivy leaf cluster: ~10 leaf quads staggered down a hanging stem line
   // (VegetationGeneratorThreeJS insight: instanced leaf quads carry the read;
@@ -258,6 +275,7 @@ export function makeGeometries(): GeoKit {
     linkGeo: new THREE.BoxGeometry(0.07, 0.34, 0.16),
     mossGeo,
     colGeo,
+    rootGeo,
     leafGeo,
     creeperGeo,
     brambleGeoA: buildBrambleGeo(0xb4a3b1e),

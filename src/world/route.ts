@@ -38,7 +38,7 @@ export class RoutePath {
     // units regardless of tour length (the material reads routeFlow)
     const R = getKit();
     const segs = Math.min(4000, Math.max(64, Math.floor(rc.length / 0.8)));
-    const geo = new THREE.TubeGeometry(rc.curve, segs, 0.11, 5, false);
+    const geo = new THREE.TubeGeometry(rc.curve, segs, 0.085, 5, false);
     geo.translate(0, -0.18, 0); // settle toward the pavement (curve floats at +0.45)
     routeFlow.value = Math.max(8, Math.round(rc.length / 2.4));
     const mesh = new THREE.Mesh(geo, R.routeBeamMat);

@@ -199,7 +199,8 @@ document.getElementById("btnParamsClose")!.addEventListener("click", () => {
 let walking = false;
 let walkU = 0, walkLen = 1, walkEndAt = 0;
 let walkCurve: THREE.CatmullRomCurve3 | null = null;
-const WALK_SPEED = 10;
+const WALK_SPEED = 6.5; // unhurried — the tour is a guided showing, not a race
+const camBack = new THREE.Vector3(0, 0, 1); // smoothed chase direction
 
 async function startWalk(): Promise<void> {
   if (ctx.state.endless) return;
@@ -212,6 +213,8 @@ async function startWalk(): Promise<void> {
   walkLen = rc.length;
   walkU = 0;
   walkEndAt = 0;
+  const t0 = rc.curve.getTangentAt(0);
+  camBack.set(-t0.x, 0, -t0.z).normalize(); // chase cam starts already behind
   player.setFirstPerson(false);
   lantern.intensity = 11;
   setBloom(0.5); // close-up flames would bloom too hot at full strength
@@ -349,7 +352,10 @@ async function boot(): Promise<void> {
       const steep = Math.abs(near.y - pNow.y) > Math.hypot(near.x - pNow.x, near.z - pNow.z) * 0.4;
       walkU = Math.min(1, walkU + ((steep ? WALK_SPEED * 0.45 : WALK_SPEED) * dt) / walkLen);
       const p = walkCurve.getPointAt(walkU);
-      const ahead = walkCurve.getPointAt(Math.min(1, walkU + 4 / walkLen));
+      // SHORT lookahead on stairs: the heading then follows the helix around
+      // the tower (a long lookahead cuts across the core and the body faces
+      // the wrong way); driveTo smooths the turn so it reads as leaning in
+      const ahead = walkCurve.getPointAt(Math.min(1, walkU + (steep ? 1.1 : 4) / walkLen));
       // GROUND CONTACT: xz follows the curve, but y snaps to the analytic
       // ground sampler (exact stair ramps, spiral tread line, bridge sag) —
       // the smoothed curve alone would sink feet into stair treads
@@ -359,10 +365,14 @@ async function boot(): Promise<void> {
       const heading = Math.atan2(ahead.x - p.x, ahead.z - p.z);
       player.driveTo(p, heading, dt, walkU >= 1 ? "idle" : steep ? "walk" : "run");
       lantern.position.set(p.x, p.y + 3.1, p.z);
-      // chase cam: high and pulled back — and never inside a wall column:
-      // if the camera's cell is masonry, lift it above that wall's top
-      const back = new THREE.Vector3(p.x - ahead.x, 0, p.z - ahead.z).normalize();
-      const desired = new THREE.Vector3(p.x + back.x * 10, p.y + 9.5, p.z + back.z * 10);
+      // chase cam: high, pulled back, and CALM — the chase direction is its
+      // own smoothed vector, so on spiral stairs the camera drifts up slowly
+      // above the tower while the skeleton corkscrews below, instead of
+      // whirling around with every helix turn
+      const backT = new THREE.Vector3(p.x - ahead.x, 0, p.z - ahead.z).normalize();
+      camBack.lerp(backT, Math.min(1, dt * (steep ? 0.9 : 3.0))).normalize();
+      const dist = steep ? 8.5 : 10, lift = steep ? 12.5 : 9.5;
+      const desired = new THREE.Vector3(p.x + camBack.x * dist, p.y + lift, p.z + camBack.z * dist);
       // clear the SIGHT LINE, not just the camera cell: sample wall tops along
       // camera→skeleton and rise above the tallest blocker
       for (const s of [1, 0.66, 0.33]) {

@@ -171,7 +171,7 @@ export class NavMesh {
           }
         } else if (via.kind === "stair" && via.tower) {
           const tw = via.tower;
-          const m = STAIR.M, P = 8 * m, slope = STAIR.RISE / STAIR.STEP;
+          const m = tw.m, P = 8 * m, slope = tw.rise / STAIR.STEP;
           const sToXZ = (s: number): [number, number] => {
             const side = Math.floor((s % P) / (2 * m)), u = (s % P) - side * 2 * m - m;
             if (side === 0) return [u, -m];
@@ -207,24 +207,23 @@ export class NavMesh {
     return d;
   }
 
-  /** the GRAND TOUR: visit EVERY reachable block, END TO END. The two tour
-   *  endpoints are the graph diameter (double BFS), so the walk starts at one
-   *  extremity of the chain and finishes at the opposite one — side branches
-   *  are cleared along the way (DFS pre-order, the branch toward the far
-   *  endpoint deferred last), consecutive targets joined by shortest paths. */
+  /** the GRAND TOUR: visit EVERY reachable block and CLIMB to the summit
+   *  last. The finale B is the HIGHEST block — spire layers chain one below
+   *  the next, so the closing legs are the ascent itself and the top is only
+   *  reached by climbing everything beneath it. The start A is the block
+   *  farthest from the summit by hops (leftmost on ties); side branches are
+   *  cleared along the way (DFS pre-order, the branch toward B deferred
+   *  last), consecutive targets joined by shortest paths. */
   tour(): { pts: THREE.Vector3[]; unreachable: number[] } | null {
     if (!this.ensure()) return null;
     const islands = this.islands;
-    const d0 = this.islandBFS(0);
-    let A = 0;
-    for (let i = 0; i < d0.length; i++) if (d0[i] > d0[A]) A = i;
-    const dA = this.islandBFS(A);
-    let B = A;
-    for (let i = 0; i < dA.length; i++) if (dA[i] > dA[B]) B = i;
-    // the journey reads left→right: of the two diameter endpoints, START at
-    // whichever block sits farther left (−x) and finish at the other
-    if (islands[B].ox < islands[A].ox) { const t = A; A = B; B = t; }
+    let B = 0;
+    for (let i = 0; i < islands.length; i++) if (islands[i].oy > islands[B].oy) B = i;
     const dB = this.islandBFS(B);
+    let A = B;
+    for (let i = 0; i < dB.length; i++) {
+      if (dB[i] > dB[A] || (dB[i] === dB[A] && islands[i].ox < islands[A].ox)) A = i;
+    }
     const order: number[] = [];
     const seen = new Set<number>([A]);
     const stack = [A];

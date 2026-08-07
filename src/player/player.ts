@@ -156,7 +156,13 @@ export class Player {
    *  climb clip — a slower walk cycle is the standard-issue stand-in). */
   driveTo(p: THREE.Vector3, heading: number, dt: number, gait: "idle" | "walk" | "run"): void {
     this.group.position.copy(p);
-    if (this.model) this.model.rotation.y = heading;
+    if (this.model) {
+      // shortest-arc smoothing: the body TURNS toward its travel direction
+      // instead of snapping — on spiral stairs it leans through the curve
+      let d = heading - this.model.rotation.y;
+      d = ((d + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+      this.model.rotation.y += d * Math.min(1, dt * 9);
+    }
     this.setGait(gait);
     this.mixer?.update(dt);
   }

@@ -33,7 +33,7 @@ describe("stairPerimeterS", () => {
 });
 
 describe("spiralHeight", () => {
-  const tower = { y0: 2, y1: 12 };
+  const tower = { y0: 2, y1: 12, m: STAIR.M, rise: STAIR.RISE };
 
   it("is clamped to the tower span", () => {
     expect(spiralHeight(tower, 0, -STAIR.M, -50)).toBeGreaterThanOrEqual(tower.y0);
@@ -68,5 +68,23 @@ describe("spiralHeight", () => {
       refY = y;
     }
     expect(prevY - firstY).toBeCloseTo(P * SLOPE, 4);
+  });
+
+  it("variant towers (different diameter/pitch) keep the walkability invariants", () => {
+    const v = { y0: 0, y1: 15, m: STAIR.M * 1.27, rise: STAIR.RISE * 0.9 };
+    const Pv = 8 * v.m, slope = v.rise / STAIR.STEP;
+    let refY = v.y0;
+    let prevY = spiralHeight(v, 0, -v.m, refY);
+    const firstY = prevY;
+    for (let i = 1; i <= 200; i++) {
+      const a = (i / 200) * Math.PI * 2;
+      const cx = Math.sin(a), cz = -Math.cos(a);
+      const k = v.m / Math.max(Math.abs(cx), Math.abs(cz));
+      const y = spiralHeight(v, cx * k, cz * k, refY);
+      expect(y - prevY).toBeGreaterThanOrEqual(-1e-6);
+      expect(y - prevY).toBeLessThan(0.5);
+      prevY = y; refY = y;
+    }
+    expect(prevY - firstY).toBeCloseTo(Pv * slope, 4);
   });
 });

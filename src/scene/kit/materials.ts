@@ -8,7 +8,7 @@
 
 import * as THREE from "three/webgpu";
 import {
-  color, vec2, vec3, uv, time, sin, cos, positionLocal, positionWorld, normalLocal,
+  color, vec2, vec3, uv, time, sin, cos, positionLocal, positionWorld, positionView, normalLocal,
   instanceIndex, hash, smoothstep, length, fract, abs, mix, float, atan, max, step,
   triNoise3D, transformNormalToView, attribute, uniform,
 } from "three/tsl";
@@ -429,8 +429,12 @@ export function makeMaterials(): MatKit {
     const u = uv().x.mul(routeFlow).sub(time.mul(1.35));
     const t = u.fract();
     const pulse = smoothstep(0.0, 0.2, t).mul(smoothstep(0.55, 0.25, t));
-    routeBeamMat.colorNode = color(0xffd48a).mul(pulse.mul(2.6).add(1.35));
-    routeBeamMat.opacityNode = pulse.mul(0.2).add(0.8);
+    // distance-adaptive: beside the walking skeleton the filament stays a
+    // quiet thread (below bloom), while from a panorama it burns bright
+    // enough for its halo to carry the sub-pixel line
+    const distBoost = smoothstep(12, 110, positionView.z.negate()).mul(1.5).add(0.55);
+    routeBeamMat.colorNode = color(0xffd48a).mul(pulse.mul(1.7).add(0.75)).mul(distBoost);
+    routeBeamMat.opacityNode = pulse.mul(0.25).add(0.62);
   }
 
   return {

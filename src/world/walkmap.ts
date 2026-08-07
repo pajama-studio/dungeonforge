@@ -64,8 +64,8 @@ export class WalkMap {
     for (const st of this.stairs.towers) {
       const dx = x - st.x, dz = z - st.z;
       const rInf = Math.max(Math.abs(dx), Math.abs(dz));
-      if (rInf > STAIR.A + 0.2) continue;
-      if (rInf < STAIR.CORE + 0.05) {
+      if (rInf > st.a + 0.2) continue;
+      if (rInf < st.core + 0.05) {
         if (bestScore > 1) { bestScore = 1; best = { y: 0, ok: false, solid: true }; }
         continue;
       }

@@ -1,14 +1,15 @@
-// The Route — the navmesh's GRAND TOUR (every reachable block, spawn first)
-// drawn as flat chevron decals marching toward the direction of travel, and
-// shared with the skeleton walker as a single arc-length curve.
+// The Route — the navmesh's GRAND TOUR (every reachable block, left end
+// first) drawn as one thin glowing filament whose light pulses stream toward
+// the goal, and shared with the skeleton walker as a single arc-length curve.
 
 import * as THREE from "three/webgpu";
 import type { Ctx } from "./context";
 import type { NavMesh } from "./nav";
 import { getKit } from "../scene/kit";
+import { routeFlow } from "../scene/kit/materials";
 
 export class RoutePath {
-  private mesh: THREE.InstancedMesh | null = null;
+  private mesh: THREE.Mesh | null = null;
   private shownToken = -1;
   private curve: THREE.CatmullRomCurve3 | null = null;
   private curveLen = 0;
@@ -33,24 +34,14 @@ export class RoutePath {
     if (this.visible) return;
     const rc = this.ensure();
     if (!rc) return;
-    // one flat chevron every ~1.7 units of arc, oriented along the tangent
+    // one thin filament along the whole tour; pulse spacing stays ~2.4 world
+    // units regardless of tour length (the material reads routeFlow)
     const R = getKit();
-    const n = Math.max(2, Math.floor(rc.length / 1.7));
-    const mesh = new THREE.InstancedMesh(R.arrowGeo, R.arrowMat, n);
-    const m = new THREE.Matrix4();
-    const q = new THREE.Quaternion();
-    const up = new THREE.Vector3(0, 1, 0);
-    const s = new THREE.Vector3(1, 1, 1);
-    for (let i = 0; i < n; i++) {
-      const u = (i + 0.5) / n;
-      const p = rc.curve.getPointAt(u);
-      const tan = rc.curve.getTangentAt(u);
-      p.y -= 0.28; // settle toward the pavement (curve floats at +0.55)
-      q.setFromAxisAngle(up, Math.atan2(tan.x, tan.z));
-      m.compose(p, q, s);
-      mesh.setMatrixAt(i, m);
-    }
-    mesh.instanceMatrix.needsUpdate = true;
+    const segs = Math.min(4000, Math.max(64, Math.floor(rc.length / 0.8)));
+    const geo = new THREE.TubeGeometry(rc.curve, segs, 0.11, 5, false);
+    geo.translate(0, -0.18, 0); // settle toward the pavement (curve floats at +0.45)
+    routeFlow.value = Math.max(8, Math.round(rc.length / 2.4));
+    const mesh = new THREE.Mesh(geo, R.routeBeamMat);
     mesh.frustumCulled = false;
     this.mesh = mesh;
     this.ctx.scene.add(mesh);
@@ -66,7 +57,7 @@ export class RoutePath {
   hide(): void {
     if (this.mesh) {
       this.mesh.removeFromParent();
-      this.mesh.dispose(); // instance buffers only — geometry/material are kit-shared
+      this.mesh.geometry.dispose(); // per-tour tube — the material is kit-shared
       this.mesh = null;
     }
     this.visible = false;

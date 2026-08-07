@@ -129,7 +129,7 @@ export function decorWarmupRig(scene: THREE.Object3D): () => void {
   inst(R.wallGlowGeo, R.wallGlowMat); inst(R.floorGlowGeo, R.floorGlowMat);
   inst(R.bannerGeo, R.bannerMat); inst(R.tileGeo, R.redMat);
   inst(R.flameGeo, R.flameBlue); inst(R.flameGeo, R.flameRed); inst(R.flameGeo, R.flameNeutral);
-  inst(R.arrowGeo, R.arrowMat); inst(R.navCellGeo, R.navMat);
+  inst(R.navCellGeo, R.navMat);
   // non-instanced usages compile DIFFERENT pipelines than instanced ones
   const med = R.circleGeo.clone();
   const nV = med.getAttribute("position").count;
@@ -145,6 +145,7 @@ export function decorWarmupRig(scene: THREE.Object3D): () => void {
     3, 0.05, 5,
   );
   one(ropeGeo, R.ropeMat);
+  one(ropeGeo, R.routeBeamMat); // route beam = plain Mesh on a tube layout
   park(new THREE.Sprite(R.smokeMat));
   return () => {
     for (const o of objs) o.removeFromParent();

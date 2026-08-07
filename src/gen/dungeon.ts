@@ -16,6 +16,7 @@
 // attempts), so a broken layout never ships.
 
 import { Rng, hash2, valueNoise2 } from "./rng";
+import { generateInteriorVolumePlan } from "../markov/volume-plan";
 
 export const VOID = 0;
 export const FLOOR = 1;
@@ -37,6 +38,16 @@ export interface Brazier { x: number; y: number; tier: number; kind: "blue" | "g
  *  (0 = x-span at row `at`, 1 = y-span at column `at`) */
 export interface Bridge { axis: 0 | 1; at: number; s0: number; s1: number; tier: number }
 export interface Gate { x: number; y: number; dir: Dir; tier: number }
+/** Generator-owned vertical connection. `x/y` are finished-layout grid
+ * coordinates; the stair core occupies that cell and `dockDir` points from
+ * the core to the shared lower/upper landing. */
+export interface VerticalAnchor { id: number; x: number; y: number; dockDir: Dir }
+
+/** Narrative identity shared by the blocks of one macro district. It affects
+ * landmark density, dressing and population while the maze remains playable. */
+export type StoryRole =
+  | "threshold" | "archive" | "ossuary" | "forge"
+  | "pilgrim" | "overgrowth" | "sanctum";
 
 export interface Params {
   seed: number;
@@ -77,6 +88,14 @@ export interface Params {
   templeOn?: boolean;
   /** carve the ravine + rope bridge (default true) */
   ravineOn?: boolean;
+  /** world-oriented stair courts reserved before landmarks/connectivity. */
+  verticalAnchors?: VerticalAnchor[];
+  /** macro-story role assigned before this block's interior is generated. */
+  narrativeRole?: StoryRole;
+  /** stable district identity; adjacent blocks may share it. */
+  districtId?: number;
+  /** exactly one story cell owns the final portal landmark. */
+  storyLandmark?: boolean;
 }
 
 export const DEFAULT_PARAMS: Params = {
@@ -111,8 +130,13 @@ export interface Layout {
   templeMask: Uint8Array;
   plazaMask: Uint8Array;
   doorMask: Uint8Array;  // temple doorway wall cell (rendered with a gap + portal)
+  /** solid navigation core rendered by StairTowers instead of normal wall courses */
+  shaftMask: Uint8Array;
+  /** floors whose elevation is authored by the local 3D Markov grammar */
+  volumeMask: Uint8Array;
   stairs: Stair[];
   gates: Gate[];
+  verticalAnchors: VerticalAnchor[];
   torches: Torch[];
   banners: Banner[];
   towers: Tower[];
@@ -126,7 +150,7 @@ export interface Layout {
   templeCells: number[];
   entrance: { x: number; y: number };
   temple: { platformTier: number; buildTop: number } | null;
-  stats: { floor: number; wall: number; attempts: number; genMs: number };
+  stats: { floor: number; wall: number; attempts: number; genMs: number; volumeCells: number; volumeLevels: number };
 }
 
 // ---------------------------------------------------------------------------
@@ -147,13 +171,21 @@ function attempt(p: Params, seed: number): Layout | string {
   const M = Math.max(7, Math.min(23, Math.round(p.size))) | 0;
   const N = 2 * M + 1;
 
+  // A deliberately partial 3D grammar inside each block. Vertical courts are
+  // excluded because the inter-block solver owns those volumes end-to-end.
+  const volumePlan = generateInteriorVolumePlan(M, seed, (p.verticalAnchors ?? []).map((a) => ({
+    x: Math.round((a.x - 1) / 2), y: Math.round((a.y - 1) / 2), radius: 3,
+  })));
+
   // -- Stage 1: growing-tree maze over maze-cell space, tiers carved alongside.
   const ci = M >> 1; // temple column (maze coords)
   const tierTarget = (i: number, j: number): number => {
     const n = valueNoise2(seed ^ 0x51ab, i * 0.46, j * 0.46) * p.heightAmp;
-    const dTemple = Math.hypot(i - ci, j - 1.2);
+    const dx = i - ci, dy = j - 1.2;
+    const dTemple = Math.sqrt(dx * dx + dy * dy);
     const mound = Math.max(0, p.mound - dTemple * 0.48);
-    return Math.max(0, Math.min(7, Math.round(n + mound - 0.4)));
+    const volumeBias = volumePlan.bias[mi(i, j)];
+    return Math.max(0, Math.min(7, Math.round(n + mound - 0.4 + volumeBias)));
   };
 
   const mTier = new Int8Array(M * M).fill(-1);
@@ -225,6 +257,7 @@ function attempt(p: Params, seed: number): Layout | string {
   // -- Stage 3: rasterize maze → grid.
   const kind = new Uint8Array(N * N).fill(WALL);
   const tier = new Int8Array(N * N);
+  const volumeMask = new Uint8Array(N * N);
   const gi = (x: number, y: number) => y * N + x;
   const setFloor = (x: number, y: number, t: number) => {
     kind[gi(x, y)] = FLOOR;
@@ -234,8 +267,15 @@ function attempt(p: Params, seed: number): Layout | string {
     for (let i = 0; i < M; i++) {
       const gx = 2 * i + 1, gy = 2 * j + 1;
       setFloor(gx, gy, mTier[mi(i, j)]);
-      if (open[mi(i, j) * 4 + 0]) setFloor(gx + 1, gy, Math.min(mTier[mi(i, j)], mTier[mi(i + 1, j)]));
-      if (open[mi(i, j) * 4 + 2]) setFloor(gx, gy + 1, Math.min(mTier[mi(i, j)], mTier[mi(i, j + 1)]));
+      if (volumePlan.mask[mi(i, j)]) volumeMask[gi(gx, gy)] = 1;
+      if (open[mi(i, j) * 4 + 0]) {
+        setFloor(gx + 1, gy, Math.min(mTier[mi(i, j)], mTier[mi(i + 1, j)]));
+        if (volumePlan.mask[mi(i, j)] || volumePlan.mask[mi(i + 1, j)]) volumeMask[gi(gx + 1, gy)] = 1;
+      }
+      if (open[mi(i, j) * 4 + 2]) {
+        setFloor(gx, gy + 1, Math.min(mTier[mi(i, j)], mTier[mi(i, j + 1)]));
+        if (volumePlan.mask[mi(i, j)] || volumePlan.mask[mi(i, j + 1)]) volumeMask[gi(gx, gy + 1)] = 1;
+      }
     }
   }
 
@@ -245,6 +285,52 @@ function attempt(p: Params, seed: number): Layout | string {
   const plazaMask = new Uint8Array(N * N);
   const redMask = new Uint8Array(N * N);
   const doorMask = new Uint8Array(N * N);
+  const shaftMask = new Uint8Array(N * N);
+  const shaftReserve = new Uint8Array(N * N);
+
+  // Vertical courts are a generation constraint, not a renderer repair. Each
+  // core replaces one maze wall/floor cell; its 3x3 ring and short approach
+  // are flattened and carved before landmarks and before connectivity repair.
+  // Consequently the final maze must route around and through the court.
+  const verticalAnchors: VerticalAnchor[] = [];
+  for (const req of p.verticalAnchors ?? []) {
+    // Monument terraces only overlap in a narrow edge band, so valid shared
+    // anchors may sit two cells from a boundary. The ring still stays inside.
+    const x = Math.max(2, Math.min(N - 3, Math.round(req.x)));
+    const y = Math.max(2, Math.min(N - 3, Math.round(req.y)));
+    const dockDir = (Math.round(req.dockDir) & 3) as Dir;
+    let P = kind[gi(x, y)] === FLOOR ? tier[gi(x, y)] : -1;
+    for (let r = 1; P < 0 && r <= 4; r++) {
+      for (let yy = y - r; yy <= y + r && P < 0; yy++) {
+        for (let xx = x - r; xx <= x + r; xx++) {
+          if (xx < 1 || yy < 1 || xx >= N - 1 || yy >= N - 1) continue;
+          const c = gi(xx, yy);
+          if (kind[c] === FLOOR) { P = tier[c]; break; }
+        }
+      }
+    }
+    P = Math.max(0, P);
+    const a = { id: req.id, x, y, dockDir };
+    verticalAnchors.push(a);
+    for (let yy = y - 3; yy <= y + 3; yy++) for (let xx = x - 3; xx <= x + 3; xx++) {
+      if (xx > 0 && yy > 0 && xx < N - 1 && yy < N - 1) shaftReserve[gi(xx, yy)] = 1;
+    }
+    // Walkable ring plus an approach in the chosen direction. The opposite
+    // side is left open by the ring so routes can circulate around the core.
+    for (let yy = y - 1; yy <= y + 1; yy++) for (let xx = x - 1; xx <= x + 1; xx++) {
+      if (xx === x && yy === y) continue;
+      if (shaftMask[gi(xx, yy)]) continue; // a nearby requested core always wins
+      setFloor(xx, yy, P);
+    }
+    for (let s = 2; s <= 3; s++) {
+      const ax = x + DX[dockDir] * s, ay = y + DY[dockDir] * s;
+      if (ax > 0 && ay > 0 && ax < N - 1 && ay < N - 1 && !shaftMask[gi(ax, ay)]) setFloor(ax, ay, P);
+    }
+    const core = gi(x, y);
+    kind[core] = WALL;
+    tier[core] = 0;
+    shaftMask[core] = 1;
+  }
 
   // Temple ziggurat (optional): stepped platform across the north-center,
   // building on top. Satellites without a temple get a very different skyline.
@@ -262,6 +348,7 @@ function attempt(p: Params, seed: number): Layout | string {
     const tX0 = gcx - 5, tX1 = gcx + 5; // 11 cells wide
     for (let gy = 1; gy <= 5; gy++) {
       for (let gx = tX0; gx <= tX1; gx++) {
+        if (shaftReserve[gi(gx, gy)]) continue;
         const t = gy <= 1 ? B + 2 : gy <= 3 ? B + 1 : B;
         setFloor(gx, gy, t);
         templeMask[gi(gx, gy)] = 1;
@@ -291,8 +378,9 @@ function attempt(p: Params, seed: number): Layout | string {
     const R = Math.min(4.4, M * 0.29);
     for (let gy = Math.max(1, Math.floor(py - R)); gy <= Math.min(N - 2, Math.ceil(py + R)); gy++) {
       for (let gx = Math.max(1, Math.floor(px - R)); gx <= Math.min(N - 2, Math.ceil(px + R)); gx++) {
-        if (Math.hypot(gx - px, gy - py) > R) continue;
-        if (templeMask[gi(gx, gy)] || doorMask[gi(gx, gy)]) continue;
+        const dx = gx - px, dy = gy - py;
+        if (dx * dx + dy * dy > R * R) continue;
+        if (templeMask[gi(gx, gy)] || doorMask[gi(gx, gy)] || shaftReserve[gi(gx, gy)]) continue;
         setFloor(gx, gy, P);
         plazaMask[gi(gx, gy)] = 1;
       }
@@ -321,7 +409,7 @@ function attempt(p: Params, seed: number): Layout | string {
     const rt = Math.max(0, lo - 1);
     for (let gy = 2 * rj + 1; gy <= 2 * rj + 3; gy++) {
       for (let gx = 2 * ri + 1; gx <= 2 * ri + 3; gx++) {
-        if (plazaMask[gi(gx, gy)]) continue;
+        if (plazaMask[gi(gx, gy)] || shaftReserve[gi(gx, gy)]) continue;
         setFloor(gx, gy, rt);
         redMask[gi(gx, gy)] = 1;
       }
@@ -335,7 +423,7 @@ function attempt(p: Params, seed: number): Layout | string {
     const rvYEnd = Math.round(N * 0.55);
     for (let gy = N - 1; gy >= rvYEnd; gy--) {
       for (let gx = rvX; gx <= rvX + 2; gx++) {
-        if (templeMask[gi(gx, gy)] || plazaMask[gi(gx, gy)] || redMask[gi(gx, gy)]) continue;
+        if (templeMask[gi(gx, gy)] || plazaMask[gi(gx, gy)] || redMask[gi(gx, gy)] || shaftReserve[gi(gx, gy)]) continue;
         kind[gi(gx, gy)] = VOID;
       }
     }
@@ -362,24 +450,27 @@ function attempt(p: Params, seed: number): Layout | string {
   const entrance = { x: gcx, y: N - 2 };
   if (kind[gi(entrance.x, entrance.y)] !== FLOOR) return "entrance cell not floor";
 
-  const passable = (a: number, b: number) =>
-    kind[a] === FLOOR && kind[b] === FLOOR && Math.abs(tier[a] - tier[b]) <= 1;
-
-  const comp = new Int16Array(N * N).fill(-1);
+  const cellCount = N * N;
+  const comp = new Int16Array(cellCount).fill(-1);
+  const queue = new Int32Array(cellCount);
   const bfsComponents = (): number => {
     comp.fill(-1);
     let nc = 0;
-    for (let s = 0; s < N * N; s++) {
+    for (let s = 0; s < cellCount; s++) {
       if (kind[s] !== FLOOR || comp[s] >= 0) continue;
-      const q = [s];
+      let head = 0, tail = 0;
+      queue[tail++] = s;
       comp[s] = nc;
-      for (let h = 0; h < q.length; h++) {
-        const c = q[h], x = c % N, y = (c / N) | 0;
+      while (head < tail) {
+        const c = queue[head++], x = c % N, y = (c / N) | 0;
         for (let d = 0; d < 4; d++) {
           const nx = x + DX[d], ny = y + DY[d];
           if (nx < 0 || ny < 0 || nx >= N || ny >= N) continue;
           const n = gi(nx, ny);
-          if (comp[n] < 0 && passable(c, n)) { comp[n] = nc; q.push(n); }
+          if (comp[n] < 0 && kind[n] === FLOOR && Math.abs(tier[c] - tier[n]) <= 1) {
+            comp[n] = nc;
+            queue[tail++] = n;
+          }
         }
       }
       nc++;
@@ -395,7 +486,7 @@ function attempt(p: Params, seed: number): Layout | string {
     for (let y = 1; y < N - 1 && !fixed; y++) {
       for (let x = 1; x < N - 1 && !fixed; x++) {
         const c = gi(x, y);
-        if (kind[c] === WALL && !doorMask[c]) {
+        if (kind[c] === WALL && !doorMask[c] && !shaftMask[c]) {
           // opening a wall between two floor cells on opposite sides
           for (const [dA, dB] of [[0, 1], [2, 3]] as const) {
             const a = gi(x + DX[dA], y + DY[dA]), b = gi(x + DX[dB], y + DY[dB]);
@@ -416,8 +507,12 @@ function attempt(p: Params, seed: number): Layout | string {
             const n = gi(nx, ny);
             if (kind[n] !== FLOOR || comp[c] === comp[n] || comp[n] < 0) continue;
             const dt = tier[n] - tier[c];
-            if (Math.abs(dt) !== 2) continue;
-            if (templeMask[c] || templeMask[n] || plazaMask[c] || plazaMask[n]) continue;
+            if (Math.abs(dt) <= 1) continue;
+            // A vertical court can legitimately meet a flattened landmark.
+            // Let the repair lower the outside edge into a one-cell step rather
+            // than rejecting the requested shaft and leaving the floor graph
+            // split. Landmark interiors remain flat; only the boundary cell
+            // that is needed for the route is graded.
             dt > 0 ? (tier[n] = tier[c] + 1) : (tier[c] = tier[n] + 1);
             fixed = true;
             break;
@@ -470,6 +565,7 @@ function attempt(p: Params, seed: number): Layout | string {
     for (let x = 1; x < N - 1; x++) {
       const c = gi(x, y);
       if (kind[c] !== FLOOR || stairMask[c]) continue;
+      if (shaftReserve[c]) continue; // keep every stair-court landing level
       if (medallionCenter(medallions, x, y)) continue;
       for (let d = 0 as Dir; d < 4; d++) {
         const n = gi(x + DX[d], y + DY[d]);
@@ -570,7 +666,7 @@ function attempt(p: Params, seed: number): Layout | string {
   for (let y = 1; y < N - 1; y++) {
     for (let x = 1; x < N - 1; x++) {
       const c = gi(x, y);
-      if (kind[c] !== WALL || doorMask[c]) continue;
+      if (kind[c] !== WALL || doorMask[c] || shaftMask[c]) continue;
       if (y === 1 && Math.abs(x - gcx) <= 2) continue; // never ruin the temple
       if (hash2(seed, c, 33) > 0.16 * p.decay) continue;
       let hi = -99;
@@ -599,7 +695,7 @@ function attempt(p: Params, seed: number): Layout | string {
     for (let y = Math.round(N * 0.2); y < Math.round(N * 0.55); y++) {
       for (let x = Math.round(N * 0.72); x < N - 1; x++) {
         const c = gi(x, y);
-        if (kind[c] !== WALL || doorMask[c]) continue;
+        if (kind[c] !== WALL || doorMask[c] || shaftMask[c]) continue;
         if (wallTop[c] > bestTop) { bestTop = wallTop[c]; best = c; }
       }
     }
@@ -633,7 +729,7 @@ function attempt(p: Params, seed: number): Layout | string {
   for (let y = 1; y < N - 1; y++) {
     for (let x = 1; x < N - 1; x++) {
       const c = gi(x, y);
-      if (kind[c] !== WALL || doorMask[c]) continue;
+      if (kind[c] !== WALL || doorMask[c] || shaftMask[c]) continue;
       let dir: Dir | null = null, best = -99;
       for (let d = 0 as Dir; d < 4; d++) {
         const n = gi(x + DX[d], y + DY[d]);
@@ -657,7 +753,7 @@ function attempt(p: Params, seed: number): Layout | string {
     for (let y = 1; y < N - 1; y++) {
       for (let x = 1; x < N - 1; x++) {
         const c = gi(x, y);
-        if (kind[c] !== WALL || doorMask[c] || torchKeys.has(c)) continue;
+        if (kind[c] !== WALL || doorMask[c] || shaftMask[c] || torchKeys.has(c)) continue;
         let dir: Dir | null = null, ft = -99;
         for (let d = 0 as Dir; d < 4; d++) {
           const n = gi(x + DX[d], y + DY[d]);
@@ -719,7 +815,10 @@ function attempt(p: Params, seed: number): Layout | string {
       for (const t of cands) {
         if (taken.length >= nTotems) break;
         if (taken.some((q) => Math.max(Math.abs(q.x - t.x), Math.abs(q.y - t.y)) < 5)) continue;
-        if (medallions.some((m) => Math.hypot(m.x - t.x, m.y - t.y) < m.r + 2)) continue;
+        if (medallions.some((m) => {
+          const dx = m.x - t.x, dy = m.y - t.y, r = m.r + 2;
+          return dx * dx + dy * dy < r * r;
+        })) continue;
         taken.push(t);
         braziers.push({ x: t.x, y: t.y, tier: tier[gi(t.x, t.y)], kind: "gold", totem: true });
       }
@@ -738,17 +837,23 @@ function attempt(p: Params, seed: number): Layout | string {
   return {
     seed, name: makeName(rng), N, params: p,
     kind, tier, wallTop, wallBase, support,
-    stairMask, ruinMask, redMask, templeMask, plazaMask, doorMask,
-    stairs, gates, torches, banners, towers, medallions, braziers, bridge, door,
+    stairMask, ruinMask, redMask, templeMask, plazaMask, doorMask, shaftMask, volumeMask,
+    stairs, gates, verticalAnchors, torches, banners, towers, medallions, braziers, bridge, door,
     doorDir: 2, templeCells,
     entrance,
     temple,
-    stats: { floor, wall, attempts: 1, genMs: 0 },
+    stats: {
+      floor, wall, attempts: 1, genMs: 0,
+      volumeCells: volumePlan.occupied, volumeLevels: volumePlan.levels,
+    },
   };
 }
 
 function medallionCenter(meds: Medallion[], x: number, y: number): boolean {
-  return meds.some((m) => Math.hypot(m.x - x, m.y - y) < 1.5);
+  return meds.some((m) => {
+    const dx = m.x - x, dy = m.y - y;
+    return dx * dx + dy * dy < 2.25;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -761,11 +866,24 @@ const DIR_MAP: readonly Dir[] = [3, 2, 0, 1]; // where dir d points after one R
 function rotateOnce(l: Layout): Layout {
   const N = l.N;
   const gi = (x: number, y: number) => y * N + x;
-  const mapGrid = <T extends Uint8Array | Int8Array>(g: T): T => {
-    const out = new (g.constructor as new (n: number) => T)(g.length);
-    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) out[gi(y, N - 1 - x)] = g[gi(x, y)];
-    return out;
-  };
+  const kind = new Uint8Array(l.kind.length), tier = new Int8Array(l.tier.length);
+  const wallTop = new Int8Array(l.wallTop.length), wallBase = new Int8Array(l.wallBase.length);
+  const support = new Int8Array(l.support.length), stairMask = new Uint8Array(l.stairMask.length);
+  const ruinMask = new Uint8Array(l.ruinMask.length), redMask = new Uint8Array(l.redMask.length);
+  const templeMask = new Uint8Array(l.templeMask.length), plazaMask = new Uint8Array(l.plazaMask.length);
+  const doorMask = new Uint8Array(l.doorMask.length), shaftMask = new Uint8Array(l.shaftMask.length);
+  const volumeMask = new Uint8Array(l.volumeMask.length);
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const src = y * N + x, dst = (N - 1 - x) * N + y;
+      kind[dst] = l.kind[src]; tier[dst] = l.tier[src];
+      wallTop[dst] = l.wallTop[src]; wallBase[dst] = l.wallBase[src]; support[dst] = l.support[src];
+      stairMask[dst] = l.stairMask[src]; ruinMask[dst] = l.ruinMask[src]; redMask[dst] = l.redMask[src];
+      templeMask[dst] = l.templeMask[src]; plazaMask[dst] = l.plazaMask[src]; doorMask[dst] = l.doorMask[src];
+      shaftMask[dst] = l.shaftMask[src];
+      volumeMask[dst] = l.volumeMask[src];
+    }
+  }
   const mp = <F extends { x: number; y: number }>(f: F): F => ({ ...f, x: f.y, y: N - 1 - f.x });
   const md = (d: Dir): Dir => DIR_MAP[d];
   const bridge: Bridge | null = l.bridge === null ? null
@@ -774,12 +892,11 @@ function rotateOnce(l: Layout): Layout {
       : { axis: 0, at: N - 1 - l.bridge.at, s0: l.bridge.s0, s1: l.bridge.s1, tier: l.bridge.tier };
   return {
     ...l,
-    kind: mapGrid(l.kind), tier: mapGrid(l.tier), wallTop: mapGrid(l.wallTop),
-    wallBase: mapGrid(l.wallBase), support: mapGrid(l.support),
-    stairMask: mapGrid(l.stairMask), ruinMask: mapGrid(l.ruinMask), redMask: mapGrid(l.redMask),
-    templeMask: mapGrid(l.templeMask), plazaMask: mapGrid(l.plazaMask), doorMask: mapGrid(l.doorMask),
+    kind, tier, wallTop, wallBase, support,
+    stairMask, ruinMask, redMask, templeMask, plazaMask, doorMask, shaftMask, volumeMask,
     stairs: l.stairs.map((s) => ({ ...mp(s), dir: md(s.dir) })),
     gates: l.gates.map((g) => ({ ...mp(g), dir: md(g.dir) })),
+    verticalAnchors: l.verticalAnchors.map((a) => ({ ...mp(a), dockDir: md(a.dockDir) })),
     torches: l.torches.map((t) => ({ ...mp(t), dir: md(t.dir) })),
     banners: l.banners.map((b) => ({ ...mp(b), dir: md(b.dir) })),
     towers: l.towers.map(mp),
@@ -814,6 +931,19 @@ function unrotateGates(sides: number[], rows: number[] | undefined, k: number, N
   return { gateSides: outS, gateRows: rows ? outR : undefined };
 }
 
+/** Vertical requests, like gates, are expressed in finished-layout space. */
+function unrotateVerticalAnchors(anchors: VerticalAnchor[], k: number, N: number): VerticalAnchor[] {
+  const invDir: readonly Dir[] = [2, 3, 1, 0];
+  return anchors.map((a) => {
+    let x = a.x, y = a.y, dockDir = a.dockDir;
+    for (let i = 0; i < k; i++) {
+      [x, y] = [N - 1 - y, x];
+      dockDir = invDir[dockDir];
+    }
+    return { ...a, x, y, dockDir };
+  });
+}
+
 export function generate(input: number | Partial<Params>): Layout {
   const p: Params = typeof input === "number"
     ? { ...DEFAULT_PARAMS, seed: input }
@@ -823,9 +953,11 @@ export function generate(input: number | Partial<Params>): Layout {
   // gates are requested in world space — unrotate the request before the
   // pipeline so post-rotation gates land where the caller asked
   const N = 2 * (Math.max(7, Math.min(23, Math.round(p.size))) | 0) + 1;
-  const pGen = k > 0 && p.gateSides
-    ? { ...p, ...unrotateGates(p.gateSides, p.gateRows, k, N) }
-    : p;
+  let pGen: Params = p;
+  if (k > 0 && p.gateSides) pGen = { ...pGen, ...unrotateGates(p.gateSides, p.gateRows, k, N) };
+  if (k > 0 && p.verticalAnchors) {
+    pGen = { ...pGen, verticalAnchors: unrotateVerticalAnchors(p.verticalAnchors, k, N) };
+  }
   const reasons: string[] = [];
   for (let a = 0; a < 6; a++) {
     const s = (Math.imul(p.seed + a, 0x9e3779b1) ^ Math.imul(a, 0x85ebca6b)) >>> 0;
@@ -845,7 +977,9 @@ export function generate(input: number | Partial<Params>): Layout {
 export function checksum(l: Layout): number {
   let h = 0x811c9dc5;
   const mix = (v: number) => { h ^= v & 0xff; h = Math.imul(h, 0x01000193); };
-  for (let i = 0; i < l.kind.length; i++) { mix(l.kind[i]); mix(l.tier[i] + 16); mix(l.wallTop[i] + 16); }
+  for (let i = 0; i < l.kind.length; i++) {
+    mix(l.kind[i]); mix(l.tier[i] + 16); mix(l.wallTop[i] + 16); mix(l.shaftMask[i]); mix(l.volumeMask[i]);
+  }
   for (const s of l.stairs) { mix(s.x); mix(s.y); mix(s.dir); }
   for (const t of l.torches) { mix(t.x); mix(t.y); }
   return h >>> 0;

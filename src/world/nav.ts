@@ -10,13 +10,20 @@
 
 import * as THREE from "three/webgpu";
 import { FLOOR, DX, DY } from "../gen/dungeon";
-import { TH, CELL, STAIR } from "../config";
+import { TH, CELL } from "../config";
 import type { Ctx } from "./context";
 import type { IslandWalk, LinkWalk } from "./walkmap";
 import type { StairTower } from "./stairs";
 import { getKit } from "../scene/kit";
+import { stairXZAtHeight } from "./spiral";
 
 export const NAV_K = 1 << 20; // key = islandIndex * NAV_K + cellIndex
+
+/** Points are appended while BFS is backtracking goal → source, then the
+ *  whole list is reversed. Direction-aware fractions prevent reverse bridge
+ *  traversals from becoming a self-intersecting 0→.75→.5→.25→1 loop. */
+export const bridgeBacktrackFractions = (forward: boolean): readonly number[] =>
+  forward ? [0.75, 0.5, 0.25] : [0.25, 0.5, 0.75];
 
 export interface NavPortal {
   to: number;
@@ -24,6 +31,8 @@ export interface NavPortal {
   link?: LinkWalk;
   tower?: StairTower;
   up?: boolean;
+  /** orientation of LinkWalk.a → LinkWalk.b for this directed portal */
+  forward?: boolean;
 }
 
 export interface NavBfs {
@@ -35,7 +44,7 @@ export class NavMesh {
   portals = new Map<number, NavPortal[]>();
   /** island-level adjacency derived from the portals */
   adj: Array<Set<number>> = [];
-  private builtToken = -1;
+  private builtSignature = "";
 
   constructor(private ctx: Ctx) {}
 
@@ -43,9 +52,17 @@ export class NavMesh {
 
   /** (re)build the graph when the world changed */
   ensure(): boolean {
-    if (this.builtToken === this.ctx.state.token) return this.islands.length > 0;
     const islands = this.islands;
     if (islands.length === 0) return false;
+    // Large modes are paced over many frames. A user can open the route while
+    // islands exist but before every bridge/stair/blocker has been appended;
+    // token-only caching would then freeze that incomplete portal graph for
+    // the rest of the forge. Counts form a cheap live topology revision.
+    const signature = [
+      this.ctx.state.token, islands.length, this.ctx.walk.links.length,
+      this.ctx.stairs.towers.length, this.ctx.walk.blockers.length,
+    ].join(":");
+    if (this.builtSignature === signature) return true;
     this.portals.clear();
     this.adj = islands.map(() => new Set<number>());
     const add = (from: number, p: NavPortal) => {
@@ -58,17 +75,17 @@ export class NavMesh {
       const a = this.locate(link.a.x, link.a.y, link.a.z);
       const b = this.locate(link.b.x, link.b.y, link.b.z);
       if (a === null || b === null || a === b) continue;
-      add(a, { to: b, kind: "link", link });
-      add(b, { to: a, kind: "link", link });
+      add(a, { to: b, kind: "link", link, forward: true });
+      add(b, { to: a, kind: "link", link, forward: false });
     }
     for (const tw of this.ctx.stairs.towers) {
-      const lo = this.locate(tw.x, tw.y0, tw.z);
-      const hi = this.locate(tw.x, tw.y1, tw.z);
+      const lo = this.locate(tw.lowerDock.x, tw.lowerDock.y, tw.lowerDock.z);
+      const hi = this.locate(tw.upperDock.x, tw.upperDock.y, tw.upperDock.z);
       if (lo === null || hi === null || lo === hi) continue;
       add(lo, { to: hi, kind: "stair", tower: tw, up: true });
       add(hi, { to: lo, kind: "stair", tower: tw, up: false });
     }
-    this.builtToken = this.ctx.state.token;
+    this.builtSignature = signature;
     return true;
   }
 
@@ -86,7 +103,13 @@ export class NavMesh {
         if (gx < 0 || gy < 0 || gx >= N || gy >= N) continue;
         const c = gy * N + gx;
         if (w.l.kind[c] !== FLOOR) continue;
-        const yDiff = Math.abs(w.oy + w.l.tier[c] * TH + 0.16 - y);
+        const floorY = w.oy + w.l.tier[c] * TH + 0.16;
+        if (this.ctx.walk.isBlocked(
+          w.ox + (gx - (N - 1) / 2) * CELL,
+          floorY + 0.39,
+          w.oz + (gy - (N - 1) / 2) * CELL,
+        )) continue;
+        const yDiff = Math.abs(floorY - y);
         if (yDiff > 3.2) continue;
         const score = yDiff + (Math.abs(dx2) + Math.abs(dy2)) * 0.4;
         if (score < bestScore) { bestScore = score; best = i * NAV_K + c; }
@@ -104,9 +127,9 @@ export class NavMesh {
     cand.push([l.entrance.x, l.entrance.y]);
     for (const [x, y] of cand) {
       const c = y * N + x;
-      if (x >= 0 && y >= 0 && x < N && y < N && l.kind[c] === FLOOR) return i * NAV_K + c;
+      if (x >= 0 && y >= 0 && x < N && y < N && l.kind[c] === FLOOR && !this.isBlockedCell(i, c)) return i * NAV_K + c;
     }
-    for (let c = 0; c < N * N; c++) if (l.kind[c] === FLOOR) return i * NAV_K + c;
+    for (let c = 0; c < N * N; c++) if (l.kind[c] === FLOOR && !this.isBlockedCell(i, c)) return i * NAV_K + c;
     return null;
   }
 
@@ -118,6 +141,15 @@ export class NavMesh {
     const isl = this.islands[Math.floor(key / NAV_K)];
     const c = key % NAV_K, N = isl.l.N;
     return new THREE.Vector3(
+      isl.ox + (c % N - (N - 1) / 2) * CELL,
+      isl.oy + isl.l.tier[c] * TH + 0.55,
+      isl.oz + (Math.floor(c / N) - (N - 1) / 2) * CELL,
+    );
+  }
+
+  isBlockedCell(islandIndex: number, c: number): boolean {
+    const isl = this.islands[islandIndex], N = isl.l.N;
+    return this.ctx.walk.isBlocked(
       isl.ox + (c % N - (N - 1) / 2) * CELL,
       isl.oy + isl.l.tier[c] * TH + 0.55,
       isl.oz + (Math.floor(c / N) - (N - 1) / 2) * CELL,
@@ -142,7 +174,7 @@ export class NavMesh {
         const nx = x + DX[dd], ny = y + DY[dd];
         if (nx < 0 || ny < 0 || nx >= N || ny >= N) continue;
         const nc = ny * N + nx;
-        if (w.l.kind[nc] !== FLOOR || Math.abs(w.l.tier[nc] - w.l.tier[c]) > 1) continue;
+        if (w.l.kind[nc] !== FLOOR || this.isBlockedCell(iIdx, nc) || Math.abs(w.l.tier[nc] - w.l.tier[c]) > 1) continue;
         const nk = iIdx * NAV_K + nc;
         if (!dist.has(nk)) { dist.set(nk, d + 1); prev.set(nk, { k }); q.push(nk); }
       }
@@ -164,30 +196,31 @@ export class NavMesh {
         const via = step.via;
         if (via.kind === "link" && via.link) {
           const { a, b, arc } = via.link;
-          for (const tt of [0.75, 0.5, 0.25]) {
+          const samples = bridgeBacktrackFractions(via.forward !== false);
+          for (const tt of samples) {
             const p = a.clone().lerp(b, tt);
             p.y += Math.sin(tt * Math.PI) * arc + 0.45;
             pts.push(p);
           }
         } else if (via.kind === "stair" && via.tower) {
           const tw = via.tower;
-          const m = tw.m, P = 8 * m, slope = tw.rise / STAIR.STEP;
-          const sToXZ = (s: number): [number, number] => {
-            const side = Math.floor((s % P) / (2 * m)), u = (s % P) - side * 2 * m - m;
-            if (side === 0) return [u, -m];
-            if (side === 1) return [m, u];
-            if (side === 2) return [-u, m];
-            return [-m, -u];
-          };
+          const fromDock = via.up ? tw.upperDock : tw.lowerDock;
+          const fromStep = via.up ? tw.upperStep : tw.lowerStep;
+          const toStep = via.up ? tw.lowerStep : tw.upperStep;
+          const toDock = via.up ? tw.lowerDock : tw.upperDock;
+          pts.push(new THREE.Vector3(fromDock.x, fromDock.y + 0.4, fromDock.z));
+          pts.push(new THREE.Vector3(fromStep.x, fromStep.y + 0.4, fromStep.z));
           const from = via.up ? tw.y1 : tw.y0;
           const to = via.up ? tw.y0 : tw.y1;
           // dense sampling: the tour curve smooths these points, and sparse
           // helix knots would get pulled inward through the tower core
           const stepY = 0.45 * Math.sign(to - from);
           for (let h = from; Math.sign(to - h) === Math.sign(stepY) && Math.abs(to - h) > 0.4; h += stepY) {
-            const [dx, dz] = sToXZ(Math.max(0, (h - tw.y0) / slope));
-            pts.push(new THREE.Vector3(tw.x + dx, h + 0.4, tw.z + dz));
+            const p = stairXZAtHeight(tw, h);
+            pts.push(new THREE.Vector3(tw.x + p.x, h + 0.4, tw.z + p.z));
           }
+          pts.push(new THREE.Vector3(toStep.x, toStep.y + 0.4, toStep.z));
+          pts.push(new THREE.Vector3(toDock.x, toDock.y + 0.4, toDock.z));
         }
       }
       cur = step?.k;
@@ -295,7 +328,7 @@ export class NavOverlay {
     for (let i = 0; i < islands.length; i++) {
       const w = islands[i], N = w.l.N;
       for (let c = 0; c < N * N; c++) {
-        if (w.l.kind[c] !== FLOOR) continue;
+        if (w.l.kind[c] !== FLOOR || this.nav.isBlockedCell(i, c)) continue;
         m.makeTranslation(
           w.ox + (c % N - (N - 1) / 2) * CELL,
           w.oy + w.l.tier[c] * TH + 0.24,

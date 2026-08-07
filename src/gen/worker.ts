@@ -11,7 +11,7 @@ self.onmessage = (e: MessageEvent<{ id: number; seed: number; params?: Partial<P
     layout.kind.buffer, layout.tier.buffer, layout.wallTop.buffer,
     layout.wallBase.buffer, layout.support.buffer, layout.stairMask.buffer,
     layout.redMask.buffer, layout.templeMask.buffer, layout.plazaMask.buffer,
-    layout.doorMask.buffer,
+    layout.doorMask.buffer, layout.shaftMask.buffer, layout.volumeMask.buffer,
   ];
   (self as unknown as Worker).postMessage({ id, layout }, transfers as Transferable[]);
 };

@@ -1,10 +1,10 @@
 // Small pieces shared by the world modes.
 
 import * as THREE from "three/webgpu";
-import type { Layout } from "../gen/dungeon";
-import { FLOOR } from "../gen/dungeon";
+import type { Dir, Layout, VerticalAnchor } from "../gen/dungeon";
+import { FLOOR, WALL } from "../gen/dungeon";
 import { TH, CELL } from "../config";
-import type { IslandWalk } from "./walkmap";
+import type { StairDock } from "./stairs";
 
 export interface Origin { ox: number; oy: number; oz: number }
 
@@ -20,45 +20,48 @@ export function gateWorld(l: Layout, p: Origin, dir: number): THREE.Vector3 | nu
   );
 }
 
-
-/** find a clear elevator shaft joining a stacked pair: a cell that is open
- *  floor in BOTH layers — searched outward from the child's center.
- *  `relax` loosens the criteria so a shaft is ALWAYS found when any floor
- *  overlap exists (the map must be walkable): 0 = pristine (no support
- *  pillar, no stairs in either cell), 1 = allow a support pillar beside the
- *  tower, 2 = allow stair cells too. */
-export function findShaft(par: IslandWalk, chi: IslandWalk, relax = 0): { x: number; z: number; y0: number; y1: number } | null {
-  const l = chi.l, cN = l.N, pN = par.l.N;
-  for (let r = 0; r < cN / 2; r++) {
-    for (let gy = Math.max(1, ((cN - 1) >> 1) - r); gy <= Math.min(cN - 2, ((cN - 1) >> 1) + r); gy++) {
-      for (let gx = Math.max(1, ((cN - 1) >> 1) - r); gx <= Math.min(cN - 2, ((cN - 1) >> 1) + r); gx++) {
-        const cc = gy * cN + gx;
-        if (l.kind[cc] !== FLOOR) continue;
-        if (relax < 2 && l.stairMask[cc]) continue;
-        if (relax < 1 && l.support[cc] !== l.tier[cc]) continue;
-        const wxp = chi.ox + (gx - (cN - 1) / 2) * CELL;
-        const wzp = chi.oz + (gy - (cN - 1) / 2) * CELL;
-        const pgx = Math.round((wxp - par.ox) / CELL + (pN - 1) / 2);
-        const pgy = Math.round((wzp - par.oz) / CELL + (pN - 1) / 2);
-        if (pgx < 1 || pgy < 1 || pgx >= pN - 1 || pgy >= pN - 1) continue;
-        const pc = pgy * pN + pgx;
-        if (par.l.kind[pc] !== FLOOR) continue;
-        if (relax < 2 && par.l.stairMask[pc]) continue;
-        return {
-          x: wxp, z: wzp,
-          y0: par.oy + par.l.tier[pc] * TH + 0.16,
-          y1: chi.oy + l.tier[cc] * TH + 0.16,
-        };
-      }
-    }
-  }
-  return null;
+export interface VerticalStairDock extends StairDock {
+  x: number;
+  z: number;
+  y0: number;
+  y1: number;
 }
 
-/** three-step ladder: pristine shaft → beside a pillar → anywhere floor
- *  overlaps. Returns null only when the footprints share no walkable overlap. */
-export function findShaftAnyhow(par: IslandWalk, chi: IslandWalk): ReturnType<typeof findShaft> {
-  return findShaft(par, chi, 0) ?? findShaft(par, chi, 1) ?? findShaft(par, chi, 2);
+/** Resolve one generator-owned vertical connection into a tower and two
+ * exactly matching floor landings. Both layouts carry the same link id, so
+ * this remains correct when their sizes and rotations differ. */
+export function verticalStairDock(
+  par: { l: Layout } & Origin,
+  chi: { l: Layout } & Origin,
+  linkId: number,
+): VerticalStairDock | null {
+  const pa = par.l.verticalAnchors.find((a) => a.id === linkId);
+  const ca = chi.l.verticalAnchors.find((a) => a.id === linkId);
+  if (!pa || !ca) return null;
+  const point = (l: Layout, o: Origin, a: VerticalAnchor) => {
+    const x = a.x + [1, -1, 0, 0][a.dockDir];
+    const y = a.y + [0, 0, 1, -1][a.dockDir];
+    const c = y * l.N + x;
+    if (l.kind[c] !== FLOOR) return null;
+    return {
+      x: o.ox + (x - (l.N - 1) / 2) * CELL,
+      y: o.oy + l.tier[c] * TH + 0.16,
+      z: o.oz + (y - (l.N - 1) / 2) * CELL,
+    };
+  };
+  const lower = point(par.l, par, pa), upper = point(chi.l, chi, ca);
+  if (!lower || !upper || upper.y <= lower.y) return null;
+  const px = par.ox + (pa.x - (par.l.N - 1) / 2) * CELL;
+  const pz = par.oz + (pa.y - (par.l.N - 1) / 2) * CELL;
+  const cx = chi.ox + (ca.x - (chi.l.N - 1) / 2) * CELL;
+  const cz = chi.oz + (ca.y - (chi.l.N - 1) / 2) * CELL;
+  if (Math.hypot(px - cx, pz - cz) > 0.15) return null;
+  return {
+    x: (px + cx) / 2, z: (pz + cz) / 2,
+    y0: lower.y, y1: upper.y,
+    side: pa.dockDir ^ 1,
+    lower, upper,
+  };
 }
 
 /** post-hoc gate carving: if the generator failed to carve a gate on `side`
@@ -87,6 +90,58 @@ export function ensureGate(l: Layout, side: number): boolean {
   l.tier[b] = l.tier[iy * N + ix];
   l.gates.push({ x: bx, y: by, dir: side as 0 | 1 | 2 | 3, tier: l.tier[b] });
   return true;
+}
+
+/** Carve a real room apron through one side of a block. Two facing aprons plus
+ * the wide seam deck form a single cross-block court; this changes the maze
+ * data itself (floor/support/masks/navigation), not just its rendering. */
+export function fuseDistrictBoundary(
+  l: Layout, side: Dir, halfWidth = 2, depth = 3,
+): number {
+  const gate = l.gates.find((candidate) => candidate.dir === side);
+  if (!gate) return 0;
+  const N = l.N;
+  const inward = (side ^ 1) as Dir;
+  const ix = [1, -1, 0, 0][inward], iy = [0, 0, 1, -1][inward];
+  const tx = iy, ty = -ix;
+  const touched = new Set<number>();
+  let addedFloor = 0, removedWall = 0;
+  for (let d = 0; d < depth; d++) for (let lateral = -halfWidth; lateral <= halfWidth; lateral++) {
+    const x = gate.x + ix * d + tx * lateral;
+    const y = gate.y + iy * d + ty * lateral;
+    if (x < 0 || y < 0 || x >= N || y >= N) continue;
+    const c = y * N + x;
+    // A portal facade or vertical shaft owns its volume end-to-end. Fused
+    // seams choose other cells rather than silently destroying a landmark.
+    if (l.doorMask[c] || l.shaftMask[c]) continue;
+    if (l.kind[c] !== FLOOR) {
+      if (l.kind[c] === WALL) removedWall++;
+      addedFloor++;
+    }
+    touched.add(c);
+    l.kind[c] = FLOOR;
+    l.tier[c] = gate.tier;
+    l.support[c] = gate.tier;
+    l.wallBase[c] = gate.tier;
+    l.wallTop[c] = gate.tier;
+    l.stairMask[c] = 0;
+    l.ruinMask[c] = 0;
+    l.redMask[c] = 0;
+    l.templeMask[c] = 0;
+    l.plazaMask[c] = 0;
+    l.volumeMask[c] = 0;
+  }
+  if (touched.size === 0) return 0;
+  l.stats.floor += addedFloor;
+  l.stats.wall -= removedWall;
+  const keep = (x: number, y: number) => !touched.has(y * N + x);
+  l.stairs = l.stairs.filter((item) => keep(item.x, item.y));
+  l.torches = l.torches.filter((item) => keep(item.x, item.y));
+  l.banners = l.banners.filter((item) => keep(item.x, item.y));
+  l.towers = l.towers.filter((item) => keep(item.x, item.y));
+  l.braziers = l.braziers.filter((item) => keep(item.x, item.y));
+  l.templeCells = l.templeCells.filter((cell) => !touched.has(cell));
+  return touched.size;
 }
 
 /** building an island costs 10-20ms of instance filling on the main thread —

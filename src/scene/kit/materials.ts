@@ -211,7 +211,9 @@ function makeBeamMat(c: number, strength: number): THREE.MeshBasicNodeMaterial {
 
 export interface MatKit {
   stoneMat: THREE.MeshLambertNodeMaterial;
+  stoneFadeMat: THREE.MeshLambertNodeMaterial;
   stairMat: THREE.MeshLambertNodeMaterial;
+  stairFadeMat: THREE.MeshLambertNodeMaterial;
   redMat: THREE.MeshStandardNodeMaterial;
   woodMat: THREE.MeshLambertNodeMaterial;
   ropeMat: THREE.MeshLambertNodeMaterial;
@@ -242,6 +244,20 @@ export interface MatKit {
 }
 
 export function makeMaterials(): MatKit {
+  const stoneMat = makeStoneMat();
+  const stoneFadeMat = stoneMat.clone();
+  stoneFadeMat.transparent = true;
+  stoneFadeMat.depthWrite = false;
+  stoneFadeMat.opacity = 0.2;
+  stoneFadeMat.side = THREE.DoubleSide;
+  stoneFadeMat.name = "occluding-architecture-fade";
+  const stairMat = new THREE.MeshLambertNodeMaterial({ color: 0x8a7a62, vertexColors: true });
+  const stairFadeMat = stairMat.clone();
+  stairFadeMat.transparent = true;
+  stairFadeMat.depthWrite = false;
+  stairFadeMat.opacity = 0.2;
+  stairFadeMat.side = THREE.DoubleSide;
+  stairFadeMat.name = "occluding-stair-fade";
   const bannerMat = new THREE.MeshStandardNodeMaterial({
     side: THREE.DoubleSide, roughness: 0.9, transparent: true, alphaTest: 0.4,
   });
@@ -438,9 +454,11 @@ export function makeMaterials(): MatKit {
   }
 
   return {
-    stoneMat: makeStoneMat(),
+    stoneMat,
+    stoneFadeMat,
     // spiral stair towers share the masonry face-shading via vertex colors
-    stairMat: new THREE.MeshLambertNodeMaterial({ color: 0x8a7a62, vertexColors: true }),
+    stairMat,
+    stairFadeMat,
     redMat,
     woodMat: new THREE.MeshLambertNodeMaterial(),
     // ropes are plain Meshes — no per-instance color to darken them, so the

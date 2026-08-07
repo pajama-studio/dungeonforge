@@ -3,12 +3,20 @@
 
 import { describe, it, expect } from "vitest";
 import { STAIR } from "../config";
-import { stairPerimeterS, spiralHeight } from "./spiral";
+import { stairPerimeterS, stairXZAtHeight, stairXZAtS, spiralHeight } from "./spiral";
 
 const P = 8 * STAIR.M;
 const SLOPE = STAIR.RISE / STAIR.STEP;
 
 describe("stairPerimeterS", () => {
+  it("round-trips perimeter distance through x/z", () => {
+    for (let i = 0; i < 160; i++) {
+      const s = i / 160 * P;
+      const p = stairXZAtS(s);
+      expect(stairPerimeterS(p.x, p.z)).toBeCloseTo(s, 5);
+    }
+  });
+
   it("covers the full perimeter continuously walking the mid-ring", () => {
     // walk the square mid-ring; s must be continuous (mod P) and monotonic
     const m = STAIR.M;
@@ -86,5 +94,17 @@ describe("spiralHeight", () => {
       prevY = y; refY = y;
     }
     expect(prevY - firstY).toBeCloseTo(Pv * slope, 4);
+  });
+
+  it("honours a landing phase and closes on the same face after whole loops", () => {
+    const m = STAIR.M * 1.1;
+    const loops = 6;
+    const tower = { y0: 3, y1: 33, m, phase: 7 * m, rise: (30 * STAIR.STEP) / (loops * 8 * m) };
+    const lo = stairXZAtHeight(tower, tower.y0);
+    const hi = stairXZAtHeight(tower, tower.y1);
+    expect(hi.x).toBeCloseTo(lo.x, 5);
+    expect(hi.z).toBeCloseTo(lo.z, 5);
+    expect(spiralHeight(tower, lo.x, lo.z, tower.y0)).toBeCloseTo(tower.y0, 5);
+    expect(spiralHeight(tower, hi.x, hi.z, tower.y1)).toBeCloseTo(tower.y1, 5);
   });
 });

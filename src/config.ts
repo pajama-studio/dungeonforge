@@ -11,14 +11,23 @@ export const COURSE = TH / 2;
 export const BRIDGE_SPAN = 3.2 * CELL;
 /** world units of abyss between linked blocks */
 export const ISLAND_GAP = 15;
+/** Seam between blocks that belong to one narrative district. Blocks remain
+ * separate render/streaming owners, but their architecture reads as one
+ * continuous precinct instead of another island-and-bridge pair. */
+export const DISTRICT_GAP = CELL * 2.25;
+/** A little more breathing room for a cross-block ritual court. The carved
+ * room aprons extend into both neighbors, so this still reads as one space. */
+export const DISTRICT_COURT_GAP = CELL * 4;
 /** mid-span RISE of the stone arch bridges linking blocks — one function
  *  shared by the bridge mesh, the walkmap ground sampler and nav tracing,
  *  so the drawn deck IS the surface the walker stands on */
 export const linkArc = (dist: number): number => Math.min(1.5, dist * 0.055);
+/** Broad intra-district joins are nearly level courtyards/galleries. */
+export const districtLinkArc = (dist: number): number => Math.min(0.32, dist * 0.022);
 
 /** FIXED global light pool size: three's WebGPU forward path recompiles every
  *  pipeline whenever the scene's light count changes — so the count never does. */
-export const LIGHT_POOL_SIZE = 28;
+export const LIGHT_POOL_SIZE = 24;
 
 /** fill rate is the budget: bigger worlds render at a slightly lower ratio */
 export const PR_BASE = 1.5;

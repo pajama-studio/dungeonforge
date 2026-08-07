@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "label": "markov-runtime-check",
+  "workload": {
+    "rounds": 1,
+    "warmup": 1,
+    "drawsPerLoop": 1,
+    "url": "http://127.0.0.1:4173/?seed=20260807"
+  },
+  "summary": {
+    "frameMedianMs": 2837.2000000476837,
+    "frameP95Ms": 2837.2000000476837,
+    "fpsFromMedian": 0.35246017199464025,
+    "instances": 102083,
+    "visibleRenderObjects": 857,
+    "triangles": 9120754,
+    "gpuWait": true
+  },
+  "samples": [
+    {
+      "loop": 1,
+      "frameMs": 2837.2000000476837
+    }
+  ]
+}

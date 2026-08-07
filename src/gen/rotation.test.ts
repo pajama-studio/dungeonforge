@@ -68,6 +68,20 @@ describe("layout rotation", () => {
     }
   });
 
+  it("keeps vertical-anchor requests in finished-layout coordinates", () => {
+    for (const k of [0, 1, 2, 3]) {
+      const l = generate({
+        seed: 512, size: 11, rot: k,
+        verticalAnchors: [{ id: 7, x: 6, y: 15, dockDir: 3 }],
+      });
+      const a = l.verticalAnchors.find((v) => v.id === 7)!;
+      expect(a).toEqual({ id: 7, x: 6, y: 15, dockDir: 3 });
+      expect(l.shaftMask[a.y * l.N + a.x]).toBe(1);
+      const dock = (a.y + DY[a.dockDir]) * l.N + a.x + DX[a.dockDir];
+      expect(l.kind[dock]).toBe(FLOOR);
+    }
+  });
+
   it("temple-less and ravine-less layouts stay valid", () => {
     const noTemple = generate({ seed: 33, templeOn: false });
     expect(noTemple.temple).toBeNull();

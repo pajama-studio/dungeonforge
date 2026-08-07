@@ -9,10 +9,12 @@ import { InstList } from "./instances";
 import { getKit } from "./kit";
 
 export interface SlotPool {
+  slot: number;
   group: THREE.Group;
   meshes: Map<string, THREE.InstancedMesh>;
   perBuild: THREE.Object3D[];
   perBuildGeos: THREE.BufferGeometry[];
+  detailVisible: boolean;
 }
 
 const slotPools = new Map<number, SlotPool>();
@@ -20,7 +22,7 @@ const slotPools = new Map<number, SlotPool>();
 export function getSlot(slot: number, scene?: THREE.Object3D): SlotPool {
   let p = slotPools.get(slot);
   if (!p) {
-    p = { group: new THREE.Group(), meshes: new Map(), perBuild: [], perBuildGeos: [] };
+    p = { slot, group: new THREE.Group(), meshes: new Map(), perBuild: [], perBuildGeos: [], detailVisible: true };
     p.group.name = `slot-${slot}`;
     slotPools.set(slot, p);
   }
@@ -53,18 +55,16 @@ function fillInstanced(mesh: THREE.InstancedMesh, list: InstList): void {
   // manual bounds from the matrices' translation columns — computeBoundingSphere
   // decomposes every instance matrix and costs 100ms+ on big islands
   if (list.count > 0) {
-    let nx = Infinity, ny = Infinity, nz = Infinity, px = -Infinity, py = -Infinity, pz = -Infinity;
-    const m = list.mats;
-    for (let i = 0; i < list.count; i++) {
-      const o = i * 16;
-      nx = Math.min(nx, m[o + 12]); px = Math.max(px, m[o + 12]);
-      ny = Math.min(ny, m[o + 13]); py = Math.max(py, m[o + 13]);
-      nz = Math.min(nz, m[o + 14]); pz = Math.max(pz, m[o + 14]);
-    }
-    const r = Math.hypot(px - nx, py - ny, pz - nz) / 2 + 4; // pad for geometry size/scale
-    mesh.boundingSphere = new THREE.Sphere(
-      new THREE.Vector3((nx + px) / 2, (ny + py) / 2, (nz + pz) / 2), r,
+    const dx = list.maxX - list.minX, dy = list.maxY - list.minY, dz = list.maxZ - list.minZ;
+    const r = Math.sqrt(dx * dx + dy * dy + dz * dz) / 2 + 4; // pad for geometry size/scale
+    const sphere = mesh.boundingSphere ?? new THREE.Sphere();
+    sphere.center.set(
+      (list.minX + list.maxX) / 2,
+      (list.minY + list.maxY) / 2,
+      (list.minZ + list.maxZ) / 2,
     );
+    sphere.radius = r;
+    mesh.boundingSphere = sphere;
   }
   mesh.frustumCulled = true;
 }
@@ -91,6 +91,45 @@ export function putInstanced(
   if (decorSuppressed && (DETAIL_KEYS.includes(key) || DECOR_EXTRA.includes(key))) mesh.visible = false;
 }
 
+/** A geometry-only LOD twin shares its source's instance matrix/color buffers.
+ * Both render objects stay stable and compile once; toggling LOD then changes
+ * visibility only, with no geometry mutation and no duplicate buffer upload. */
+export function putInstancedTwin(
+  pool: SlotPool, key: string, sourceKey: string,
+  geom: THREE.BufferGeometry, mat: THREE.Material, shadows = true,
+): void {
+  const source = pool.meshes.get(sourceKey);
+  if (!source) return;
+  let mesh = pool.meshes.get(key);
+  // A source mesh is replaced whenever a later forge outgrows its instance
+  // capacity. Merely assigning the new attributes to an EXISTING twin is not
+  // enough for WebGPURenderer: its cached render object remains bound to the
+  // old GPU vertex buffers. The result is exactly `count=352` reading a stale
+  // 327-item instanceColor buffer. Recreate the twin whenever either shared
+  // attribute identity changes so WebGPU builds fresh bindings before draw.
+  const sourceBuffersChanged = mesh !== undefined && (
+    mesh.instanceMatrix !== source.instanceMatrix || mesh.instanceColor !== source.instanceColor
+  );
+  if (mesh && (mesh.geometry !== geom || mesh.material !== mat || sourceBuffersChanged)) {
+    pool.group.remove(mesh);
+    mesh.dispose();
+    mesh = undefined;
+  }
+  if (!mesh) {
+    mesh = new THREE.InstancedMesh(geom, mat, source.instanceMatrix.count);
+    mesh.castShadow = shadows;
+    mesh.receiveShadow = shadows;
+    pool.meshes.set(key, mesh);
+    pool.group.add(mesh);
+  }
+  mesh.instanceMatrix = source.instanceMatrix;
+  mesh.instanceColor = source.instanceColor;
+  mesh.count = source.count;
+  (mesh.userData as { n: number }).n = source.count;
+  mesh.boundingSphere = source.boundingSphere;
+  mesh.frustumCulled = source.frustumCulled;
+}
+
 /** end of the two-wave first paint: unhide every decorative layer (their
  *  pipelines are warm now) — LOD re-applies itself on the next frame */
 export function revealDecor(): void {
@@ -107,12 +146,13 @@ export function revealDecor(): void {
 /** wave-2 warm-up rig: one parked, unculled proxy per decorative pipeline so
  *  compileAsync can build them without drawing a single visible fragment
  *  (compileAsync skips invisible AND frustum-culled objects) */
-export function decorWarmupRig(scene: THREE.Object3D): () => void {
+export function decorWarmupRig(scene: THREE.Object3D, layer = 0): () => void {
   const R = getKit();
   const objs: THREE.Object3D[] = [];
   const park = (o: THREE.Object3D) => {
     o.position.y = -1500;
     o.frustumCulled = false;
+    o.layers.set(layer);
     objs.push(o);
     scene.add(o);
   };
@@ -154,6 +194,55 @@ export function decorWarmupRig(scene: THREE.Object3D): () => void {
   };
 }
 
+/** Stage the ACTUAL pooled detail objects on an isolated camera layer for
+ *  compileAsync(). WebGPU's node setup is render-object-specific: compiling
+ *  one proxy per material did not warm the hundreds of real island objects,
+ *  which caused a measured 403ms hitch on the first far→near LOD transition.
+ *  The main camera never sees this layer, so background warm-up cannot flash. */
+export function stageActualDetailWarmup(layer = 29): () => void {
+  const saved: Array<{
+    o: THREE.Object3D; visible: boolean; culled: boolean; mask: number;
+    geometry?: THREE.BufferGeometry; count?: number;
+  }> = [];
+  const warmKeys = new Set([
+    ...DETAIL_KEYS, ...DECOR_EXTRA, "blocks", "tiles",
+    "blocksFade", "blocksLoFade", "colsFade",
+  ]);
+  const stage = (o: THREE.Object3D, populated = true, geometry?: THREE.BufferGeometry) => {
+    saved.push({
+      o, visible: o.visible, culled: o.frustumCulled, mask: o.layers.mask,
+      ...((o as THREE.Mesh).isMesh ? { geometry: (o as THREE.Mesh).geometry } : {}),
+      ...((o as THREE.InstancedMesh).isInstancedMesh ? { count: (o as THREE.InstancedMesh).count } : {}),
+    });
+    if (geometry && (o as THREE.Mesh).isMesh) (o as THREE.Mesh).geometry = geometry;
+    if ((o as THREE.InstancedMesh).isInstancedMesh) {
+      (o as THREE.InstancedMesh).count = populated ? ((o.userData as { n?: number }).n ?? 0) : 0;
+    }
+    o.visible = populated;
+    o.frustumCulled = false;
+    o.layers.set(layer);
+  };
+  for (const p of slotPools.values()) {
+    if (!p.group.visible) continue;
+    for (const [key, mesh] of p.meshes) {
+      if (!warmKeys.has(key)) continue;
+      stage(mesh, ((mesh.userData as { n?: number }).n ?? 0) > 0);
+    }
+    for (const o of p.perBuild) stage(o);
+  }
+  return () => {
+    for (const s of saved) {
+      s.o.visible = s.visible;
+      s.o.frustumCulled = s.culled;
+      s.o.layers.mask = s.mask;
+      if (s.geometry && (s.o as THREE.Mesh).isMesh) (s.o as THREE.Mesh).geometry = s.geometry;
+      if (s.count !== undefined && (s.o as THREE.InstancedMesh).isInstancedMesh) {
+        (s.o as THREE.InstancedMesh).count = s.count;
+      }
+    }
+  };
+}
+
 // decorative layers held back during the two-wave first paint (wave 1 shows
 // the core look; these appear once their pipelines are warm)
 const DECOR_EXTRA = ["banners", "redTiles", "flamesB", "flamesR", "flamesP"];
@@ -166,20 +255,58 @@ const DETAIL_KEYS = [
   "bramblesB", "wisps", "links", "brackets", "cheeks", "wallGlows", "embers", "roots",
 ];
 
-/** distance LOD: hide the small-detail layers of a far-away slot and swap its
- *  bulk masonry to low-poly box geometry (~4× fewer vertices) */
+const occludingSlots = new Set<number>();
+
+function setCount(p: SlotPool, key: string, on: boolean): void {
+  const mesh = p.meshes.get(key);
+  if (!mesh) return;
+  mesh.visible = true;
+  mesh.count = on ? ((mesh.userData as { n?: number }).n ?? 0) : 0;
+}
+
+function applyArchitectureVisibility(p: SlotPool): void {
+  const faded = occludingSlots.has(p.slot);
+  setCount(p, "blocks", !faded && p.detailVisible);
+  setCount(p, "blocksLo", !faded && !p.detailVisible);
+  setCount(p, "blocksFade", faded && p.detailVisible);
+  setCount(p, "blocksLoFade", faded && !p.detailVisible);
+  setCount(p, "cols", !faded);
+  setCount(p, "colsFade", faded);
+}
+
+/** Make only the architecture currently between camera and character fade. */
+export function setOccludingSlots(next: ReadonlySet<number>): void {
+  let changed = next.size !== occludingSlots.size;
+  if (!changed) for (const slot of next) if (!occludingSlots.has(slot)) { changed = true; break; }
+  if (!changed) return;
+  const affected = new Set([...occludingSlots, ...next]);
+  occludingSlots.clear();
+  for (const slot of next) occludingSlots.add(slot);
+  for (const slot of affected) {
+    const p = slotPools.get(slot);
+    if (p) applyArchitectureVisibility(p);
+  }
+}
+
+/** Distance LOD: stable high/low render-object twins only change visibility.
+ * Mutating geometry invalidated WebGPU render objects and caused a 200–400ms
+ * first-zoom compile hitch even after material warm-up. */
 export function setSlotDetail(slot: number, visible: boolean): void {
   const p = slotPools.get(slot);
   if (!p) return;
+  p.detailVisible = visible;
   for (const k of DETAIL_KEYS) {
     const m = p.meshes.get(k);
-    if (m) m.visible = visible && ((m.userData as { n?: number }).n ?? 0) > 0;
+    if (m) {
+      m.visible = true;
+      m.count = visible ? ((m.userData as { n?: number }).n ?? 0) : 0;
+    }
   }
-  const R = getKit();
-  const blocks = p.meshes.get("blocks");
-  if (blocks) blocks.geometry = visible ? R.blockGeo : R.blockGeoLo;
+  applyArchitectureVisibility(p);
   const tiles = p.meshes.get("tiles");
-  if (tiles) tiles.geometry = visible ? R.tileGeo : R.tileGeoLo;
+  if (tiles) { tiles.visible = true; tiles.count = visible ? ((tiles.userData as { n?: number }).n ?? 0) : 0; }
+  const tilesLo = p.meshes.get("tilesLo");
+  if (tilesLo) { tilesLo.visible = true; tilesLo.count = visible ? 0 : ((tilesLo.userData as { n?: number }).n ?? 0); }
 }
 
 /** hide pools that the current forge doesn't use */

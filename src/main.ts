@@ -330,7 +330,12 @@ async function boot(): Promise<void> {
       walkU = Math.min(1, walkU + ((steep ? WALK_SPEED * 0.45 : WALK_SPEED) * dt) / walkLen);
       const p = walkCurve.getPointAt(walkU);
       const ahead = walkCurve.getPointAt(Math.min(1, walkU + 4 / walkLen));
-      p.y -= 0.45; // the route tube floats a little above the floor
+      // GROUND CONTACT: xz follows the curve, but y snaps to the analytic
+      // ground sampler (exact stair ramps, spiral tread line, bridge sag) —
+      // the smoothed curve alone would sink feet into stair treads
+      const g = ctx.walk.sample(p.x, p.z, p.y);
+      if (g.ok && Math.abs(g.y - (p.y - 0.45)) < 2.2) p.y = g.y;
+      else p.y -= 0.45;
       const heading = Math.atan2(ahead.x - p.x, ahead.z - p.z);
       player.driveTo(p, heading, dt, walkU >= 1 ? "idle" : steep ? "walk" : "run");
       lantern.position.set(p.x, p.y + 3.1, p.z);

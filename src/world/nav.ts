@@ -181,7 +181,9 @@ export class NavMesh {
           };
           const from = via.up ? tw.y1 : tw.y0;
           const to = via.up ? tw.y0 : tw.y1;
-          const stepY = 0.8 * Math.sign(to - from);
+          // dense sampling: the tour curve smooths these points, and sparse
+          // helix knots would get pulled inward through the tower core
+          const stepY = 0.45 * Math.sign(to - from);
           for (let h = from; Math.sign(to - h) === Math.sign(stepY) && Math.abs(to - h) > 0.4; h += stepY) {
             const [dx, dz] = sToXZ(Math.max(0, (h - tw.y0) / slope));
             pts.push(new THREE.Vector3(tw.x + dx, h + 0.4, tw.z + dz));

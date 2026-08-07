@@ -5,7 +5,7 @@ import { buildWorld, buildBridgeLink, type LightSpec } from "../scene/build";
 import { pruneSlots } from "../scene/slots";
 import { CELL, ISLAND_GAP, PR_LARGE } from "../config";
 import type { Ctx } from "./context";
-import { gateWorld, linkSag, findShaft, nextFrame } from "./helpers";
+import { gateWorld, linkSag, findShaftAnyhow, nextFrame } from "./helpers";
 
 export async function forgeCube(ctx: Ctx): Promise<void> {
   if (ctx.state.endless) return;
@@ -47,7 +47,7 @@ export async function forgeCube(ctx: Ctx): Promise<void> {
     const c = cells[i], l = layouts[i];
     const ox = c.mi * pitch, oz = c.mj * pitch;
     const oy = c.mk * LAYER + ((ch(c.mi, c.mj, c.mk, 0x99) % 100) / 100 - 0.5) * 4.4;
-    const w = buildWorld(l, i, ctx.scene, c.mk === 0 ? 1 : 0.22, i * 0.04);
+    const w = buildWorld(l, i, ctx.scene, c.mk === 0 ? 1 : 0, i * 0.04);
     activeSlots.add(i);
     w.group.position.set(ox, oy, oz);
     ctx.worlds.push(w);
@@ -79,7 +79,7 @@ export async function forgeCube(ctx: Ctx): Promise<void> {
     // stair shafts: every vertical pair, first clear shaft wins
     const jUp = cellAt(c.mi, c.mj, c.mk + 1);
     if (jUp >= 0) {
-      const shaft = findShaft(ctx.walk.islands[i], ctx.walk.islands[jUp]);
+      const shaft = findShaftAnyhow(ctx.walk.islands[i], ctx.walk.islands[jUp]);
       if (shaft) ctx.stairs.build(shaft.x, shaft.z, shaft.y0, shaft.y1);
     }
   }
@@ -100,6 +100,6 @@ export async function forgeCube(ctx: Ctx): Promise<void> {
   ctx.controls.target.set(0, LAYER * 1.1, 0);
   ctx.camera.position.set(pitch * 1.9, LAYER * 2.1, pitch * 2.6);
   ctx.state.prCap = PR_LARGE;
-  ctx.hud.name.textContent = `${layouts[cellAt(0, 0, 2)]?.name ?? ""} — the Cube`;
+  ctx.hud.name.textContent = "the Cube";
   ctx.hud.seed.textContent = `seed ${seed} · 3×3×3 · ${layouts.reduce((s2, l) => s2 + l.stats.floor, 0)} floor`;
 }

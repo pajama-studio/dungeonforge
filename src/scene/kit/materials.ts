@@ -232,6 +232,7 @@ export interface MatKit {
   bannerMat: THREE.MeshStandardNodeMaterial;
   medallionMat: THREE.MeshStandardNodeMaterial;
   smokeMat: THREE.SpriteNodeMaterial;
+  routeMat: THREE.MeshBasicNodeMaterial;
 }
 
 export function makeMaterials(): MatKit {
@@ -394,6 +395,18 @@ export function makeMaterials(): MatKit {
     runeMat.opacityNode = glyph;
   }
 
+  // the computed start→goal route: a glowing tube with dashes marching toward
+  // the goal (uv.x runs along the tube)
+  const routeMat = new THREE.MeshBasicNodeMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  {
+    const u = uv().x;
+    const dash = smoothstep(0.55, 0.3, fract(u.mul(140).sub(time.mul(0.5))).sub(0.5).abs());
+    routeMat.colorNode = color(0xffd27a).mul(dash.mul(1.6).add(0.25)).mul(2.0);
+    routeMat.opacityNode = dash.mul(0.8).add(0.15);
+  }
+
   return {
     stoneMat: makeStoneMat(),
     // spiral stair towers share the masonry face-shading via vertex colors
@@ -426,5 +439,6 @@ export function makeMaterials(): MatKit {
     bannerMat,
     medallionMat: makeMedallionMat(),
     smokeMat,
+    routeMat,
   };
 }

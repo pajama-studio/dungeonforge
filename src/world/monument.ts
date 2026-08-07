@@ -18,7 +18,7 @@ import { buildWorld, buildBridgeLink, type LightSpec } from "../scene/build";
 import { pruneSlots } from "../scene/slots";
 import { CELL, ISLAND_GAP, PR_LARGE, TH } from "../config";
 import type { Ctx } from "./context";
-import { gateWorld, linkSag, findShaft, nextFrame } from "./helpers";
+import { gateWorld, linkSag, findShaftAnyhow, nextFrame } from "./helpers";
 
 export type Monument = "ziggurat" | "reliquary";
 
@@ -106,7 +106,7 @@ export async function forgeMonument(ctx: Ctx, kind: Monument): Promise<void> {
     const c = cells[i], l = layouts[i];
     const ox = c.mi * pitch, oz = c.mj * pitch;
     const oy = c.mk * LAYER;
-    const w = buildWorld(l, i, ctx.scene, c.mk === 0 ? 1 : 0.22, i * 0.04);
+    const w = buildWorld(l, i, ctx.scene, c.mk === 0 ? 1 : 0, i * 0.04);
     activeSlots.add(i);
     w.group.position.set(ox, oy, oz);
     ctx.worlds.push(w);
@@ -143,7 +143,7 @@ export async function forgeMonument(ctx: Ctx, kind: Monument): Promise<void> {
         if (j >= 0) below.push(j);
       }
       for (const j of below) {
-        const shaft = findShaft(ctx.walk.islands[j], ctx.walk.islands[i]);
+        const shaft = findShaftAnyhow(ctx.walk.islands[j], ctx.walk.islands[i]);
         if (shaft) { ctx.stairs.build(shaft.x, shaft.z, shaft.y0, shaft.y1); break; }
       }
     }
@@ -172,9 +172,7 @@ export async function forgeMonument(ctx: Ctx, kind: Monument): Promise<void> {
   state.lastExtent = 0; // force the next chain forge to reframe
   state.prCap = PR_LARGE;
 
-  const crown = layouts[cells.findIndex((c) => c.mk === L - 1)];
-  const label = kind === "ziggurat" ? "the Ziggurat" : "the Reliquary";
-  ctx.hud.name.textContent = `${crown?.name ?? ""} — ${label}`;
+  ctx.hud.name.textContent = kind === "ziggurat" ? "the Ziggurat" : "the Reliquary";
   const floors = layouts.reduce((s2, l) => s2 + l.stats.floor, 0);
   ctx.hud.seed.textContent = `seed ${seed} · ${kind} · ${cells.length} blocks · ${floors} floor`;
   const url = new URL(location.href);

@@ -19,8 +19,9 @@ fully deterministic per seed, end-to-end in the browser. No textures, no models
   moves), legal stairs; failed layouts re-roll a derived seed and never ship.
 - **Forge-rise reveal** — new maps assemble island by island, each block rising
   out of the abyss as it is built.
-- **Walk everywhere** — first-person mode with analytic ground everywhere (grid
-  tiers, stair ramps, spiral towers, bridge sag). No mesh raycasts, no navmesh.
+- **Walk everywhere, provably** — the 🧭 route is a 3D BFS over floors, bridges
+  and spiral stairs; the 💀 skeleton walks it end to end. Analytic ground
+  everywhere — no mesh raycasts, no navmesh.
 - **Endless mode** — a streamed 3×3 window follows you; blocks derive from
   `hash(seed, i, j)`, so the infinite world is consistent and free to roam.
 - **Per-brick wear** — abraded arrises, randomly chipped corners, pockmarks and
@@ -55,11 +56,16 @@ Shareable URLs: `?seed=123&islands=8&size=13` pins a build.
 | **⧉ 3×3×3** | the Cube: 27 blocks in a solid lattice, fully bridged + stair shafts |
 | **▲ Ziggurat** | terraces shrink 3×3 → 2×2 → 1 toward a summit sanctum (`?mode=ziggurat`) |
 | **◆ Reliquary** | a suspended diamond 1→2×2→3×3→2×2→1; sealed vault below, sanctum above (`?mode=reliquary`) |
-| **⚔ Enter** | first-person: WASD/arrows run, drag to look, Esc back to orbit |
+| **🎬** | cinematic flythrough (any input exits) |
+| **🧭** | draw the 3D route from spawn to the farthest sanctum |
+| **💀** | the skeleton walks the whole route — maze, bridges, spiral stairs (Esc stops) |
 | **endless ∞** (panel) | roam-to-generate streaming world |
 
-Step through a broken sky-door and you fall; the abyss returns you to your last
-safe footing. Spiral staircases are plain walkable ground — just walk up.
+The route is a breadth-first search over everything walkable: island floor
+grids, rope-bridge crossings and the spiral stair towers. It doubles as the
+connectivity proof — every block is reachable from the spawn by construction
+(missing gates are carved post-hoc, stair shafts fall back through a
+relaxation ladder).
 
 ## 🎛 Forge parameters
 
@@ -119,7 +125,7 @@ src/
     stairs.ts        stair tower meshes    walkmap.ts  analytic ground sampler
     lights.ts        fixed-size point-light pool     helpers.ts  gates/shafts
   ui/panel.ts      forge-parameter sliders
-  player/player.ts first-person adventurer (GLB + ground-sampler locomotion)
+  player/player.ts the skeleton (gaited GLB locomotion driven by the route)
   main.ts          wiring: renderer, modes, input, main loop (~250 lines)
 ```
 

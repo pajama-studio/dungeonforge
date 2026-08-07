@@ -1,4 +1,4 @@
-// Third-person adventurer. Character model: KayKit Adventurers (CC0) — see
+// Third-person adventurer. Character model: KayKit Skeletons (CC0) — see
 // LICENSES.md. Movement queries a ground sampler supplied by the orchestrator
 // (island grids + bridge spans); the camera is a smoothed chase rig.
 
@@ -21,7 +21,8 @@ export class Player {
   private mixer: THREE.AnimationMixer | null = null;
   private idleAction: THREE.AnimationAction | null = null;
   private runAction: THREE.AnimationAction | null = null;
-  private running = false;
+  private walkAction: THREE.AnimationAction | null = null;
+  private gait: "idle" | "walk" | "run" = "idle";
   private heading = 0;
   private vy = 0;
   falling = false;
@@ -54,6 +55,7 @@ export class Player {
   async load(url: string): Promise<void> {
     const gltf = await new GLTFLoader().loadAsync(url);
     this.model = gltf.scene;
+    this.model.scale.setScalar(0.85); // a touch smaller than the corridors suggest
     this.model.traverse((o) => {
       if ((o as THREE.Mesh).isMesh) {
         o.castShadow = false;
@@ -71,8 +73,10 @@ export class Player {
     const find = (re: RegExp) => clips.find((c) => re.test(c.name));
     const idle = find(/^idle$/i) ?? find(/idle/i);
     const run = find(/^running_a$/i) ?? find(/run/i) ?? find(/walk/i);
+    const wk = find(/^walking_a$/i) ?? find(/walk/i);
     if (idle) { this.idleAction = this.mixer.clipAction(idle); this.idleAction.play(); }
     if (run) { this.runAction = this.mixer.clipAction(run); }
+    if (wk) { this.walkAction = this.mixer.clipAction(wk); }
   }
 
   place(x: number, z: number, ground: GroundSampler): void {
@@ -139,13 +143,33 @@ export class Player {
     this.mixer?.update(dt);
   }
 
+  /** scripted locomotion (route walker): position/heading driven externally.
+   *  gait "walk" is used on stairs/steep ramps (the pack has no dedicated
+   *  climb clip — a slower walk cycle is the standard-issue stand-in). */
+  driveTo(p: THREE.Vector3, heading: number, dt: number, gait: "idle" | "walk" | "run"): void {
+    this.group.position.copy(p);
+    if (this.model) this.model.rotation.y = heading;
+    this.setGait(gait);
+    this.mixer?.update(dt);
+  }
+
+  private actionFor(g: "idle" | "walk" | "run"): THREE.AnimationAction | null {
+    if (g === "run") return this.runAction ?? this.walkAction;
+    if (g === "walk") return this.walkAction ?? this.runAction;
+    return this.idleAction;
+  }
+
+  private setGait(g: "idle" | "walk" | "run"): void {
+    if (g === this.gait) return;
+    const fadeOut = this.actionFor(this.gait);
+    const fadeIn = this.actionFor(g);
+    this.gait = g;
+    if (fadeIn && fadeIn !== fadeOut) { fadeIn.reset().fadeIn(0.18).play(); }
+    if (fadeOut && fadeIn !== fadeOut) { fadeOut.fadeOut(0.18); }
+  }
+
   private setRunning(run: boolean): void {
-    if (run === this.running) return;
-    this.running = run;
-    const fadeIn = run ? this.runAction : this.idleAction;
-    const fadeOut = run ? this.idleAction : this.runAction;
-    if (fadeIn) { fadeIn.reset().fadeIn(0.15).play(); }
-    if (fadeOut) { fadeOut.fadeOut(0.15); }
+    this.setGait(run ? "run" : "idle");
   }
 
   dispose(): void {

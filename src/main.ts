@@ -15,6 +15,7 @@ import { DEFAULT_PARAMS, type Params } from "./gen/dungeon";
 import { GenPool } from "./gen/pool";
 import { pruneSlots, setSlotDetail } from "./scene/slots";
 import { buildEnvironment } from "./scene/env";
+import { flickerDamp } from "./scene/kit/materials";
 import { createPost } from "./render/post";
 import { Player } from "./player/player";
 import { LightPool } from "./world/lights";
@@ -311,6 +312,7 @@ async function boot(): Promise<void> {
     // distance LOD: far islands drop their small-detail layers. TRUE 3D
     // distance — a camera hovering 200 units above a spire is far from every
     // island even when its xz distance is small
+    let nearestD = Infinity;
     for (const isl of ctx.walk.islands) {
       const half = (isl.l.N * CELL) / 2;
       const d2 = Math.hypot(
@@ -318,6 +320,7 @@ async function boot(): Promise<void> {
         camera.position.y - (isl.oy + 8),
         camera.position.z - isl.oz,
       ) - half;
+      nearestD = Math.min(nearestD, d2);
       const prev = slotDetail.get(isl.slot);
       const want = prev === undefined ? d2 < LOD_NEAR : (prev ? d2 < LOD_FAR : d2 < LOD_NEAR);
       if (want !== prev) {
@@ -326,7 +329,12 @@ async function boot(): Promise<void> {
       }
     }
     endless.update(t, playing && player ? player.group.position : controls.target);
-    ctx.lights.tick(t);
+    // distance calms the flicker: near 60 units torches dance at full
+    // amplitude; past ~150 they settle to a steady candle glow (dozens of
+    // asynchronous flickers read as an uncomfortable shimmer from afar)
+    const damp = Math.min(1, Math.max(0.1, 1 - (nearestD - 60) / 90));
+    flickerDamp.value = damp;
+    ctx.lights.tick(t, damp);
     const r0 = performance.now();
     postProcessing.render();
     const rDur = performance.now() - r0;

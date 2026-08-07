@@ -8,6 +8,8 @@
   <style>
     html, body { margin: 0; height: 100%; background: #0a0e1c; overflow: hidden; }
     #app { position: fixed; inset: 0; }
+
+    /* ---- top-left: identity ---- */
     #hud {
       position: fixed; top: 18px; left: 20px; color: #d8c9a3; z-index: 10;
       font-family: Georgia, 'Times New Roman', serif; user-select: none;
@@ -17,44 +19,85 @@
       margin: 0; font-size: 13px; letter-spacing: .42em; font-weight: 400;
       color: #8f7f5c; text-transform: uppercase;
     }
-    #hud .name { font-size: 22px; font-style: italic; margin: 6px 0 2px; color: #e8dcc0; }
+    #hud .name { font-size: 20px; font-style: italic; margin: 5px 0 2px; color: #e8dcc0; }
     #hud .seed { font-size: 12px; color: #7d7460; letter-spacing: .08em; }
-    #controls {
-      position: fixed; bottom: 18px; left: 20px; z-index: 10; display: flex; gap: 8px;
-      font-family: Georgia, serif;
+
+    /* ---- shared control look ---- */
+    button, input {
+      background: rgba(16, 20, 36, .78); color: #cdbf9d;
+      border: 1px solid #33334c; border-radius: 7px;
+      font-family: Georgia, serif; font-size: 13px; letter-spacing: .04em;
+      outline: none;
     }
-    #controls button, #controls input {
-      background: rgba(20, 24, 40, .72); color: #d8c9a3;
-      border: 1px solid #3a3a52; border-radius: 6px; padding: 7px 14px;
-      font-family: inherit; font-size: 13px; letter-spacing: .05em; outline: none;
+    button { cursor: pointer; padding: 8px 13px; transition: background .15s, color .15s, border-color .15s; }
+    button:hover { background: rgba(46, 52, 82, .85); color: #ffe9b8; }
+    button.active { background: rgba(122, 96, 52, .38); border-color: #8a744a; color: #ffe9b8; }
+
+    /* ---- bottom-left: the WORLD — primary action, seed, mode switch ---- */
+    #modes {
+      position: fixed; bottom: 18px; left: 20px; z-index: 10;
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
     }
-    #controls button { cursor: pointer; }
-    #controls button:hover { background: rgba(46, 52, 82, .85); color: #ffe9b8; }
-    #controls input { width: 90px; }
+    #btnNew { font-size: 14px; padding: 9px 16px; border-color: #4a4468; color: #e8dcc0; }
+    .seedbox { display: flex; }
+    .seedbox input {
+      width: 84px; padding: 8px 10px; border-radius: 7px 0 0 7px; border-right: none;
+    }
+    .seedbox button { border-radius: 0 7px 7px 0; }
+    .segment { display: flex; }
+    .segment button {
+      border-radius: 0; border-right-width: 0; padding: 8px 12px; font-size: 12.5px;
+    }
+    .segment button:first-child { border-radius: 7px 0 0 7px; }
+    .segment button:last-child { border-radius: 0 7px 7px 0; border-right-width: 1px; }
+
+    /* ---- bottom-right: VIEW tools (toggles) ---- */
+    #tools {
+      position: fixed; bottom: 18px; right: 20px; z-index: 10;
+      display: flex; gap: 8px;
+    }
+    #tools button {
+      width: 42px; height: 38px; padding: 0; font-size: 17px; line-height: 1;
+      display: grid; place-items: center;
+    }
+
+    /* ---- right: forge parameters (collapsible) ---- */
     #params {
-      position: fixed; top: 18px; right: 20px; z-index: 10; width: 210px;
-      background: rgba(14, 18, 34, .78); border: 1px solid #32324a; border-radius: 8px;
-      padding: 12px 14px; font-family: Georgia, serif; color: #b7a982;
+      position: fixed; top: 18px; right: 20px; z-index: 11; width: 224px;
+      background: rgba(14, 18, 34, .86); border: 1px solid #32324a; border-radius: 10px;
+      padding: 12px 14px 14px; font-family: Georgia, serif; color: #b7a982;
       backdrop-filter: blur(4px);
+      transition: transform .25s ease, opacity .25s ease;
+      max-height: calc(100vh - 110px); overflow-y: auto;
     }
+    #params.closed { transform: translateX(112%); opacity: 0; pointer-events: none; }
+    #params .phead { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
     #params h2 {
-      margin: 0 0 8px; font-size: 11px; letter-spacing: .3em; font-weight: 400;
+      margin: 0; font-size: 11px; letter-spacing: .3em; font-weight: 400;
       color: #8f7f5c; text-transform: uppercase;
+    }
+    #params .phead button { padding: 2px 8px; font-size: 12px; border: none; background: none; color: #7d7460; }
+    #params .phead button:hover { color: #ffe9b8; }
+    #params h3 {
+      margin: 12px 0 2px; font-size: 10.5px; letter-spacing: .22em; font-weight: 400;
+      color: #6f6a58; text-transform: uppercase;
+      border-bottom: 1px solid #26263c; padding-bottom: 4px;
     }
     #params label { display: block; font-size: 11.5px; margin: 7px 0 2px; letter-spacing: .06em; }
     #params label span { float: right; color: #e8dcc0; }
     #params input[type=range] {
       width: 100%; height: 4px; -webkit-appearance: none; appearance: none;
-      background: #2c2c44; border-radius: 2px; outline: none; margin: 2px 0 0;
+      background: #2c2c44; border-radius: 2px; outline: none; margin: 2px 0 0; border: none;
     }
     #params input[type=range]::-webkit-slider-thumb {
       -webkit-appearance: none; appearance: none; width: 11px; height: 11px;
       border-radius: 50%; background: #d8c9a3; border: 1px solid #6b5f45; cursor: pointer;
     }
+
     #tip {
-      position: fixed; bottom: 20px; right: 22px; z-index: 10;
-      color: #6b634f; font: 11px Georgia, serif; letter-spacing: .1em;
-      text-shadow: 0 1px 6px rgba(0,0,0,.8);
+      position: fixed; bottom: 64px; right: 22px; z-index: 9;
+      color: #5d5645; font: 11px Georgia, serif; letter-spacing: .1em;
+      text-shadow: 0 1px 6px rgba(0,0,0,.8); text-align: right;
     }
     #loading {
       position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
@@ -68,20 +111,47 @@
 </head>
 <body>
   <div id="app"></div>
+
   <div id="hud">
     <h1>Dungeonforge</h1>
     <div class="name" id="dungeonName"></div>
     <div class="seed" id="seedLabel"></div>
   </div>
-  <div id="controls">
+
+  <!-- the WORLD: primary action, seed, and the mode switch -->
+  <div id="modes">
     <button id="btnNew">⚄ New dungeon</button>
-    <input id="seedInput" placeholder="seed…" inputmode="numeric" />
-    <button id="btnGo">Forge</button>
+    <div class="seedbox">
+      <input id="seedInput" placeholder="seed…" inputmode="numeric" />
+      <button id="btnGo">Forge</button>
+    </div>
+    <div class="segment" id="modeSeg">
+      <button data-mode="chain" class="active" title="linked blocks grown like WFC tiles">Chain</button>
+      <button data-mode="cube" title="27 blocks in a solid lattice">Cube</button>
+      <button data-mode="ziggurat" title="terraces climbing to a summit sanctum">Ziggurat</button>
+      <button data-mode="reliquary" title="a suspended diamond — sealed vault below, sanctum above">Reliquary</button>
+      <button data-mode="endless" title="a streamed window that follows you">Endless ∞</button>
+    </div>
   </div>
-  <div id="params">
-    <h2>Forge parameters</h2>
+
+  <!-- the VIEW: overlays & demos (toggles) -->
+  <div id="tools">
+    <button id="btnCine" title="cinematic flythrough — any input exits">🎬</button>
+    <button id="btnRoute" title="route: the grand tour across every block">🧭</button>
+    <button id="btnNav" title="navmesh overlay — walkable / stairs / crossings">🕸</button>
+    <button id="btnWalk" title="the skeleton walks the route (Esc stops)">💀</button>
+    <button id="btnParams" title="forge parameters">⚙</button>
   </div>
-  <div id="tip">drag to orbit · scroll to zoom</div>
+
+  <div id="params" class="closed">
+    <div class="phead">
+      <h2>Forge parameters</h2>
+      <button id="btnParamsClose" title="close">✕</button>
+    </div>
+    <div id="params-body"></div>
+  </div>
+
+  <div id="tip">drag to orbit · scroll to zoom · Esc stops</div>
   <div id="loading"><span>raising the old stones…</span></div>
   <script type="module" src="/src/main.ts"></script>
 </body>

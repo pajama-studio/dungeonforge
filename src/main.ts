@@ -104,71 +104,95 @@ const navOverlay = new NavOverlay(ctx, nav);
 const route = new RoutePath(ctx, nav);
 
 // ---- UI ---------------------------------------------------------------------
-buildPanel(ctx.genParams, {
-  onParams: () => void forge(ctx, ctx.state.seed),
-  onEndless(on) {
-    ctx.state.endless = on;
-    endless.reset();
-    if (on) {
-      ctx.state.prCap = PR_LARGE;
-      ctx.worlds.length = 0;
-      ctx.walk.clear();
-      ctx.stairs.clear();
-      pruneSlots(new Set());
-      controls.target.set(0, 3 * TH, 0);
-      camera.position.set(50, 42, 70);
-      ctx.state.lastExtent = 0;
-    } else {
-      ctx.state.prCap = PR_BASE;
-      pruneSlots(new Set());
-      void forge(ctx, ctx.state.seed);
-    }
-  },
-});
+// Hierarchy: the WORLD (bottom-left: ⚄ New, seed, mode segments) · the VIEW
+// (bottom-right toggles: 🎬🧭🕸💀) · TUNING (⚙ slides in the grouped panel).
+
+type Mode = "chain" | "cube" | "ziggurat" | "reliquary" | "endless";
+let activeMode: Mode = "chain";
+const modeSeg = document.getElementById("modeSeg")!;
+const modeBtns = Array.from(modeSeg.querySelectorAll<HTMLButtonElement>("button"));
+
+function setModeActive(mode: Mode): void {
+  activeMode = mode;
+  for (const b of modeBtns) b.classList.toggle("active", b.dataset.mode === mode);
+}
+
+function enterEndless(): void {
+  ctx.state.endless = true;
+  ctx.hud.name.textContent = "the Endless Reach";
+  ctx.hud.seed.textContent = `seed ${ctx.state.seed} · endless ∞ · roam to generate`;
+  endless.reset();
+  ctx.state.prCap = PR_LARGE;
+  ctx.worlds.length = 0;
+  ctx.walk.clear();
+  ctx.stairs.clear();
+  pruneSlots(new Set());
+  controls.target.set(0, 3 * TH, 0);
+  camera.position.set(50, 42, 70);
+  ctx.state.lastExtent = 0;
+}
+
+function exitEndless(): void {
+  ctx.state.endless = false;
+  endless.reset();
+  ctx.state.prCap = PR_BASE;
+  pruneSlots(new Set());
+}
+
+/** rebuild the world in the ACTIVE mode (mode clicks and slider moves) */
+function reforge(): void {
+  stopWalk();
+  if (activeMode === "endless") { exitEndless(); enterEndless(); return; }
+  if (ctx.state.endless) exitEndless();
+  if (activeMode === "cube") void forgeCube(ctx);
+  else if (activeMode === "ziggurat" || activeMode === "reliquary") void forgeMonument(ctx, activeMode);
+  else void forge(ctx, ctx.state.seed);
+}
+
+for (const b of modeBtns) {
+  b.addEventListener("click", () => {
+    if (activeMode === b.dataset.mode) return;
+    setModeActive(b.dataset.mode as Mode);
+    reforge();
+  });
+}
+
+buildPanel(ctx.genParams, { onParams: reforge });
 
 const uiRng = mulberry32((Date.now() ^ 0x5f3759df) >>> 0); // UI-only randomness; the world itself is seed-pure
-btnNew.addEventListener("click", () => void forge(ctx, (uiRng() * 0xffffffff) >>> 0));
-btnGo.addEventListener("click", () => void forge(ctx, Number(seedInput.value) || 1));
-seedInput.addEventListener("keydown", (e) => { if (e.key === "Enter") void forge(ctx, Number(seedInput.value) || 1); });
+function forgeSeed(seed: number): void {
+  ctx.state.seed = seed;
+  if (activeMode === "endless") setModeActive("chain");
+  reforge();
+}
+btnNew.addEventListener("click", () => forgeSeed((uiRng() * 0xffffffff) >>> 0));
+btnGo.addEventListener("click", () => forgeSeed(Number(seedInput.value) || 1));
+seedInput.addEventListener("keydown", (e) => { if (e.key === "Enter") forgeSeed(Number(seedInput.value) || 1); });
 
-const btnCube = document.createElement("button");
-btnCube.textContent = "⧉ 3×3×3";
-document.getElementById("controls")!.appendChild(btnCube);
-btnCube.addEventListener("click", () => void forgeCube(ctx));
-
-const btnZig = document.createElement("button");
-btnZig.textContent = "▲ Ziggurat";
-document.getElementById("controls")!.appendChild(btnZig);
-btnZig.addEventListener("click", () => void forgeMonument(ctx, "ziggurat"));
-
-const btnRel = document.createElement("button");
-btnRel.textContent = "◆ Reliquary";
-document.getElementById("controls")!.appendChild(btnRel);
-btnRel.addEventListener("click", () => void forgeMonument(ctx, "reliquary"));
-
-const btnCine = document.createElement("button");
-btnCine.textContent = "🎬";
-btnCine.title = "cinematic flythrough — any input to exit";
-document.getElementById("controls")!.appendChild(btnCine);
+// view tools (toggles, active-state synced each frame in the main loop)
+const btnCine = document.getElementById("btnCine") as HTMLButtonElement;
+const btnRoute = document.getElementById("btnRoute") as HTMLButtonElement;
+const btnNav = document.getElementById("btnNav") as HTMLButtonElement;
+const btnWalk = document.getElementById("btnWalk") as HTMLButtonElement;
 btnCine.addEventListener("click", (e) => {
   e.stopPropagation();
-  cine.start(performance.now() / 1000);
+  if (cine.active) cine.stop();
+  else cine.start(performance.now() / 1000);
 });
+btnRoute.addEventListener("click", () => { if (!ctx.state.endless) route.toggle(); });
+btnNav.addEventListener("click", () => { if (!ctx.state.endless) navOverlay.toggle(); });
+btnWalk.addEventListener("click", () => { if (walking) stopWalk(); else void startWalk(); });
 
-const btnRoute = document.createElement("button");
-btnRoute.textContent = "🧭";
-btnRoute.title = "show the 3D route from spawn to the farthest sanctum";
-document.getElementById("controls")!.appendChild(btnRoute);
-btnRoute.addEventListener("click", () => {
-  if (!ctx.state.endless) route.toggle();
+// ⚙ params panel: collapsed by default, slides in from the right
+const paramsEl = document.getElementById("params")!;
+const btnParams = document.getElementById("btnParams") as HTMLButtonElement;
+btnParams.addEventListener("click", () => {
+  const open = paramsEl.classList.toggle("closed");
+  btnParams.classList.toggle("active", !open);
 });
-
-const btnNav = document.createElement("button");
-btnNav.textContent = "🕸";
-btnNav.title = "navmesh overlay: walkable cells (cyan), stairs (amber), crossings (magenta)";
-document.getElementById("controls")!.appendChild(btnNav);
-btnNav.addEventListener("click", () => {
-  if (!ctx.state.endless) navOverlay.toggle();
+document.getElementById("btnParamsClose")!.addEventListener("click", () => {
+  paramsEl.classList.add("closed");
+  btnParams.classList.remove("active");
 });
 
 // ---- skeleton route walker: the CC0 skeleton walks the whole route --------
@@ -176,11 +200,6 @@ let walking = false;
 let walkU = 0, walkLen = 1, walkEndAt = 0;
 let walkCurve: THREE.CatmullRomCurve3 | null = null;
 const WALK_SPEED = 10;
-const btnWalk = document.createElement("button");
-btnWalk.textContent = "💀";
-btnWalk.title = "the skeleton walks the route, start to finish (Esc stops)";
-document.getElementById("controls")!.appendChild(btnWalk);
-btnWalk.addEventListener("click", () => void startWalk());
 
 async function startWalk(): Promise<void> {
   if (ctx.state.endless) return;
@@ -297,6 +316,7 @@ async function boot(): Promise<void> {
   // PROXY meshes and unhides the real layers only once they're compiled.
   setDecorSuppressed(true);
   const mode = urlParams.get("mode");
+  if (mode === "ziggurat" || mode === "reliquary") setModeActive(mode);
   let forgeErr: unknown = null;
   const forging = (mode === "ziggurat" || mode === "reliquary"
     ? forgeMonument(ctx, mode as Monument)
@@ -382,6 +402,12 @@ async function boot(): Promise<void> {
     endless.update(t, controls.target);
     route.tick(); // a re-forge invalidates the drawn route
     navOverlay.tick();
+    // toggle highlights follow the real state (route/nav can self-hide on
+    // re-forge; cine exits on any input) — classList.toggle no-ops if unchanged
+    btnCine.classList.toggle("active", cine.active);
+    btnRoute.classList.toggle("active", route.visible);
+    btnNav.classList.toggle("active", navOverlay.visible);
+    btnWalk.classList.toggle("active", walking);
     // distance calms the flicker: near 60 units torches dance at full
     // amplitude; past ~150 they settle to a steady candle glow (dozens of
     // asynchronous flickers read as an uncomfortable shimmer from afar)

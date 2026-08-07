@@ -47,18 +47,36 @@ export function createPost(
   Loop({ type: "int", start: 0, end: STEPS, condition: "<" }, ({ i }) => {
     const t = float(i).add(jitter).mul(stepLen);
     const p = ro.add(rd.mul(t));
-    const hFall = smoothstep(2.8, -5.5, p.y); // slab: dense below the fortress floor, gone above
-    const n = triNoise3D(p.mul(0.021).add(vec3(time.mul(0.009), 0, time.mul(0.006))), 0.3, time);
-    const dens = hFall.mul(n.mul(0.8).add(0.2)).mul(0.07);
+    const hFall = smoothstep(4.5, -6.5, p.y); // slab: dense below the fortress floor, gone above
+    // one BROAD octave, drifting slowly: reads as rolling banks, not crumbs —
+    // high base (0.55) keeps the slab连绵 with the noise only shaping its edges
+    const n = triNoise3D(p.mul(0.008).add(vec3(time.mul(0.005), 0, time.mul(0.0035))), 0.1, time);
+    const dens = hFall.mul(n.mul(0.45).add(0.55)).mul(0.085);
     trans.mulAssign(exp(dens.mul(stepLen).negate()));
   });
   const scatter = rd.dot(vec3(MOON_DIR.x, MOON_DIR.y, MOON_DIR.z)).clamp(0, 1).pow(5).mul(0.5).add(1);
   const fogCol = color(0x27476b).mul(scatter).mul(0.85);
 
+  // aerial perspective: an ANALYTIC exponential height haze over the full depth
+  // (iq's closed-form integral — no extra marching). This is the "one air" that
+  // ties the diorama together: far blocks sink into the same moonlit blue
+  // instead of standing clean against the abyss, and the horizon grades softly.
+  const HAZE_A = 0.0042; // density at y = 0
+  const HAZE_B = 0.028; // height falloff
+  const dFar = distGeo.min(320);
+  const dy = rd.y.sign().mul(rd.y.abs().max(0.02)); // guard the horizon singularity
+  const od = float(HAZE_A / HAZE_B)
+    .mul(exp(ro.y.mul(-HAZE_B)))
+    .mul(float(1).sub(exp(dy.mul(dFar).mul(-HAZE_B))))
+    .div(dy);
+  const hazeAmt = float(1).sub(exp(od.negate())).clamp(0, 0.8);
+  const hazeCol = color(0x2c4a6e).mul(scatter).mul(0.9);
+
   // cinematic finish: gentle vignette pulls the eye to the lit heart of the maze
   const vig = float(1).sub(smoothstep(0.5, 1.02, screenUV.sub(0.5).length().mul(1.35)).mul(0.45));
   const composed = scenePassColor.add(bloomPass);
-  postProcessing.outputNode = composed.mul(trans).add(fogCol.mul(float(1).sub(trans))).mul(vig);
+  const hazed = composed.mul(float(1).sub(hazeAmt)).add(hazeCol.mul(hazeAmt));
+  postProcessing.outputNode = hazed.mul(trans).add(fogCol.mul(float(1).sub(trans))).mul(vig);
   return {
     post: postProcessing,
     setBloom: (s: number) => { bloomPass.strength.value = s; },

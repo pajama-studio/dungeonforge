@@ -305,7 +305,8 @@ export function makeMaterials(): MatKit {
 
   const smokeMat = new THREE.SpriteNodeMaterial({ transparent: true, depthWrite: false });
   smokeMat.colorNode = color(0x3a587a); // cool-tinted mist banks
-  smokeMat.opacityNode = smoothstep(0.5, 0.08, length(uv().sub(0.5))).mul(0.13);
+  // banks are now ~3× wider and overlap — lower peak opacity, softer edge
+  smokeMat.opacityNode = smoothstep(0.52, 0.02, length(uv().sub(0.5))).mul(0.085);
 
   // hanging vines: pinned at the top, swaying tip, dark→mossy green gradient
   const vineMat = new THREE.MeshLambertNodeMaterial({ side: THREE.DoubleSide, transparent: true, depthWrite: false });

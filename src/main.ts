@@ -24,6 +24,7 @@ import type { Ctx } from "./world/context";
 import { forge } from "./world/forge";
 import { forgeCube } from "./world/cube";
 import { forgeMonument, type Monument } from "./world/monument";
+import { Cinematic } from "./world/cinematic";
 import { EndlessWorld } from "./world/stream";
 import { buildPanel } from "./ui/panel";
 import { mulberry32 } from "./gen/rng";
@@ -94,6 +95,7 @@ const ctx: Ctx = {
   },
 };
 const endless = new EndlessWorld(ctx);
+const cine = new Cinematic(ctx);
 
 // ---- UI ---------------------------------------------------------------------
 buildPanel(ctx.genParams, {
@@ -138,6 +140,16 @@ btnRel.textContent = "◆ Reliquary";
 document.getElementById("controls")!.appendChild(btnRel);
 btnRel.addEventListener("click", () => void forgeMonument(ctx, "reliquary"));
 
+const btnCine = document.createElement("button");
+btnCine.textContent = "🎬";
+btnCine.title = "cinematic flythrough — any input to exit";
+document.getElementById("controls")!.appendChild(btnCine);
+btnCine.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (playing) exitPlay();
+  cine.start(performance.now() / 1000);
+});
+
 const btnEnter = document.createElement("button");
 btnEnter.textContent = "⚔ Enter";
 document.getElementById("controls")!.appendChild(btnEnter);
@@ -150,19 +162,40 @@ addEventListener("resize", () => {
 });
 
 // ---- first-person mode ------------------------------------------------------
+// the hero's lantern is a PERMANENT scene light (intensity 0 while idle):
+// adding/removing a light recompiles every pipeline in three's WebGPU forward
+// path — parenting it to the player and re-adding on Enter was the hitch
+const lantern = new THREE.PointLight(0xffa050, 0, 11, 2);
+scene.add(lantern);
 let player: Player | null = null;
+let playerReady: Promise<void> | null = null;
 let playing = false;
 let spawnX = 0, spawnZ = 0;
+
+/** preload the adventurer right after first paint: GLB parse + skinned
+ *  pipeline compilation happen in the background, parked under the abyss,
+ *  so ⚔ Enter is a teleport instead of a stall */
+function preloadPlayer(): Promise<void> {
+  playerReady ??= (async () => {
+    player = new Player();
+    try { await player.load("/assets/knight.glb"); } catch { /* placeholder-only */ }
+    player.group.position.set(0, -600, 0);
+    scene.add(player.group);
+    await renderer.compileAsync(scene, camera);
+  })();
+  return playerReady;
+}
 let camYaw = Math.PI;
 let camPitch = -0.12;
 const keys = new Set<string>();
 addEventListener("keydown", (e: KeyboardEvent) => {
   keys.add(e.key.toLowerCase());
   if (e.key === "Escape" && playing) exitPlay();
+  if (cine.active) cine.stop();
 });
 addEventListener("keyup", (e: KeyboardEvent) => keys.delete(e.key.toLowerCase()));
 let dragging = false;
-renderer.domElement.addEventListener("pointerdown", () => { dragging = true; });
+renderer.domElement.addEventListener("pointerdown", () => { dragging = true; cine.stop(); });
 addEventListener("pointerup", () => { dragging = false; });
 addEventListener("pointermove", (e: PointerEvent) => {
   if (playing && dragging) {
@@ -173,19 +206,16 @@ addEventListener("pointermove", (e: PointerEvent) => {
 
 async function enterPlay(): Promise<void> {
   if (!ctx.walk.islands.length) return;
-  if (!player) {
-    player = new Player();
-    try { await player.load("/assets/knight.glb"); } catch { /* placeholder-only */ }
-  }
+  await preloadPlayer(); // usually already resolved — Enter is instant
   const l0 = ctx.walk.islands[0];
   // spawn on the first medallion plaza when there is one (open, photogenic);
   // fall back to the entrance corridor
   const spawnCell = l0.l.medallions[0] ?? l0.l.entrance;
   spawnX = l0.ox + (spawnCell.x - (l0.l.N - 1) / 2) * CELL;
   spawnZ = l0.oz + (spawnCell.y - (l0.l.N - 1) / 2) * CELL;
-  player.place(spawnX, spawnZ, ctx.walk.sample);
-  player.setFirstPerson(true);
-  scene.add(player.group);
+  player!.place(spawnX, spawnZ, ctx.walk.sample);
+  player!.setFirstPerson(true);
+  lantern.intensity = 26;
   playing = true;
   controls.enabled = false;
   controls.autoRotate = false;
@@ -195,7 +225,8 @@ async function enterPlay(): Promise<void> {
 function exitPlay(): void {
   playing = false;
   controls.enabled = true;
-  player?.group.removeFromParent();
+  lantern.intensity = 0;
+  player?.group.position.set(0, -600, 0); // park — never leaves the scene
   btnEnter.textContent = "⚔ Enter";
 }
 
@@ -243,6 +274,7 @@ async function boot(): Promise<void> {
   // block the main thread for the entire compile.
   while (ctx.worlds.length === 0) await new Promise((r) => setTimeout(r, 30));
   await renderer.compileAsync(scene, camera);
+  void preloadPlayer(); // knight pipelines compile in the background
   let revealed = false;
   let lastT = performance.now() / 1000;
   renderer.setAnimationLoop(() => {
@@ -251,11 +283,14 @@ async function boot(): Promise<void> {
     const dt = Math.min(0.05, t - lastT);
     lastT = t;
     adaptResolution(t, rawMs);
-    if (playing && player) {
+    if (cine.active) {
+      cine.update(t);
+    } else if (playing && player) {
       const f = (keys.has("w") || keys.has("arrowup") ? 1 : 0) - (keys.has("s") || keys.has("arrowdown") ? 1 : 0);
       const s = (keys.has("d") || keys.has("arrowright") ? 1 : 0) - (keys.has("a") || keys.has("arrowleft") ? 1 : 0);
       const p = player.group.position;
       player.update(dt, { f, s }, camYaw, ctx.walk.sample); // spiral stairs are plain walkable ground
+      lantern.position.set(p.x, p.y + 2.2, p.z);
       if (p.y < -42) {
         // the abyss returns what it takes — to the last safe footing
         const rx = ctx.state.endless ? player.lastSafeX : spawnX;

@@ -20,6 +20,10 @@ import { CELL, COURSE } from "../../config";
  *  amplitude fades toward a steady candle glow with distance. */
 export const flickerDamp = uniform(1);
 
+/** route-beam pulse count — RoutePath.show() sets it to curveLength/spacing
+ *  so the streaming pulses keep constant world-unit spacing on any tour */
+export const routeFlow = uniform(400);
+
 function makeFlameMat(cA: number, cB: number, cCore: number): THREE.MeshBasicNodeMaterial {
   const mat = new THREE.MeshBasicNodeMaterial({
     transparent: true, depthWrite: false, side: THREE.DoubleSide,
@@ -233,6 +237,7 @@ export interface MatKit {
   medallionMat: THREE.MeshStandardNodeMaterial;
   smokeMat: THREE.SpriteNodeMaterial;
   arrowMat: THREE.MeshBasicNodeMaterial;
+  routeBeamMat: THREE.MeshBasicNodeMaterial;
   navMat: THREE.MeshBasicNodeMaterial;
 }
 
@@ -415,6 +420,19 @@ export function makeMaterials(): MatKit {
     transparent: true, depthWrite: false, opacity: 0.3, side: THREE.DoubleSide,
   });
 
+  // route beam: one thin glowing filament along the whole tour. Soft gold
+  // base below the bloom threshold; short bright pulses stream toward the
+  // goal (tube uv.x is the along-length coordinate) and are the only part
+  // hot enough to bloom — the beam reads as living light, not a laser.
+  const routeBeamMat = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false });
+  {
+    const u = uv().x.mul(routeFlow).sub(time.mul(1.35));
+    const t = u.fract();
+    const pulse = smoothstep(0.0, 0.2, t).mul(smoothstep(0.55, 0.25, t));
+    routeBeamMat.colorNode = color(0xffd48a).mul(pulse.mul(2.6).add(1.35));
+    routeBeamMat.opacityNode = pulse.mul(0.2).add(0.8);
+  }
+
   return {
     stoneMat: makeStoneMat(),
     // spiral stair towers share the masonry face-shading via vertex colors
@@ -448,6 +466,7 @@ export function makeMaterials(): MatKit {
     medallionMat: makeMedallionMat(),
     smokeMat,
     arrowMat,
+    routeBeamMat,
     navMat,
   };
 }

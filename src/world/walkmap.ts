@@ -23,6 +23,9 @@ export class WalkMap {
   readonly islands: IslandWalk[] = [];
   readonly links: LinkWalk[] = [];
   readonly blockers: WorldBlocker[] = [];
+  /** Topology-only revision: structural breaches can mutate a shared Layout
+   * without starting a full forge/token cycle. */
+  revision = 0;
 
   constructor(readonly stairs: StairTowers) {}
 
@@ -30,7 +33,10 @@ export class WalkMap {
     this.islands.length = 0;
     this.links.length = 0;
     this.blockers.length = 0;
+    this.revision++;
   }
+
+  touch(): void { this.revision++; }
 
   addIsland(l: Layout, ox: number, oy: number, oz: number, slot: number): IslandWalk {
     const isl: IslandWalk = {

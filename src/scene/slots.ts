@@ -19,6 +19,21 @@ export interface SlotPool {
 
 const slotPools = new Map<number, SlotPool>();
 
+/** Active high-detail masonry sources. Their low/faded LOD twins share the
+ * same matrix buffer, so changing one source instance updates every visual
+ * representation without risking divergent instance counts or stale WebGPU
+ * bindings. This intentionally excludes floors, stairs and columns: a blast
+ * can remove architecture without silently invalidating the walk surface. */
+export function masonryMeshes(): THREE.InstancedMesh[] {
+  const out: THREE.InstancedMesh[] = [];
+  for (const p of slotPools.values()) {
+    if (!p.group.visible) continue;
+    const mesh = p.meshes.get("blocks");
+    if (mesh && ((mesh.userData as { n?: number }).n ?? 0) > 0) out.push(mesh);
+  }
+  return out;
+}
+
 export function getSlot(slot: number, scene?: THREE.Object3D): SlotPool {
   let p = slotPools.get(slot);
   if (!p) {

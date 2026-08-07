@@ -32,6 +32,23 @@ export interface WorldBlocker { x: number; z: number; y0: number; y1: number; ra
 export interface SupportPierHandle extends WorldHandle { blockers: WorldBlocker[] }
 export type HorizontalLinkStyle = "bridge" | "causeway" | "gallery" | "court";
 
+/** Structural metadata exists only for thin, interior wall cells with a valid
+ * floor on both sides. Destruction can therefore open intentional passages
+ * without turning a rampart edge into walkable void. */
+export interface MasonryBreachCell {
+  layout: Layout;
+  cell: number;
+  gx: number;
+  gy: number;
+  floorTier: number;
+  required: number[];
+  destroyed: Set<number>;
+  opened: boolean;
+}
+export interface MasonryStructureData {
+  byInstance: Map<number, MasonryBreachCell>;
+}
+
 const _axisY = new THREE.Vector3(0, 1, 0);
 const _hexColor = new THREE.Color();
 const _mat4 = new THREE.Matrix4();
@@ -385,6 +402,28 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
     return (d <= 1 ? wallSX[c] : wallSZ[c]) * CELL * 0.5;
   };
 
+  // Only an interior wall separating two compatible floors is breachable.
+  // The passage band is tracked per rendered course below; high cornices and
+  // decorative masonry never mutate navigation when struck.
+  const breachTier = new Int8Array(cellCount).fill(ABYSS);
+  for (let y = 1; y < N - 1; y++) {
+    for (let x = 1; x < N - 1; x++) {
+      const c = y * N + x;
+      if (kind[c] !== WALL || templeBuilding[c] || towerAt[c] || l.doorMask[c] || l.shaftMask[c]) continue;
+      const ew = kind[c - 1] === FLOOR && kind[c + 1] === FLOOR && Math.abs(tier[c - 1] - tier[c + 1]) <= 1;
+      const ns = kind[c - N] === FLOOR && kind[c + N] === FLOOR && Math.abs(tier[c - N] - tier[c + N]) <= 1;
+      if (ew || ns) breachTier[c] = Math.max(
+        ew ? Math.max(tier[c - 1], tier[c + 1]) : ABYSS,
+        ns ? Math.max(tier[c - N], tier[c + N]) : ABYSS,
+      );
+    }
+  }
+  const breachCells = new Map<number, MasonryBreachCell>();
+  const breachByInstance = new Map<number, MasonryBreachCell>();
+  let masonryPotential = 0;
+  let masonryInteriorCulled = 0;
+  let masonryDoorCulled = 0;
+
   // Occlusion tier: the height below which every side of a column is hidden by
   // its 4 neighbors — those courses never rasterize (topmost course always kept
   // for the visible cap face).
@@ -418,12 +457,19 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
     const doorCell = l.doorMask[cell] === 1;
     const occlH = occlTier[cell] * TH;
     for (let k = 0; k < nCourses; k++) {
+      masonryPotential++;
       const y0 = baseTier * TH + k * COURSE;
       const yMid = y0 + COURSE / 2;
-      if (k < nCourses - 1 && y0 + COURSE <= occlH - 0.01) continue; // fully hidden
+      if (k < nCourses - 1 && y0 + COURSE <= occlH - 0.01) {
+        masonryInteriorCulled++;
+        continue; // fully hidden
+      }
       if (doorCell && l.door) {
         const gapLo = l.door.tier * TH, gapHi = l.door.tier * TH + 2.6;
-        if (yMid > gapLo && yMid < gapHi) continue; // doorway gap (lintel above survives)
+        if (yMid > gapLo && yMid < gapHi) {
+          masonryDoorCulled++;
+          continue; // doorway gap (lintel above survives)
+        }
       }
       const h1 = hash3(seed, x * 131 + y, k, 1);
       const h2v = hash3(seed, x * 131 + y, k, 2);
@@ -440,7 +486,18 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
       // cornice ring every 5th course on towers — segmented silhouette
       const cornice = scaleXZ > 1.2 && k % 5 === 4 ? 1.14 : 1;
       const s = scaleXZ * cornice * (0.985 + h1 * 0.045);
+      const instanceId = blocks.count;
       blocks.pushY(cx + jx, yMid, cz + jz, (h1 - 0.5) * 0.05, s * sx, 1, s * sz, stoneColor);
+      const floorTier = breachTier[cell];
+      if (floorTier !== ABYSS && yMid > floorTier * TH && yMid < floorTier * TH + 2.65) {
+        let breach = breachCells.get(cell);
+        if (!breach) {
+          breach = { layout: l, cell, gx: x, gy: y, floorTier, required: [], destroyed: new Set(), opened: false };
+          breachCells.set(cell, breach);
+        }
+        breach.required.push(instanceId);
+        breachByInstance.set(instanceId, breach);
+      }
     }
   };
 
@@ -1194,6 +1251,17 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   // ------------------------------------------------------- instanced meshes
   // created last so every section above could still contribute masonry/flames
   putInstanced(pool, "blocks", R.blockGeo, R.stoneMat, blocks);
+  (pool.meshes.get("blocks")!.userData as { masonry?: MasonryStructureData }).masonry = {
+    byInstance: breachByInstance,
+  };
+  (pool.meshes.get("blocks")!.userData as {
+    masonryCull?: { potential: number; interior: number; authoredGaps: number; emitted: number };
+  }).masonryCull = {
+    potential: masonryPotential,
+    interior: masonryInteriorCulled,
+    authoredGaps: masonryDoorCulled,
+    emitted: masonryPotential - masonryInteriorCulled - masonryDoorCulled,
+  };
   putInstancedTwin(pool, "blocksLo", "blocks", R.blockGeoLo, R.stoneMat);
   putInstancedTwin(pool, "blocksFade", "blocks", R.blockGeo, R.stoneFadeMat, false);
   putInstancedTwin(pool, "blocksLoFade", "blocksLo", R.blockGeoLo, R.stoneFadeMat, false);

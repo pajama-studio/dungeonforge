@@ -34,11 +34,13 @@ export class LightPool {
     }
   }
 
-  /** torch flicker — two incommensurate sines per light, phase from the spec */
-  tick(t: number): void {
+  /** torch flicker — two incommensurate sines per light, phase from the spec.
+   *  `damp` (0..1) scales the oscillation: from afar dozens of asynchronous
+   *  flickers made the whole dungeon shimmer, so distance calms them. */
+  tick(t: number, damp = 1): void {
     for (let i = 0; i < this.specs.length; i++) {
       const s = this.specs[i];
-      this.pool[i].intensity = s.base * (0.82 + 0.12 * Math.sin(t * 7.3 + s.ph) + 0.06 * Math.sin(t * 13.1 + s.ph * 1.7));
+      this.pool[i].intensity = s.base * (0.82 + damp * (0.12 * Math.sin(t * 7.3 + s.ph) + 0.06 * Math.sin(t * 13.1 + s.ph * 1.7)));
     }
   }
 }

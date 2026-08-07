@@ -5,7 +5,7 @@ import { buildWorld, buildBridgeLink, buildSupportPiers, type LightSpec } from "
 import { pruneSlots } from "../scene/slots";
 import { CELL, ISLAND_GAP, PR_LARGE, linkArc } from "../config";
 import type { Ctx } from "./context";
-import { gateWorld, findShaftAnyhow, nextFrame } from "./helpers";
+import { gateWorld, findShaftAnyhow, Pacer } from "./helpers";
 
 export async function forgeCube(ctx: Ctx): Promise<void> {
   if (ctx.state.endless) return;
@@ -42,7 +42,7 @@ export async function forgeCube(ctx: Ctx): Promise<void> {
   const activeSlots = new Set<number>();
   const allLightsByCell: LightSpec[][] = [];
 
-  let frameStart = performance.now();
+  const pacer = new Pacer(6);
   for (let i = 0; i < cells.length; i++) {
     const c = cells[i], l = layouts[i];
     const ox = c.mi * pitch, oz = c.mj * pitch;
@@ -53,11 +53,12 @@ export async function forgeCube(ctx: Ctx): Promise<void> {
     ctx.worlds.push(w);
     allLightsByCell.push(w.lights.map((ls) => ({ ...ls, x: ls.x + ox, y: ls.y + oy, z: ls.z + oz })));
     ctx.walk.addIsland(l, ox, oy, oz, i);
-    if ((i & 7) === 7) ctx.env.bakeShadows();
-    if (performance.now() - frameStart > 24 && i < cells.length - 1) {
-      await nextFrame();
+    await pacer.tick();
+    if (tok !== state.token) return;
+    if ((i & 7) === 7) {
+      ctx.env.bakeShadows();
+      await pacer.tick();
       if (tok !== state.token) return;
-      frameStart = performance.now();
     }
   }
 
@@ -75,6 +76,8 @@ export async function forgeCube(ctx: Ctx): Promise<void> {
       ctx.worlds.push(buildBridgeLink(from, to, edgeSlot, ctx.scene));
       activeSlots.add(edgeSlot++);
       ctx.walk.addLink(from.clone(), to.clone(), linkArc(from.distanceTo(to)));
+      await pacer.tick();
+      if (tok !== state.token) return;
     }
     // stair shafts + carrying piers: every vertical pair
     const jUp = cellAt(c.mi, c.mj, c.mk + 1);
@@ -83,6 +86,8 @@ export async function forgeCube(ctx: Ctx): Promise<void> {
       if (shaft) ctx.stairs.build(shaft.x, shaft.z, shaft.y0, shaft.y1);
       ctx.worlds.push(buildSupportPiers(ctx.walk.islands[i], ctx.walk.islands[jUp], edgeSlot, ctx.scene));
       activeSlots.add(edgeSlot++);
+      await pacer.tick();
+      if (tok !== state.token) return;
     }
   }
 

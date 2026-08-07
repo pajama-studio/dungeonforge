@@ -522,7 +522,7 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   }
 
   putInstanced(pool, "brackets", R.bracketGeo, R.woodMat, brackets, false);
-  putInstanced(pool, "bowls", R.bowlGeo, R.woodMat, bowls, true);
+  putInstanced(pool, "bowls", R.bowlGeo, R.woodMat, bowls, false);
 
   // fake local torchlight: wall glow + a pool of light on the floor beneath
   {
@@ -640,7 +640,7 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
       const h1 = hash3(seed, 999, i, 7);
       planks.pushY(bX(s, 0), yTop - sag, bZ(s, 0), rotB + (h1 - 0.5) * 0.1, 1, 1.2, 1.45, hex(0x4a3624));
     }
-    putInstanced(pool, "ravinePlanks", R.plankGeo, R.woodMat, planks, true);
+    putInstanced(pool, "ravinePlanks", R.plankGeo, R.woodMat, planks, false);
     // rope rails from post top to hand height (same easing as buildBridgeLink)
     for (const side of [-0.8, 0.8]) {
       const pts: THREE.Vector3[] = [];
@@ -658,7 +658,7 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
     for (const s of [s0, s1]) for (const side of [-0.8, 0.8]) {
       posts.pushY(bX(s, side), yTop + 0.7, bZ(s, side), rotB, 1.25, 1.45, 1.25, hex(0x3a2c1c));
     }
-    putInstanced(pool, "ravinePosts", R.postGeo, R.woodMat, posts, true);
+    putInstanced(pool, "ravinePosts", R.postGeo, R.woodMat, posts, false);
     // stone abutments anchoring both ends + a lantern flame on each near post
     for (const [s, sgn] of [[s0, -1], [s1, 1]] as const) {
       stoneColor.setHSL(0.09, 0.3, 0.4);
@@ -960,13 +960,13 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   putInstanced(pool, "tiles", R.tileGeo, R.stoneMat, tiles, true);
   putInstanced(pool, "redTiles", R.tileGeo, R.redMat, redTiles, true);
   putInstanced(pool, "steps", R.stepGeo, R.stoneMat, steps);
-  putInstanced(pool, "cheeks", R.cheekGeo, R.stoneMat, cheeks);
+  putInstanced(pool, "cheeks", R.cheekGeo, R.stoneMat, cheeks, false);
   putInstanced(pool, "flamesW", R.flameGeo, R.flameWarm, warmFlames, false);
   putInstanced(pool, "flamesB", R.flameGeo, R.flameBlue, blueFlames, false);
   putInstanced(pool, "flamesR", R.flameGeo, R.flameRed, redFlames, false);
   putInstanced(pool, "flamesP", R.flameGeo, R.flameNeutral, plazaFlames, false);
-  putInstanced(pool, "rubble", R.rubbleGeo, R.stoneMat, rubble, true);
-  putInstanced(pool, "crates", R.crateGeo, R.woodMat, crates, true);
+  putInstanced(pool, "rubble", R.rubbleGeo, R.stoneMat, rubble, false);
+  putInstanced(pool, "crates", R.crateGeo, R.woodMat, crates, false);
   putInstanced(pool, "vines", R.vineGeo, R.vineMat, vines, false);
   putInstanced(pool, "leaves", R.leafGeo, R.leafMat, leaves, false);
   putInstanced(pool, "creepers", R.creeperGeo, R.leafMat, creepers, false);

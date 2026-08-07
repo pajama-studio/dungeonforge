@@ -99,3 +99,19 @@ export const nextFrame = (): Promise<void> => new Promise((resolve) => {
   const t = setTimeout(settle, 60);
   requestAnimationFrame(() => { clearTimeout(t); settle(); });
 });
+
+/** Frame-budget pacer. Generation is subdivided into SMALL steps (one island
+ *  build, one gate repair, one bridge, one pier set…) and `tick()` is awaited
+ *  between them: once the budget is spent the rest of the frame goes back to
+ *  the renderer. 6ms of a 16.7ms frame leaves render + browser overhead a
+ *  full 10ms, so a forge reads as the rise animation, never as a hitch. */
+export class Pacer {
+  private used = performance.now();
+  constructor(private budgetMs = 6) {}
+  async tick(): Promise<void> {
+    if (performance.now() - this.used > this.budgetMs) {
+      await nextFrame();
+      this.used = performance.now();
+    }
+  }
+}

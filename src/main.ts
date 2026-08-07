@@ -13,7 +13,7 @@ import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { DEFAULT_PARAMS, type Params } from "./gen/dungeon";
 import { GenPool } from "./gen/pool";
-import { pruneSlots, setSlotDetail } from "./scene/slots";
+import { pruneSlots, setSlotDetail, setDecorSuppressed, revealDecor, decorWarmupRig } from "./scene/slots";
 import { buildEnvironment } from "./scene/env";
 import { flickerDamp } from "./scene/kit/materials";
 import { createPost } from "./render/post";
@@ -27,6 +27,7 @@ import { forgeCube } from "./world/cube";
 import { forgeMonument, type Monument } from "./world/monument";
 import { Cinematic } from "./world/cinematic";
 import { RoutePath } from "./world/route";
+import { NavMesh, NavOverlay } from "./world/nav";
 import { EndlessWorld } from "./world/stream";
 import { buildPanel } from "./ui/panel";
 import { mulberry32 } from "./gen/rng";
@@ -98,7 +99,9 @@ const ctx: Ctx = {
 };
 const endless = new EndlessWorld(ctx);
 const cine = new Cinematic(ctx);
-const route = new RoutePath(ctx);
+const nav = new NavMesh(ctx);
+const navOverlay = new NavOverlay(ctx, nav);
+const route = new RoutePath(ctx, nav);
 
 // ---- UI ---------------------------------------------------------------------
 buildPanel(ctx.genParams, {
@@ -158,6 +161,14 @@ btnRoute.title = "show the 3D route from spawn to the farthest sanctum";
 document.getElementById("controls")!.appendChild(btnRoute);
 btnRoute.addEventListener("click", () => {
   if (!ctx.state.endless) route.toggle();
+});
+
+const btnNav = document.createElement("button");
+btnNav.textContent = "🕸";
+btnNav.title = "navmesh overlay: walkable cells (cyan), stairs (amber), crossings (magenta)";
+document.getElementById("controls")!.appendChild(btnNav);
+btnNav.addEventListener("click", () => {
+  if (!ctx.state.endless) navOverlay.toggle();
 });
 
 // ---- skeleton route walker: the CC0 skeleton walks the whole route --------
@@ -278,20 +289,31 @@ function adaptResolution(t: number, rawMs: number): void {
 
 async function boot(): Promise<void> {
   await renderer.init();
-  // the forge streams islands in one per frame; the loop starts as soon as the
-  // shared materials are compiled, so the overlay lifts when the FIRST island
-  // is on screen instead of after the whole chain.
+  // TWO-WAVE first paint. The cold-load wall is driver pipeline compilation
+  // (~25 node materials with a 28-light loop each). Wave 1 hides every
+  // decorative layer (vegetation, banners, glows, medallions, smoke, ropes…)
+  // so the first compile only covers the core look — the overlay lifts
+  // seconds earlier. Wave 2 then warms the remaining pipelines on PARKED
+  // PROXY meshes and unhides the real layers only once they're compiled.
+  setDecorSuppressed(true);
   const mode = urlParams.get("mode");
-  const forging = mode === "ziggurat" || mode === "reliquary"
+  let forgeErr: unknown = null;
+  const forging = (mode === "ziggurat" || mode === "reliquary"
     ? forgeMonument(ctx, mode as Monument)
-    : forge(ctx, ctx.state.seed);
-  // wait for the first island (worker gen + one build), then compile every
-  // pipeline ASYNCHRONOUSLY — the GPU process compiles in parallel while
-  // further islands keep streaming in; a sync first render would instead
-  // block the main thread for the entire compile.
-  while (ctx.worlds.length === 0) await new Promise((r) => setTimeout(r, 30));
-  await renderer.compileAsync(scene, camera);
-  void preloadPlayer(); // knight pipelines compile in the background
+    : forge(ctx, ctx.state.seed)
+  ).catch((e) => { forgeErr = e; console.error("[forge] failed:", e); });
+  while (ctx.worlds.length === 0 && forgeErr === null) await new Promise((r) => setTimeout(r, 30));
+  await renderer.compileAsync(scene, camera); // wave 1: core look only
+  void preloadPlayer(); // skeleton pipelines compile in the background
+  void (async () => {
+    await forging;
+    const dispose = decorWarmupRig(scene);
+    await renderer.compileAsync(scene, camera); // wave 2: decor, on proxies
+    dispose();
+    revealDecor();
+    slotDetail.clear(); // let distance LOD re-apply to the revealed layers
+    ctx.env.bakeShadows();
+  })();
   let revealed = false;
   let lastT = performance.now() / 1000;
   renderer.setAnimationLoop(() => {
@@ -354,6 +376,7 @@ async function boot(): Promise<void> {
     }
     endless.update(t, controls.target);
     route.tick(); // a re-forge invalidates the drawn route
+    navOverlay.tick();
     // distance calms the flicker: near 60 units torches dance at full
     // amplitude; past ~150 they settle to a steady candle glow (dozens of
     // asynchronous flickers read as an uncomfortable shimmer from afar)

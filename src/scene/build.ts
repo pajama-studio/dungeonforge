@@ -13,7 +13,7 @@ import { FLOOR, WALL, VOID, ABYSS, DX, DY } from "../gen/dungeon";
 import { hash2, hash3 } from "../gen/rng";
 import { TH, CELL, COURSE } from "../config";
 import { getKit } from "./kit";
-import { getSlot, putInstanced } from "./slots";
+import { getSlot, putInstanced, isDecorSuppressed } from "./slots";
 import { InstList } from "./instances";
 
 export interface LightSpec { x: number; y: number; z: number; color: number; base: number; dist: number; ph: number }
@@ -49,6 +49,7 @@ export function buildBridgeLink(a: THREE.Vector3, b: THREE.Vector3, slot: number
   const pool = getSlot(slot, sceneRoot);
   const group = pool.group;
   group.name = "bridge-link";
+  const suppress = isDecorSuppressed();
   const ownGeos = pool.perBuildGeos;
   const delta = new THREE.Vector3().subVectors(b, a);
   const dist = delta.length();
@@ -87,6 +88,7 @@ export function buildBridgeLink(a: THREE.Vector3, b: THREE.Vector3, slot: number
     const geo = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 24, 0.05, 5);
     ownGeos.push(geo);
     const rope = new THREE.Mesh(geo, R.ropeMat);
+    if (suppress) rope.visible = false;
     group.add(rope);
     pool.perBuild.push(rope);
   }
@@ -152,7 +154,11 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   const pool = getSlot(slot, sceneRoot);
   const group = pool.group;
   group.name = "fortress";
-  const addUnique = (o: THREE.Object3D) => { group.add(o); pool.perBuild.push(o); };
+  const addUnique = (o: THREE.Object3D) => {
+    if (isDecorSuppressed()) o.visible = false; // two-wave first paint
+    group.add(o);
+    pool.perBuild.push(o);
+  };
   // geometries unique to this layout (bridge ropes) — everything else is shared
   const perBuildGeos = pool.perBuildGeos;
 

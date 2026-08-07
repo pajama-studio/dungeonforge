@@ -88,7 +88,76 @@ export function putInstanced(
     pool.group.add(mesh);
   }
   fillInstanced(mesh, list);
+  if (decorSuppressed && (DETAIL_KEYS.includes(key) || DECOR_EXTRA.includes(key))) mesh.visible = false;
 }
+
+/** end of the two-wave first paint: unhide every decorative layer (their
+ *  pipelines are warm now) — LOD re-applies itself on the next frame */
+export function revealDecor(): void {
+  decorSuppressed = false;
+  for (const p of slotPools.values()) {
+    for (const k of [...DETAIL_KEYS, ...DECOR_EXTRA]) {
+      const m = p.meshes.get(k);
+      if (m) m.visible = ((m.userData as { n?: number }).n ?? 0) > 0;
+    }
+    for (const o of p.perBuild) o.visible = true;
+  }
+}
+
+/** wave-2 warm-up rig: one parked, unculled proxy per decorative pipeline so
+ *  compileAsync can build them without drawing a single visible fragment
+ *  (compileAsync skips invisible AND frustum-culled objects) */
+export function decorWarmupRig(scene: THREE.Object3D): () => void {
+  const R = getKit();
+  const objs: THREE.Object3D[] = [];
+  const park = (o: THREE.Object3D) => {
+    o.position.y = -1500;
+    o.frustumCulled = false;
+    objs.push(o);
+    scene.add(o);
+  };
+  const inst = (geo: THREE.BufferGeometry, mat: THREE.Material) => {
+    const m = new THREE.InstancedMesh(geo, mat, 1);
+    m.setMatrixAt(0, new THREE.Matrix4());
+    m.setColorAt(0, new THREE.Color(1, 1, 1));
+    park(m);
+  };
+  inst(R.vineGeo, R.vineMat); inst(R.mossGeo, R.mossMat);
+  inst(R.leafGeo, R.leafMat); inst(R.brambleGeoA, R.brambleMat);
+  inst(R.wispGeo, R.wispMat); inst(R.emberGeo, R.emberMat);
+  inst(R.wallGlowGeo, R.wallGlowMat); inst(R.floorGlowGeo, R.floorGlowMat);
+  inst(R.bannerGeo, R.bannerMat); inst(R.tileGeo, R.redMat);
+  inst(R.flameGeo, R.flameBlue); inst(R.flameGeo, R.flameRed); inst(R.flameGeo, R.flameNeutral);
+  inst(R.arrowGeo, R.arrowMat); inst(R.navCellGeo, R.navMat);
+  // non-instanced usages compile DIFFERENT pipelines than instanced ones
+  const med = R.circleGeo.clone();
+  const nV = med.getAttribute("position").count;
+  med.setAttribute("color", new THREE.BufferAttribute(new Float32Array(nV * 3).fill(1), 3));
+  med.setAttribute("plazaSeed", new THREE.BufferAttribute(new Float32Array(nV), 1));
+  park(new THREE.Mesh(med, R.medallionMat));
+  const one = (geo: THREE.BufferGeometry, mat: THREE.Material) => park(new THREE.Mesh(geo, mat));
+  one(R.portalGeo, R.portalMat); one(R.runeGeo, R.runeMat);
+  one(R.beamGeo, R.beamMatBlue); one(R.beamGeo, R.beamMatWarm);
+  one(R.beaconGeo, R.beaconMat); one(R.plugGeo, R.plugMat);
+  const ropeGeo = new THREE.TubeGeometry(
+    new THREE.CatmullRomCurve3([new THREE.Vector3(0, 0, 0), new THREE.Vector3(1, 0, 0), new THREE.Vector3(2, 0, 0)]),
+    3, 0.05, 5,
+  );
+  one(ropeGeo, R.ropeMat);
+  park(new THREE.Sprite(R.smokeMat));
+  return () => {
+    for (const o of objs) o.removeFromParent();
+    med.dispose();
+    ropeGeo.dispose();
+  };
+}
+
+// decorative layers held back during the two-wave first paint (wave 1 shows
+// the core look; these appear once their pipelines are warm)
+const DECOR_EXTRA = ["banners", "redTiles", "flamesB", "flamesR", "flamesP"];
+let decorSuppressed = false;
+export function setDecorSuppressed(on: boolean): void { decorSuppressed = on; }
+export function isDecorSuppressed(): boolean { return decorSuppressed; }
 
 const DETAIL_KEYS = [
   "merlons", "rubble", "moss", "vines", "leaves", "creepers", "bramblesA",

@@ -11,6 +11,7 @@ import type { Environment } from "../scene/env";
 import type { LightPool } from "./lights";
 import type { WalkMap } from "./walkmap";
 import type { StairTowers } from "./stairs";
+import type { DungeonActors } from "./actors";
 
 export interface Ctx {
   scene: THREE.Scene;
@@ -22,6 +23,7 @@ export interface Ctx {
   lights: LightPool;
   walk: WalkMap;
   stairs: StairTowers;
+  actors: DungeonActors;
   /** live handles — ticked every frame */
   worlds: WorldHandle[];
   genParams: Params;

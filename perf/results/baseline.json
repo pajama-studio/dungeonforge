@@ -1,0 +1,823 @@
+{
+  "schema": 1,
+  "label": "baseline",
+  "runtime": {
+    "node": "v22.22.2",
+    "platform": "darwin",
+    "arch": "arm64"
+  },
+  "workload": {
+    "rounds": 100,
+    "warmup": 20,
+    "casesPerLoop": 12
+  },
+  "summary": {
+    "generationMedianMs": 12.068708499999957,
+    "generationP95Ms": 17.27621874999913,
+    "buildMedianMs": 50.35062499999958,
+    "buildP95Ms": 70.82182055000048,
+    "combinedMedianMs": 62.62693700000045
+  },
+  "samples": [
+    {
+      "loop": 1,
+      "generationMs": 11.760457999999744,
+      "buildMs": 46.61937500000022,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 2,
+      "generationMs": 12.343499999999949,
+      "buildMs": 45.605083999999806,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 3,
+      "generationMs": 9.395457999999962,
+      "buildMs": 45.584375000000364,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 4,
+      "generationMs": 10.945958000000246,
+      "buildMs": 46.83987500000012,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 5,
+      "generationMs": 9.83283399999982,
+      "buildMs": 45.54479200000014,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 6,
+      "generationMs": 10.562750000000051,
+      "buildMs": 44.55208399999992,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 7,
+      "generationMs": 12.335833000000093,
+      "buildMs": 47.94445799999994,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 8,
+      "generationMs": 9.297249999999622,
+      "buildMs": 44.49675000000025,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 9,
+      "generationMs": 11.553332999999839,
+      "buildMs": 45.20120799999995,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 10,
+      "generationMs": 10.300249999999778,
+      "buildMs": 45.806332999999995,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 11,
+      "generationMs": 9.450000000000273,
+      "buildMs": 46.81479199999967,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 12,
+      "generationMs": 11.805791999999656,
+      "buildMs": 48.596958000000086,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 13,
+      "generationMs": 9.51116699999966,
+      "buildMs": 46.68420900000001,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 14,
+      "generationMs": 10.755916999999954,
+      "buildMs": 45.46491600000036,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 15,
+      "generationMs": 9.857666999999765,
+      "buildMs": 46.2196670000003,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 16,
+      "generationMs": 11.196665999999823,
+      "buildMs": 44.74158299999999,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 17,
+      "generationMs": 12.19958299999962,
+      "buildMs": 46.385957999999846,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 18,
+      "generationMs": 11.416541999999936,
+      "buildMs": 45.32458399999996,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 19,
+      "generationMs": 9.95587499999965,
+      "buildMs": 47.318209000000024,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 20,
+      "generationMs": 10.02883299999985,
+      "buildMs": 47.50004200000012,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 21,
+      "generationMs": 10.274291000000176,
+      "buildMs": 47.75283399999989,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 22,
+      "generationMs": 10.119958000000224,
+      "buildMs": 49.84700000000021,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 23,
+      "generationMs": 11.361625000000004,
+      "buildMs": 45.349917000000005,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 24,
+      "generationMs": 9.635208000000148,
+      "buildMs": 46.93187499999976,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 25,
+      "generationMs": 12.63045800000009,
+      "buildMs": 45.95970899999975,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 26,
+      "generationMs": 10.575209000000086,
+      "buildMs": 48.36170799999991,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 27,
+      "generationMs": 10.460332999999991,
+      "buildMs": 46.35941700000012,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 28,
+      "generationMs": 10.602415999999721,
+      "buildMs": 48.240499999999884,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 29,
+      "generationMs": 10.588540999999623,
+      "buildMs": 47.79208299999982,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 30,
+      "generationMs": 9.792124999999942,
+      "buildMs": 47.46399999999994,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 31,
+      "generationMs": 11.07058300000017,
+      "buildMs": 47.82829199999969,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 32,
+      "generationMs": 10.544291000000158,
+      "buildMs": 47.042667000000165,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 33,
+      "generationMs": 11.359457999999904,
+      "buildMs": 56.52070800000001,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 34,
+      "generationMs": 15.22158300000001,
+      "buildMs": 46.99829099999988,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 35,
+      "generationMs": 12.84787499999993,
+      "buildMs": 47.94599999999991,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 36,
+      "generationMs": 11.361541000000216,
+      "buildMs": 49.925624999999854,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 37,
+      "generationMs": 11.441249999999854,
+      "buildMs": 49.85345799999959,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 38,
+      "generationMs": 10.338250000000698,
+      "buildMs": 46.311666000000514,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 39,
+      "generationMs": 12.212209000000257,
+      "buildMs": 50.66791600000033,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 40,
+      "generationMs": 11.152332999999999,
+      "buildMs": 46.00279200000023,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 41,
+      "generationMs": 12.353625000000648,
+      "buildMs": 50.36449999999968,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 42,
+      "generationMs": 11.611332999999831,
+      "buildMs": 48.50908299999992,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 43,
+      "generationMs": 10.72649999999976,
+      "buildMs": 47.28470800000014,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 44,
+      "generationMs": 13.596040999999786,
+      "buildMs": 47.26670800000011,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 45,
+      "generationMs": 10.99554100000023,
+      "buildMs": 44.77504100000078,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 46,
+      "generationMs": 14.231957999999395,
+      "buildMs": 48.63537499999984,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 47,
+      "generationMs": 11.993833999999879,
+      "buildMs": 46.725916000000325,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 48,
+      "generationMs": 13.578583999999864,
+      "buildMs": 71.11133400000017,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 49,
+      "generationMs": 18.448874999999134,
+      "buildMs": 63.68883300000016,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 50,
+      "generationMs": 33.21391700000004,
+      "buildMs": 60.133332999999766,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 51,
+      "generationMs": 12.7295409999997,
+      "buildMs": 52.858374999999796,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 52,
+      "generationMs": 13.253124999999272,
+      "buildMs": 68.71354200000042,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 53,
+      "generationMs": 15.961624999999913,
+      "buildMs": 86.25925000000007,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 54,
+      "generationMs": 13.510000000000218,
+      "buildMs": 73.64800000000014,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 55,
+      "generationMs": 16.74883300000056,
+      "buildMs": 96.33116700000028,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 56,
+      "generationMs": 13.61791600000015,
+      "buildMs": 98.27020900000025,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 57,
+      "generationMs": 12.4168750000008,
+      "buildMs": 69.31620800000019,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 58,
+      "generationMs": 15.608999999999469,
+      "buildMs": 57.891458999999486,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 59,
+      "generationMs": 17.214499999999134,
+      "buildMs": 62.650540999999976,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 60,
+      "generationMs": 52.71483400000034,
+      "buildMs": 60.81895900000018,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 61,
+      "generationMs": 13.873916999999892,
+      "buildMs": 57.68995900000027,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 62,
+      "generationMs": 14.112916000000041,
+      "buildMs": 50.33674999999948,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 63,
+      "generationMs": 14.815499999999702,
+      "buildMs": 54.644084000000475,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 64,
+      "generationMs": 11.888082999999824,
+      "buildMs": 59.5752080000002,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 65,
+      "generationMs": 32.156584000000294,
+      "buildMs": 70.8065830000005,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 66,
+      "generationMs": 11.218125000000327,
+      "buildMs": 50.46266699999978,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 67,
+      "generationMs": 14.609416999999667,
+      "buildMs": 52.30774999999994,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 68,
+      "generationMs": 12.668749999999818,
+      "buildMs": 52.59362500000043,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 69,
+      "generationMs": 12.52099999999973,
+      "buildMs": 51.012666999999965,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 70,
+      "generationMs": 13.728167000000212,
+      "buildMs": 54.62995800000044,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 71,
+      "generationMs": 12.808708999999908,
+      "buildMs": 52.21699999999964,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 72,
+      "generationMs": 13.983667000000423,
+      "buildMs": 49.80595900000026,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 73,
+      "generationMs": 12.5912500000004,
+      "buildMs": 50.50766600000043,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 74,
+      "generationMs": 12.0625,
+      "buildMs": 52.11133299999983,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 75,
+      "generationMs": 11.00262500000008,
+      "buildMs": 48.60699999999997,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 76,
+      "generationMs": 13.153458000000683,
+      "buildMs": 53.41600000000017,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 77,
+      "generationMs": 12.138832999999977,
+      "buildMs": 52.68504200000007,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 78,
+      "generationMs": 12.206500000000233,
+      "buildMs": 50.44316600000002,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 79,
+      "generationMs": 10.644208000000617,
+      "buildMs": 49.43816699999934,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 80,
+      "generationMs": 11.352582999999868,
+      "buildMs": 54.91266700000051,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 81,
+      "generationMs": 12.976292000000285,
+      "buildMs": 51.06758400000035,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 82,
+      "generationMs": 14.08075000000008,
+      "buildMs": 54.08562500000062,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 83,
+      "generationMs": 11.403916000000208,
+      "buildMs": 51.200292000000445,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 84,
+      "generationMs": 12.19091599999956,
+      "buildMs": 49.38433299999997,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 85,
+      "generationMs": 10.859958000000006,
+      "buildMs": 55.52745899999991,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 86,
+      "generationMs": 11.922832999999628,
+      "buildMs": 57.58037499999955,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 87,
+      "generationMs": 12.370124999999462,
+      "buildMs": 49.71154200000001,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 88,
+      "generationMs": 11.482874999999694,
+      "buildMs": 57.2098330000008,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 89,
+      "generationMs": 10.896582999999737,
+      "buildMs": 57.17554199999995,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 90,
+      "generationMs": 14.168749999999818,
+      "buildMs": 51.01108299999942,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 91,
+      "generationMs": 10.488374999999905,
+      "buildMs": 50.39270899999974,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 92,
+      "generationMs": 12.987667000000329,
+      "buildMs": 57.7768329999999,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 93,
+      "generationMs": 11.75304099999994,
+      "buildMs": 52.42341699999997,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 94,
+      "generationMs": 12.65087499999936,
+      "buildMs": 57.59008299999914,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 95,
+      "generationMs": 12.074916999999914,
+      "buildMs": 57.1186660000003,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 96,
+      "generationMs": 14.520207999999911,
+      "buildMs": 60.86895899999945,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 97,
+      "generationMs": 14.225500000000466,
+      "buildMs": 62.52541700000074,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 98,
+      "generationMs": 14.691542000000481,
+      "buildMs": 53.08650000000125,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 99,
+      "generationMs": 50.837249999998676,
+      "buildMs": 66.84308299999975,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 100,
+      "generationMs": 14.42370800000026,
+      "buildMs": 57.67445899999984,
+      "checksum": 3253635514,
+      "instances": 39822,
+      "renderObjects": 118
+    }
+  ]
+}

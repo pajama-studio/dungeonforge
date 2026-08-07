@@ -34,6 +34,15 @@ describe("dungeon generator", () => {
     expect(checksum(generate(1))).not.toBe(checksum(generate(2)));
   });
 
+  it("embeds a partial multi-level Markov volume inside each block", () => {
+    for (const seed of [4, 19, 88, 501]) {
+      const l = generate(seed);
+      expect(l.stats.volumeCells).toBeGreaterThanOrEqual(10);
+      expect(l.stats.volumeLevels).toBeGreaterThanOrEqual(2);
+      expect(l.volumeMask.reduce((sum, value) => sum + value, 0)).toBeGreaterThanOrEqual(l.stats.volumeCells);
+    }
+  });
+
   it("every floor cell is reachable from the entrance (Δtier ≤ 1 moves)", () => {
     for (const seed of [1, 7, 42, 999, 20260806]) {
       expect(bfsReachAll(generate(seed)), `seed ${seed}`).toBe(true);
@@ -66,6 +75,41 @@ describe("dungeon generator", () => {
         }
       }
     }
+  });
+
+  it("reserves vertical stair cores and connected level courts during generation", () => {
+    const request = { id: 91, x: 11, y: 17, dockDir: 0 as const };
+    const l = generate({ seed: 808, size: 13, verticalAnchors: [request] });
+    const a = l.verticalAnchors.find((v) => v.id === request.id)!;
+    const core = a.y * l.N + a.x;
+    expect(l.kind[core]).toBe(WALL);
+    expect(l.shaftMask[core]).toBe(1);
+    const courtTiers = new Set<number>();
+    for (let y = a.y - 1; y <= a.y + 1; y++) for (let x = a.x - 1; x <= a.x + 1; x++) {
+      if (x === a.x && y === a.y) continue;
+      const c = y * l.N + x;
+      expect(l.kind[c], `${x},${y}`).toBe(FLOOR);
+      expect(l.stairMask[c], `${x},${y}`).toBe(0);
+      courtTiers.add(l.tier[c]);
+    }
+    expect(courtTiers.size).toBe(1);
+    expect(bfsReachAll(l)).toBe(true);
+    expect(checksum(l)).not.toBe(checksum(generate({ seed: 808, size: 13 })));
+  });
+
+  it("grades a vertical court into adjacent landmark floors instead of disconnecting it", () => {
+    // Reliquary regression: after inverse rotation this court meets a raised
+    // landmark edge by more than two tiers. It must get a stairable grade,
+    // not be rejected or silently moved back to the outer wall.
+    const request = { id: 30_005, x: 21, y: 19, dockDir: 0 as const };
+    const l = generate({
+      seed: 1_308_394_102, size: 13, rot: 3,
+      verticalAnchors: [request], templeOn: true,
+      decay: 0.4315, mound: 0, plazas: 1, totems: 3,
+    });
+    expect(l.verticalAnchors).toContainEqual(request);
+    expect(l.shaftMask[request.y * l.N + request.x]).toBe(1);
+    expect(bfsReachAll(l)).toBe(true);
   });
 
   it("holds invariants across sizes, plaza and totem counts", () => {

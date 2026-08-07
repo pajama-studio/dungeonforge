@@ -13,13 +13,17 @@ import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { DEFAULT_PARAMS, type Params } from "./gen/dungeon";
 import { GenPool } from "./gen/pool";
-import { pruneSlots, setSlotDetail, setDecorSuppressed, revealDecor, decorWarmupRig } from "./scene/slots";
+import {
+  pruneSlots, setSlotDetail, setDecorSuppressed, revealDecor,
+  decorWarmupRig, stageActualDetailWarmup, setOccludingSlots,
+} from "./scene/slots";
 import { buildEnvironment } from "./scene/env";
 import { flickerDamp } from "./scene/kit/materials";
 import { createPost } from "./render/post";
 import { Player } from "./player/player";
 import { LightPool } from "./world/lights";
 import { StairTowers } from "./world/stairs";
+import { DungeonActors } from "./world/actors";
 import { WalkMap } from "./world/walkmap";
 import type { Ctx } from "./world/context";
 import { forge } from "./world/forge";
@@ -71,6 +75,7 @@ const { post: postProcessing, setBloom } = createPost(renderer, scene, camera);
 // ---- world context ----------------------------------------------------------
 const env = buildEnvironment(scene, 1); // env is seed-stable; kept across regens
 const stairs = new StairTowers(scene);
+const actors = new DungeonActors(scene, camera, renderer.domElement);
 
 const ctx: Ctx = {
   scene, camera, renderer, controls, env,
@@ -78,6 +83,7 @@ const ctx: Ctx = {
   lights: new LightPool(scene),
   walk: new WalkMap(stairs),
   stairs,
+  actors,
   worlds: [],
   genParams: {
     ...DEFAULT_PARAMS,
@@ -238,9 +244,53 @@ function camClearY(x: number, z: number, refY: number): number {
   return top;
 }
 
+interface OccludingArchitecture { slots: Set<number>; stairs: Set<number> }
+
+/** Cheap analytic line-of-sight returning the architecture to fade. The
+ * character is never duplicated or made transparent. */
+function skeletonOccluders(): OccludingArchitecture {
+  const hits: OccludingArchitecture = { slots: new Set(), stairs: new Set() };
+  if (!player) return hits;
+  const p = player.group.position;
+  const tx = p.x, ty = p.y + 1.45, tz = p.z;
+  const dx = tx - camera.position.x, dy = ty - camera.position.y, dz = tz - camera.position.z;
+  const steps = Math.max(5, Math.min(34, Math.ceil(Math.hypot(dx, dy, dz) / (CELL * 0.5))));
+  for (let s = 1; s < steps; s++) {
+    const u = s / steps;
+    const x = camera.position.x + dx * u;
+    const y = camera.position.y + dy * u;
+    const z = camera.position.z + dz * u;
+    for (const blocker of ctx.walk.blockers) {
+      if (y < blocker.y0 - 0.2 || y > blocker.y1 + 0.2) continue;
+      if (Math.hypot(x - blocker.x, z - blocker.z) <= blocker.radius && blocker.slot !== undefined) {
+        hits.slots.add(blocker.slot);
+      }
+    }
+    for (let towerIndex = 0; towerIndex < ctx.stairs.towers.length; towerIndex++) {
+      const tower = ctx.stairs.towers[towerIndex];
+      if (y < tower.y0 || y > tower.y1 + 2) continue;
+      if (Math.max(Math.abs(x - tower.x), Math.abs(z - tower.z)) < tower.core) hits.stairs.add(towerIndex);
+    }
+    for (const isl of ctx.walk.islands) {
+      const N = isl.l.N;
+      const gx = Math.round((x - isl.ox) / CELL + (N - 1) / 2);
+      const gy = Math.round((z - isl.oz) / CELL + (N - 1) / 2);
+      if (gx < 0 || gy < 0 || gx >= N || gy >= N) continue;
+      const c = gy * N + gx;
+      if (isl.l.kind[c] !== 2 || isl.l.shaftMask[c]) continue;
+      const lo = isl.oy + isl.l.wallBase[c] * TH;
+      const hi = isl.oy + isl.l.wallTop[c] * TH;
+      if (y > lo && y < hi) hits.slots.add(isl.slot);
+    }
+  }
+  return hits;
+}
+
 function stopWalk(): void {
   if (!walking) return;
   walking = false;
+  setOccludingSlots(new Set());
+  ctx.stairs.setOccluded(new Set());
   lantern.intensity = 0;
   setBloom(0.9);
   player?.group.position.set(0, -600, 0);
@@ -292,6 +342,9 @@ const slotDetail = new Map<number, boolean>();
 let dprNow = Math.min(devicePixelRatio, PR_BASE);
 let frameEma = 16.7;
 let lastDprAdj = 0;
+let decorReady = false;
+let lodToken = -1;
+let lastOcclusionCheck = 0;
 function adaptResolution(t: number, rawMs: number): void {
   frameEma = frameEma * 0.95 + Math.min(rawMs, 50) * 0.05; // clamp forge hitches
   if (t - lastDprAdj < 1) return;
@@ -330,10 +383,36 @@ async function boot(): Promise<void> {
   void preloadPlayer(); // skeleton pipelines compile in the background
   void (async () => {
     await forging;
-    const dispose = decorWarmupRig(scene);
-    await renderer.compileAsync(scene, camera); // wave 2: decor, on proxies
+    // Warm the REAL pooled objects on a camera-isolated layer. Proxies still
+    // cover unique/non-instanced layouts, while actual slot objects eliminate
+    // the first-approach WebGPU compilation hitch.
+    const warmLayer = 29;
+    const cameraLayerMask = camera.layers.mask;
+    camera.layers.set(warmLayer);
+    const restoreActual = stageActualDetailWarmup(warmLayer);
+    const restoreStairFade = ctx.stairs.stageFadeWarmup(warmLayer);
+    const dispose = decorWarmupRig(scene, warmLayer);
+    await renderer.compileAsync(scene, camera);
+    // compileAsync prepares shader pipelines but WebGPU can still defer
+    // render-object/binding realization until submission. Two real isolated
+    // draws, covered by the loading veil, move that driver work out of the
+    // user's first zoom. Waiting the queue makes `decorReady` a hard promise.
+    const queue = (renderer.backend as unknown as {
+      device?: { queue?: { onSubmittedWorkDone?: () => Promise<void> } };
+    }).device?.queue;
+    // Use the REAL post scene pass: its offscreen color/depth target format is
+    // part of the WebGPU pipeline key, so warming the canvas framebuffer alone
+    // does not cover the pipeline used during gameplay.
+    postProcessing.render();
+    await (queue?.onSubmittedWorkDone?.() ?? Promise.resolve());
+    postProcessing.render();
+    await (queue?.onSubmittedWorkDone?.() ?? Promise.resolve());
+    restoreActual();
+    restoreStairFade();
     dispose();
+    camera.layers.mask = cameraLayerMask;
     revealDecor();
+    decorReady = true;
     slotDetail.clear(); // let distance LOD re-apply to the revealed layers
     ctx.env.bakeShadows();
   })();
@@ -382,6 +461,12 @@ async function boot(): Promise<void> {
       }
       camera.position.lerp(desired, Math.min(1, dt * 3.2));
       camera.lookAt(p.x, p.y + 1.4, p.z);
+      if (t - lastOcclusionCheck > 0.08) {
+        lastOcclusionCheck = t;
+        const occluders = skeletonOccluders();
+        setOccludingSlots(occluders.slots);
+        ctx.stairs.setOccluded(occluders.stairs);
+      }
       if (walkU >= 1 && walkEndAt === 0) walkEndAt = t;
       if (walkEndAt > 0 && t - walkEndAt > 2.5) stopWalk();
     } else if (cine.active) {
@@ -390,10 +475,16 @@ async function boot(): Promise<void> {
       controls.update();
     }
     for (const w of ctx.worlds) w.tick(t);
+    ctx.actors.tick(t, dt);
     // distance LOD: far islands drop their small-detail layers. TRUE 3D
     // distance — a camera hovering 200 units above a spire is far from every
     // island even when its xz distance is small
+    if (lodToken !== ctx.state.token) {
+      lodToken = ctx.state.token;
+      slotDetail.clear();
+    }
     let nearestD = Infinity;
+    let lodSlot = -1, lodWant = false, lodPriority = Infinity;
     for (const isl of ctx.walk.islands) {
       const half = (isl.l.N * CELL) / 2;
       const d2 = Math.hypot(
@@ -405,9 +496,16 @@ async function boot(): Promise<void> {
       const prev = slotDetail.get(isl.slot);
       const want = prev === undefined ? d2 < LOD_NEAR : (prev ? d2 < LOD_FAR : d2 < LOD_NEAR);
       if (want !== prev) {
-        slotDetail.set(isl.slot, want);
-        setSlotDetail(isl.slot, want);
+        // At most ONE island crosses LOD per frame. Entering chooses the
+        // nearest pending island; leaving chooses the farthest. This caps the
+        // render-work delta even when a zoom crosses several stacked layers.
+        const priority = want ? d2 : -d2;
+        if (priority < lodPriority) { lodPriority = priority; lodSlot = isl.slot; lodWant = want; }
       }
+    }
+    if (lodSlot >= 0) {
+      slotDetail.set(lodSlot, lodWant);
+      setSlotDetail(lodSlot, lodWant);
     }
     endless.update(t, controls.target);
     route.tick(); // a re-forge invalidates the drawn route
@@ -428,7 +526,7 @@ async function boot(): Promise<void> {
     postProcessing.render();
     const rDur = performance.now() - r0;
     if (rDur > 100) console.log(`[frame] render() blocked ${rDur.toFixed(0)}ms`);
-    if (!revealed && ctx.worlds.length > 0) {
+    if (!revealed && ctx.worlds.length > 0 && decorReady) {
       revealed = true;
       loadingEl.style.opacity = "0";
     }
@@ -440,8 +538,14 @@ void boot();
 
 // dev hook for camera scripting (screenshot verification, cinematics)
 (window as unknown as { __df: object }).__df = {
-  camera, controls, ctx,
+  camera, controls, ctx, postProcessing, nav, route,
+  get player() { return player; },
+  skeletonOccluders,
   get walking() { return walking; },
   get walkU() { return walkU; },
+  get decorReady() { return decorReady; },
+  setAllDetail(visible: boolean) {
+    for (const island of ctx.walk.islands) setSlotDetail(island.slot, visible);
+  },
   startWalk,
 };

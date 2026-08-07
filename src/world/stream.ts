@@ -44,6 +44,7 @@ export class EndlessWorld {
     this.edgeHandles.clear();
     this.freeEdgeSlots.length = 0;
     this.timer = -10;
+    this.ctx.actors.clear();
   }
 
   private eh32(a: number, b: number, salt: number): number {
@@ -107,12 +108,14 @@ export class EndlessWorld {
     const { ctx } = this;
     ctx.worlds.length = 0;
     ctx.walk.clear();
+    ctx.actors.clear();
     const allLights: LightSpec[] = [];
     const activeSlots = new Set<number>();
     for (const cell of this.cells.values()) {
       activeSlots.add(cell.slot);
       ctx.worlds.push(cell.handle);
       ctx.walk.addIsland(cell.l, cell.ox, cell.oy, cell.oz, cell.slot);
+      ctx.actors.addIsland(cell.l, cell, cell.slot);
       for (const ls of cell.handle.lights) allLights.push({ ...ls, x: ls.x + cell.ox, y: ls.y + cell.oy, z: ls.z + cell.oz });
     }
     // inter-cell bridges for every present pair that agreed on a gate

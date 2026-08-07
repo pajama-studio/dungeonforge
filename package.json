@@ -7,7 +7,10 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "bench:perf": "vite-node scripts/perf-benchmark.ts",
+    "bench:markov": "vite-node scripts/markov-benchmark.ts",
+    "bench:report": "node scripts/perf-report.mjs"
   },
   "dependencies": {
     "three": "^0.185.1"

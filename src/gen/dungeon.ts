@@ -87,7 +87,7 @@ export const DEFAULT_PARAMS: Params = {
   heightAmp: 3.0,
   mound: 3.7,
   torchSpacing: 5,
-  wallThin: 0.45,
+  wallThin: 0.35,
   size: 15,
   plazas: 2,
   totems: 4,

@@ -126,6 +126,7 @@ export function buildBridgeLink(a: THREE.Vector3, b: THREE.Vector3, slot: number
  *  staggers the reveal: building is frame-budget-batched for speed, but each
  *  island still surfaces in sequence. */
 function makeRise(group: THREE.Group, delay = 0): (t: number) => void {
+  if (delay < 0) return () => {}; // repairs/rebuilds of already-risen content
   let born = -1, baseY = 0;
   return (t: number) => {
     if (born < 0) { born = t; baseY = group.position.y; }
@@ -876,9 +877,9 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   }
 
   // underside root spike: hides the flat bottoms of the abyss columns.
-  // stacked upper layers get a stub (rootScale < 1) so their roots don't
-  // skewer the block living beneath them
-  {
+  // rootScale 0 skips it entirely — blocks with another block directly
+  // beneath must NOT dangle a rock cone into their neighbor's sky.
+  if (rootScale > 0) {
     const halfW = (N * CELL) / 2;
     const depth = (26 + halfW * 0.5) * rootScale;
     const plug = new THREE.Mesh(R.plugGeo, R.plugMat);

@@ -7,7 +7,7 @@ import { buildWorld, buildBridgeLink, type LightSpec } from "../scene/build";
 import { pruneSlots } from "../scene/slots";
 import { TH, CELL, ISLAND_GAP, PR_BASE, PR_LARGE } from "../config";
 import type { Ctx } from "./context";
-import { gateWorld, linkSag, findShaft, nextFrame } from "./helpers";
+import { gateWorld, linkSag, findShaftAnyhow, ensureGate, nextFrame } from "./helpers";
 
 export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   if (ctx.state.endless) return; // roaming owns the world in endless mode
@@ -98,6 +98,7 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   const allLights: LightSpec[] = [];
   const positions: Array<{ ox: number; oy: number; oz: number }> = [];
   const layouts: Layout[] = [];
+  const handleIdx: number[] = [];
 
   // frame-budgeted batching: a warm island build is ~3ms, so several fit in
   // one frame — yield only when the budget is spent instead of once per island
@@ -106,6 +107,18 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
     const l = await layoutPromises[i];
     if (tok !== state.token) return; // superseded while generating
     layouts.push(l);
+    // the crossing must EXIST before alignment and build: if the generator
+    // failed to carve either gate of a parent-child pair, open it now
+    if (macro[i].parent >= 0 && macro[i].dirFromParent < 4) {
+      if (ensureGate(layouts[macro[i].parent], macro[i].dirFromParent)) {
+        // parent is already built — rebuild its slot with the carved doorway
+        const pi = macro[i].parent;
+        const wp = buildWorld(layouts[pi], pi, ctx.scene, macro[pi].dirFromParent === 4 ? 0 : 1, -1);
+        wp.group.position.set(positions[pi].ox, positions[pi].oy, positions[pi].oz);
+        ctx.worlds[handleIdx[pi]] = wp;
+      }
+      ensureGate(l, macro[i].dirFromParent ^ 1);
+    }
     const half = (l.N * CELL) / 2;
     let ox = 0, oz = 0;
     let oy = 0;
@@ -142,19 +155,22 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
     positions.push({ ox, oy, oz });
     maxOy = Math.max(maxOy, oy);
 
-    const w = buildWorld(l, i, ctx.scene, macro[i].dirFromParent === 4 ? 0.22 : 1, i * 0.05);
+    // no rock cone under stacked blocks — there is a block directly beneath
+    const w = buildWorld(l, i, ctx.scene, macro[i].dirFromParent === 4 ? 0 : 1, i * 0.05);
     activeSlots.add(i);
     w.group.position.set(ox, oy, oz);
     ctx.scene.add(w.group);
+    handleIdx.push(ctx.worlds.length);
     ctx.worlds.push(w);
     for (const ls of w.lights) allLights.push({ ...ls, x: ls.x + ox, y: ls.y + oy, z: ls.z + oz });
     const isl = ctx.walk.addIsland(l, ox, oy, oz, i);
     minX = Math.min(minX, ox - half); maxX = Math.max(maxX, ox + half);
     minZ = Math.min(minZ, oz - half); maxZ = Math.max(maxZ, oz + half);
 
-    // spiral stair tower joining a stacked pair
+    // spiral stair tower joining a stacked pair — the relaxation ladder
+    // guarantees one wherever the footprints share any walkable overlap
     if (pIdx >= 0 && macro[i].dirFromParent === 4) {
-      const shaft = findShaft(ctx.walk.islands[pIdx], isl);
+      const shaft = findShaftAnyhow(ctx.walk.islands[pIdx], isl);
       if (shaft) ctx.stairs.build(shaft.x, shaft.z, shaft.y0, shaft.y1);
     }
     if (pIdx >= 0) {
@@ -201,7 +217,7 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   ctx.env.bakeShadows();
   // the forge-rise animation is still settling — re-bake once it lands
   setTimeout(() => { if (tok === state.token) ctx.env.bakeShadows(); }, 1500);
-  ctx.hud.name.textContent = layouts[0].name + (nIsl > 1 ? ` +${nIsl - 1}` : "");
+  ctx.hud.name.textContent = `${nIsl} linked block${nIsl > 1 ? "s" : ""}`;
   const floorSum = layouts.reduce((s2, l) => s2 + l.stats.floor, 0);
   const forgeMs = Math.round(performance.now() - tForge);
   ctx.hud.seed.textContent = `seed ${seed} · ${nIsl} block${nIsl > 1 ? "s" : ""} · ${floorSum} floor · forged in ${forgeMs}ms`;

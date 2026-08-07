@@ -7,7 +7,7 @@
 //   world/    the three modes (chain forge / 3×3×3 cube / endless streaming)
 //   render/   post chain (bloom + volumetric fog + vignette)
 //   ui/       forge-parameter panel
-//   player/   first-person adventurer
+//   player/   the skeleton (route walker)
 
 import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
@@ -26,6 +26,7 @@ import { forge } from "./world/forge";
 import { forgeCube } from "./world/cube";
 import { forgeMonument, type Monument } from "./world/monument";
 import { Cinematic } from "./world/cinematic";
+import { RoutePath } from "./world/route";
 import { EndlessWorld } from "./world/stream";
 import { buildPanel } from "./ui/panel";
 import { mulberry32 } from "./gen/rng";
@@ -97,6 +98,7 @@ const ctx: Ctx = {
 };
 const endless = new EndlessWorld(ctx);
 const cine = new Cinematic(ctx);
+const route = new RoutePath(ctx);
 
 // ---- UI ---------------------------------------------------------------------
 buildPanel(ctx.genParams, {
@@ -147,14 +149,68 @@ btnCine.title = "cinematic flythrough — any input to exit";
 document.getElementById("controls")!.appendChild(btnCine);
 btnCine.addEventListener("click", (e) => {
   e.stopPropagation();
-  if (playing) exitPlay();
   cine.start(performance.now() / 1000);
 });
 
-const btnEnter = document.createElement("button");
-btnEnter.textContent = "⚔ Enter";
-document.getElementById("controls")!.appendChild(btnEnter);
-btnEnter.addEventListener("click", () => void (playing ? exitPlay() : enterPlay()));
+const btnRoute = document.createElement("button");
+btnRoute.textContent = "🧭";
+btnRoute.title = "show the 3D route from spawn to the farthest sanctum";
+document.getElementById("controls")!.appendChild(btnRoute);
+btnRoute.addEventListener("click", () => {
+  if (!ctx.state.endless) route.toggle();
+});
+
+// ---- skeleton route walker: the CC0 skeleton walks the whole route --------
+let walking = false;
+let walkU = 0, walkLen = 1, walkEndAt = 0;
+let walkCurve: THREE.CatmullRomCurve3 | null = null;
+const WALK_SPEED = 10;
+const btnWalk = document.createElement("button");
+btnWalk.textContent = "💀";
+btnWalk.title = "the skeleton walks the route, start to finish (Esc stops)";
+document.getElementById("controls")!.appendChild(btnWalk);
+btnWalk.addEventListener("click", () => void startWalk());
+
+async function startWalk(): Promise<void> {
+  if (ctx.state.endless) return;
+  await preloadPlayer();
+  const rc = route.ensure();
+  if (!rc || !player) return;
+  cine.stop();
+  route.show();
+  walkCurve = rc.curve;
+  walkLen = rc.length;
+  walkU = 0;
+  walkEndAt = 0;
+  player.setFirstPerson(false);
+  lantern.intensity = 26;
+  walking = true;
+  controls.enabled = false;
+  controls.autoRotate = false;
+}
+
+/** the wall-top height at (x,z) near refY — 0 when open air/floor */
+function camClearY(x: number, z: number, refY: number): number {
+  let top = 0;
+  for (const isl of ctx.walk.islands) {
+    const N = isl.l.N;
+    const gx = Math.round((x - isl.ox) / CELL + (N - 1) / 2);
+    const gy = Math.round((z - isl.oz) / CELL + (N - 1) / 2);
+    if (gx < 0 || gy < 0 || gx >= N || gy >= N) continue;
+    if (Math.abs(isl.oy - (refY - 6)) > 26) continue; // other layers don't block
+    const c = gy * N + gx;
+    if (isl.l.kind[c] === 2) top = Math.max(top, isl.oy + isl.l.wallTop[c] * TH);
+  }
+  return top;
+}
+
+function stopWalk(): void {
+  if (!walking) return;
+  walking = false;
+  lantern.intensity = 0;
+  player?.group.position.set(0, -600, 0);
+  controls.enabled = true;
+}
 
 addEventListener("resize", () => {
   camera.aspect = innerWidth / innerHeight;
@@ -162,74 +218,32 @@ addEventListener("resize", () => {
   renderer.setSize(innerWidth, innerHeight);
 });
 
-// ---- first-person mode ------------------------------------------------------
-// the hero's lantern is a PERMANENT scene light (intensity 0 while idle):
-// adding/removing a light recompiles every pipeline in three's WebGPU forward
-// path — parenting it to the player and re-adding on Enter was the hitch
+// ---- the skeleton & his lantern ---------------------------------------------
+// the lantern is a PERMANENT scene light (intensity 0 while idle): adding or
+// removing a light recompiles every pipeline in three's WebGPU forward path
 const lantern = new THREE.PointLight(0xffa050, 0, 11, 2);
 scene.add(lantern);
 let player: Player | null = null;
 let playerReady: Promise<void> | null = null;
-let playing = false;
-let spawnX = 0, spawnZ = 0;
 
-/** preload the adventurer right after first paint: GLB parse + skinned
+/** preload the skeleton right after first paint: GLB parse + skinned
  *  pipeline compilation happen in the background, parked under the abyss,
- *  so ⚔ Enter is a teleport instead of a stall */
+ *  so 💀 starts instantly */
 function preloadPlayer(): Promise<void> {
   playerReady ??= (async () => {
     player = new Player();
-    try { await player.load("/assets/knight.glb"); } catch { /* placeholder-only */ }
+    try { await player.load("/assets/skeleton.glb"); } catch { /* placeholder-only */ }
     player.group.position.set(0, -600, 0);
     scene.add(player.group);
     await renderer.compileAsync(scene, camera);
   })();
   return playerReady;
 }
-let camYaw = Math.PI;
-let camPitch = -0.12;
-const keys = new Set<string>();
 addEventListener("keydown", (e: KeyboardEvent) => {
-  keys.add(e.key.toLowerCase());
-  if (e.key === "Escape" && playing) exitPlay();
+  if (e.key === "Escape" && walking) stopWalk();
   if (cine.active) cine.stop();
 });
-addEventListener("keyup", (e: KeyboardEvent) => keys.delete(e.key.toLowerCase()));
-let dragging = false;
-renderer.domElement.addEventListener("pointerdown", () => { dragging = true; cine.stop(); });
-addEventListener("pointerup", () => { dragging = false; });
-addEventListener("pointermove", (e: PointerEvent) => {
-  if (playing && dragging) {
-    camYaw -= e.movementX * 0.005;
-    camPitch = Math.min(0.85, Math.max(-0.85, camPitch - e.movementY * 0.003));
-  }
-});
-
-async function enterPlay(): Promise<void> {
-  if (!ctx.walk.islands.length) return;
-  await preloadPlayer(); // usually already resolved — Enter is instant
-  const l0 = ctx.walk.islands[0];
-  // spawn on the first medallion plaza when there is one (open, photogenic);
-  // fall back to the entrance corridor
-  const spawnCell = l0.l.medallions[0] ?? l0.l.entrance;
-  spawnX = l0.ox + (spawnCell.x - (l0.l.N - 1) / 2) * CELL;
-  spawnZ = l0.oz + (spawnCell.y - (l0.l.N - 1) / 2) * CELL;
-  player!.place(spawnX, spawnZ, ctx.walk.sample);
-  player!.setFirstPerson(true);
-  lantern.intensity = 26;
-  playing = true;
-  controls.enabled = false;
-  controls.autoRotate = false;
-  btnEnter.textContent = "🗺 Orbit (Esc)";
-}
-
-function exitPlay(): void {
-  playing = false;
-  controls.enabled = true;
-  lantern.intensity = 0;
-  player?.group.position.set(0, -600, 0); // park — never leaves the scene
-  btnEnter.textContent = "⚔ Enter";
-}
+renderer.domElement.addEventListener("pointerdown", () => { cine.stop(); });
 
 // ---- main loop --------------------------------------------------------------
 // distance LOD with hysteresis (LOD_NEAR / LOD_FAR) so a camera hovering at
@@ -284,27 +298,29 @@ async function boot(): Promise<void> {
     const dt = Math.min(0.05, t - lastT);
     lastT = t;
     adaptResolution(t, rawMs);
-    if (cine.active) {
-      cine.update(t);
-    } else if (playing && player) {
-      const f = (keys.has("w") || keys.has("arrowup") ? 1 : 0) - (keys.has("s") || keys.has("arrowdown") ? 1 : 0);
-      const s = (keys.has("d") || keys.has("arrowright") ? 1 : 0) - (keys.has("a") || keys.has("arrowleft") ? 1 : 0);
-      const p = player.group.position;
-      player.update(dt, { f, s }, camYaw, ctx.walk.sample); // spiral stairs are plain walkable ground
+    if (walking && player && walkCurve) {
+      // stairs & steep ramps: slow to a walk cycle (no climb clip in the pack)
+      const pNow = walkCurve.getPointAt(walkU);
+      const near = walkCurve.getPointAt(Math.min(1, walkU + 2 / walkLen));
+      const steep = Math.abs(near.y - pNow.y) > Math.hypot(near.x - pNow.x, near.z - pNow.z) * 0.4;
+      walkU = Math.min(1, walkU + ((steep ? WALK_SPEED * 0.45 : WALK_SPEED) * dt) / walkLen);
+      const p = walkCurve.getPointAt(walkU);
+      const ahead = walkCurve.getPointAt(Math.min(1, walkU + 4 / walkLen));
+      p.y -= 0.45; // the route tube floats a little above the floor
+      const heading = Math.atan2(ahead.x - p.x, ahead.z - p.z);
+      player.driveTo(p, heading, dt, walkU >= 1 ? "idle" : steep ? "walk" : "run");
       lantern.position.set(p.x, p.y + 2.2, p.z);
-      if (p.y < -42) {
-        // the abyss returns what it takes — to the last safe footing
-        const rx = ctx.state.endless ? player.lastSafeX : spawnX;
-        const rz = ctx.state.endless ? player.lastSafeZ : spawnZ;
-        player.place(rx, rz, ctx.walk.sample);
-      }
-      // first-person camera at eye height
-      camera.position.set(p.x, p.y + 1.55, p.z);
-      camera.lookAt(
-        p.x + Math.sin(camYaw) * Math.cos(camPitch),
-        p.y + 1.55 + Math.sin(camPitch),
-        p.z + Math.cos(camYaw) * Math.cos(camPitch),
-      );
+      // chase cam: high and pulled back — and never inside a wall column:
+      // if the camera's cell is masonry, lift it above that wall's top
+      const back = new THREE.Vector3(p.x - ahead.x, 0, p.z - ahead.z).normalize();
+      const desired = new THREE.Vector3(p.x + back.x * 10, p.y + 9.5, p.z + back.z * 10);
+      desired.y = Math.max(desired.y, camClearY(desired.x, desired.z, p.y) + 2.4);
+      camera.position.lerp(desired, Math.min(1, dt * 3.2));
+      camera.lookAt(p.x, p.y + 1.4, p.z);
+      if (walkU >= 1 && walkEndAt === 0) walkEndAt = t;
+      if (walkEndAt > 0 && t - walkEndAt > 2.5) stopWalk();
+    } else if (cine.active) {
+      cine.update(t);
     } else {
       controls.update();
     }
@@ -328,7 +344,8 @@ async function boot(): Promise<void> {
         setSlotDetail(isl.slot, want);
       }
     }
-    endless.update(t, playing && player ? player.group.position : controls.target);
+    endless.update(t, controls.target);
+    route.tick(); // a re-forge invalidates the drawn route
     // distance calms the flicker: near 60 units torches dance at full
     // amplitude; past ~150 they settle to a steady candle glow (dozens of
     // asynchronous flickers read as an uncomfortable shimmer from afar)
@@ -350,4 +367,9 @@ async function boot(): Promise<void> {
 void boot();
 
 // dev hook for camera scripting (screenshot verification, cinematics)
-(window as unknown as { __df: object }).__df = { camera, controls, ctx };
+(window as unknown as { __df: object }).__df = {
+  camera, controls, ctx,
+  get walking() { return walking; },
+  get walkU() { return walkU; },
+  startWalk,
+};

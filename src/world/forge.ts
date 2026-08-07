@@ -7,7 +7,7 @@ import { buildWorld, buildBridgeLink, buildSupportPiers, type LightSpec } from "
 import { pruneSlots } from "../scene/slots";
 import { TH, CELL, ISLAND_GAP, PR_BASE, PR_LARGE, linkArc } from "../config";
 import type { Ctx } from "./context";
-import { gateWorld, findShaftAnyhow, ensureGate, nextFrame } from "./helpers";
+import { gateWorld, findShaftAnyhow, ensureGate, Pacer } from "./helpers";
 
 export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   if (ctx.state.endless) return; // roaming owns the world in endless mode
@@ -121,9 +121,10 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   const layouts: Layout[] = [];
   const handleIdx: number[] = [];
 
-  // frame-budgeted batching: a warm island build is ~3ms, so several fit in
-  // one frame — yield only when the budget is spent instead of once per island
-  let frameStart = performance.now();
+  // sub-step pacing: EVERY costly unit (one island build, one gate repair,
+  // one bridge, one pier set, one shadow bake) is followed by a budget check,
+  // so no frame ever carries more than ~one unit past the 6ms budget
+  const pacer = new Pacer(6);
   for (let i = 0; i < layoutPromises.length; i++) {
     const l = await layoutPromises[i];
     if (tok !== state.token) return; // superseded while generating
@@ -137,6 +138,8 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
         const wp = buildWorld(layouts[pi], pi, ctx.scene, belowIdx.has(pi) ? 0 : 1, -1);
         wp.group.position.set(positions[pi].ox, positions[pi].oy, positions[pi].oz);
         ctx.worlds[handleIdx[pi]] = wp;
+        await pacer.tick();
+        if (tok !== state.token) return;
       }
       ensureGate(l, macro[i].dirFromParent ^ 1);
     }
@@ -187,6 +190,8 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
     const isl = ctx.walk.addIsland(l, ox, oy, oz, i);
     minX = Math.min(minX, ox - half); maxX = Math.max(maxX, ox + half);
     minZ = Math.min(minZ, oz - half); maxZ = Math.max(maxZ, oz + half);
+    await pacer.tick(); // the island build is the heaviest single step
+    if (tok !== state.token) return;
 
     // spiral stair tower joining a stacked pair — the relaxation ladder
     // guarantees one wherever the footprints share any walkable overlap
@@ -199,6 +204,8 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
         1000 + i, ctx.scene, i * 0.05,
       ));
       activeSlots.add(1000 + i);
+      await pacer.tick();
+      if (tok !== state.token) return;
     }
     if (pIdx >= 0) {
       const from = gateWorld(layouts[pIdx], positions[pIdx], macro[i].dirFromParent);
@@ -207,15 +214,17 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
         ctx.worlds.push(buildBridgeLink(from, to, 1000 + i, ctx.scene, i * 0.05));
         activeSlots.add(1000 + i);
         ctx.walk.addLink(from.clone(), to.clone(), linkArc(from.distanceTo(to)));
+        await pacer.tick();
+        if (tok !== state.token) return;
       }
     }
     // shadow bakes are a full scene render each — every 8th island is plenty
-    // (pipelines are warm after the first session compile)
-    if ((i & 7) === 7) ctx.env.bakeShadows();
-    if (performance.now() - frameStart > 24 && i < layoutPromises.length - 1) {
-      await nextFrame();
-      if (tok !== state.token) return; // superseded mid-build
-      frameStart = performance.now();
+    // (pipelines are warm after the first session compile). The bake lands in
+    // the NEXT rendered frame, so hand it a frame with an empty CPU budget.
+    if ((i & 7) === 7) {
+      ctx.env.bakeShadows();
+      await pacer.tick();
+      if (tok !== state.token) return;
     }
   }
 
@@ -230,6 +239,8 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
       3000 + i, ctx.scene, i * 0.05,
     ));
     activeSlots.add(3000 + i);
+    await pacer.tick();
+    if (tok !== state.token) return;
   }
 
   pruneSlots(activeSlots);

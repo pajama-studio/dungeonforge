@@ -11,7 +11,7 @@ import { buildWorld, buildBridgeLink, type WorldHandle, type LightSpec } from ".
 import { pruneSlots } from "../scene/slots";
 import { CELL, ISLAND_GAP, linkArc } from "../config";
 import type { Ctx } from "./context";
-import { gateWorld } from "./helpers";
+import { gateWorld, nextFrame } from "./helpers";
 
 interface StreamCell {
   key: string; mi: number; mj: number; slot: number; l: Layout;
@@ -30,6 +30,8 @@ export class EndlessWorld {
   private freeEdgeSlots: number[] = [];
   private nextEdgeSlot = 2000;
   private timer = -10;
+  /** one island build per frame — see ensureCell */
+  private buildChain: Promise<void> = Promise.resolve();
 
   constructor(private ctx: Ctx) {}
 
@@ -83,6 +85,12 @@ export class EndlessWorld {
       plazas: this.eh32(mi, mj, 0x33) % 3 === 0 ? 2 : 1,
     });
     this.pending.delete(key);
+    if (!ctx.state.endless) return;
+    // serialize builds one per frame: when the camera crosses a corner, three
+    // workers can resolve together and would stack three island builds (plus
+    // three shadow bakes) into a single frame
+    this.buildChain = this.buildChain.then(() => nextFrame());
+    await this.buildChain;
     if (!ctx.state.endless) return;
     const slot = this.freeSlots.pop() ?? this.nextSlot++;
     const pitch = this.pitch();

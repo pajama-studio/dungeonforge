@@ -33,14 +33,16 @@ export class WalkMap {
       stairDir: new Map(l.stairs.map((s) => [s.y * l.N + s.x, s.dir])),
     };
     this.islands.push(isl);
-    // the island's own ravine bridge is walkable too
+    // the island's own ravine bridge is walkable too (span along x or z)
     if (l.bridge) {
       const b = l.bridge;
-      const bz = oz + (b.y - (l.N - 1) / 2) * CELL;
+      const at = (b.at - (l.N - 1) / 2) * CELL;
+      const c0 = (b.s0 - (l.N - 1) / 2) * CELL + CELL * 0.4;
+      const c1 = (b.s1 - (l.N - 1) / 2) * CELL - CELL * 0.4;
       const by = oy + b.tier * TH + 0.1;
       this.addLink(
-        new THREE.Vector3(ox + (b.x0 - (l.N - 1) / 2) * CELL + CELL * 0.4, by, bz),
-        new THREE.Vector3(ox + (b.x1 - (l.N - 1) / 2) * CELL - CELL * 0.4, by, bz),
+        b.axis === 0 ? new THREE.Vector3(ox + c0, by, oz + at) : new THREE.Vector3(ox + at, by, oz + c0),
+        b.axis === 0 ? new THREE.Vector3(ox + c1, by, oz + at) : new THREE.Vector3(ox + at, by, oz + c1),
         0.7,
       );
     }

@@ -28,6 +28,8 @@ export async function forgeCube(ctx: Ctx): Promise<void> {
     if (c.mj > -1) { gs.push(3); gr.push(edgeRow(c.mi, c.mj - 1, c.mk, 1)); }
     return ctx.gen.generate(ch(c.mi, c.mj, c.mk, 0x77) || 1, genParams, {
       gateSides: gs, gateRows: gr, size, plazas: 1, totems: 2,
+      rot: ch(c.mi, c.mj, c.mk, 0xaa) % 4,
+      templeOn: ch(c.mi, c.mj, c.mk, 0xab) % 100 < 60,
       mound: c.mi === 0 && c.mj === 0 && c.mk === 2 ? genParams.mound : genParams.mound * 0.3,
       decay: Math.min(1, Math.max(0.1, genParams.decay + ((ch(c.mi, c.mj, c.mk, 0x88) % 100) / 100 - 0.5) * 0.5)),
     });

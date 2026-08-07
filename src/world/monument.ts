@@ -53,9 +53,13 @@ export async function forgeMonument(ctx: Ctx, kind: Monument): Promise<void> {
   const storyFor = (c: MCell) => {
     const t = L === 1 ? 1 : c.mk / (L - 1);
     const jit = ((ch(c.mi * 2, c.mj * 2, c.mk, 0x88) % 100) / 100 - 0.5) * 0.15;
+    const rot = ch(c.mi * 2, c.mj * 2, c.mk, 0xaa) % 4;
     if (kind === "ziggurat") {
       const apex = c.mk === L - 1;
       return {
+        rot,
+        // ONLY the crown carries a true temple; some base blocks keep small shrines
+        templeOn: apex || ch(c.mi * 2, c.mj * 2, c.mk, 0x92) % 100 < 35,
         decay: Math.min(1, Math.max(0.08, 0.82 - 0.68 * t + jit)),
         mound: apex ? Math.max(3.5, genParams.mound * 1.2) : 0.25,
         plazas: c.mk === 0 ? 1 : apex ? 1 : 1,
@@ -64,6 +68,8 @@ export async function forgeMonument(ctx: Ctx, kind: Monument): Promise<void> {
     }
     const lowTip = c.mk === 0, highTip = c.mk === L - 1;
     return {
+      rot,
+      templeOn: highTip || (!lowTip && ch(c.mi * 2, c.mj * 2, c.mk, 0x92) % 100 < 40),
       decay: lowTip ? 1 : highTip ? 0.06 : Math.min(1, Math.max(0.15, 0.75 - 0.55 * t + jit)),
       mound: highTip ? Math.max(3.5, genParams.mound * 1.2) : 0,
       plazas: lowTip ? 0 : highTip ? 1 : 1,

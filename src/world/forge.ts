@@ -63,10 +63,15 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   const layouts = await Promise.all(macro.map((_, i) => {
     const s = i === 0 ? seed : (h32(i, 1) || 1);
     const gateSides = [...gateSets[i]];
-    if (i === 0) return ctx.gen.generate(seed, genParams, { gateSides });
+    if (i === 0) return ctx.gen.generate(seed, genParams, { gateSides, rot: h32(0, 61) % 4 });
     const v = (n: number) => h32(i, n + 40) % 1000 / 1000;
     return ctx.gen.generate(s, genParams, {
       gateSides,
+      // orientation & structure variety: each satellite faces its own way,
+      // ~half go temple-less, a quarter go ravine-less
+      rot: h32(i, 61) % 4,
+      templeOn: v(8) < 0.55,
+      ravineOn: v(9) < 0.75,
       size: [9, 11, 13][h32(i, 50) % 3] | 1,
       plazas: h32(i, 51) % 3 === 0 ? 0 : 1,
       totems: h32(i, 52) % 4,

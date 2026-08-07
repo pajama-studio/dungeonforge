@@ -11,6 +11,10 @@ export const COURSE = TH / 2;
 export const BRIDGE_SPAN = 3.2 * CELL;
 /** world units of abyss between linked blocks */
 export const ISLAND_GAP = 15;
+/** mid-span RISE of the stone arch bridges linking blocks — one function
+ *  shared by the bridge mesh, the walkmap ground sampler and nav tracing,
+ *  so the drawn deck IS the surface the walker stands on */
+export const linkArc = (dist: number): number => Math.min(1.5, dist * 0.055);
 
 /** FIXED global light pool size: three's WebGPU forward path recompiles every
  *  pipeline whenever the scene's light count changes — so the count never does. */

@@ -14,7 +14,9 @@ export interface IslandWalk {
   l: Layout; ox: number; oy: number; oz: number; slot: number;
   stairDir: Map<number, number>;
 }
-export interface LinkWalk { a: THREE.Vector3; b: THREE.Vector3; sag: number }
+/** `arc` is the SIGNED mid-span lift: stone arch bridges rise (+), the
+ *  islands' internal rope bridges still sag (−) */
+export interface LinkWalk { a: THREE.Vector3; b: THREE.Vector3; arc: number }
 
 export class WalkMap {
   readonly islands: IslandWalk[] = [];
@@ -43,14 +45,14 @@ export class WalkMap {
       this.addLink(
         b.axis === 0 ? new THREE.Vector3(ox + c0, by, oz + at) : new THREE.Vector3(ox + at, by, oz + c0),
         b.axis === 0 ? new THREE.Vector3(ox + c1, by, oz + at) : new THREE.Vector3(ox + at, by, oz + c1),
-        0.7,
+        -0.7,
       );
     }
     return isl;
   }
 
-  addLink(a: THREE.Vector3, b: THREE.Vector3, sag: number): void {
-    this.links.push({ a, b, sag });
+  addLink(a: THREE.Vector3, b: THREE.Vector3, arc: number): void {
+    this.links.push({ a, b, arc });
   }
 
   /** stacked layers overlap in xz — candidates are ranked by |y - refY| so the
@@ -103,7 +105,7 @@ export class WalkMap {
       if (t < 0 || t > 1) continue;
       const px = lk.a.x + abx * t, pz = lk.a.z + abz * t;
       if (Math.hypot(x - px, z - pz) > 1.1) continue;
-      return { y: lk.a.y + (lk.b.y - lk.a.y) * t - Math.sin(t * Math.PI) * lk.sag + 0.05, ok: true };
+      return { y: lk.a.y + (lk.b.y - lk.a.y) * t + Math.sin(t * Math.PI) * lk.arc + 0.05, ok: true };
     }
     return { y: 0, ok: false };
   };

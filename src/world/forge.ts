@@ -3,11 +3,11 @@
 
 import type * as THREE from "three/webgpu";
 import type { Layout } from "../gen/dungeon";
-import { buildWorld, buildBridgeLink, type LightSpec } from "../scene/build";
+import { buildWorld, buildBridgeLink, buildSupportPiers, type LightSpec } from "../scene/build";
 import { pruneSlots } from "../scene/slots";
-import { TH, CELL, ISLAND_GAP, PR_BASE, PR_LARGE } from "../config";
+import { TH, CELL, ISLAND_GAP, PR_BASE, PR_LARGE, linkArc } from "../config";
 import type { Ctx } from "./context";
-import { gateWorld, linkSag, findShaftAnyhow, ensureGate, nextFrame } from "./helpers";
+import { gateWorld, findShaftAnyhow, ensureGate, nextFrame } from "./helpers";
 
 export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   if (ctx.state.endless) return; // roaming owns the world in endless mode
@@ -182,6 +182,12 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
     if (pIdx >= 0 && macro[i].dirFromParent === 4) {
       const shaft = findShaftAnyhow(ctx.walk.islands[pIdx], isl);
       if (shaft) ctx.stairs.build(shaft.x, shaft.z, shaft.y0, shaft.y1);
+      // masonry piers so the stacked block is CARRIED, not levitating
+      ctx.worlds.push(buildSupportPiers(
+        { l: layouts[pIdx], ...positions[pIdx] }, { l, ...positions[i] },
+        1000 + i, ctx.scene, i * 0.05,
+      ));
+      activeSlots.add(1000 + i);
     }
     if (pIdx >= 0) {
       const from = gateWorld(layouts[pIdx], positions[pIdx], macro[i].dirFromParent);
@@ -189,7 +195,7 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
       if (from && to) {
         ctx.worlds.push(buildBridgeLink(from, to, 1000 + i, ctx.scene, i * 0.05));
         activeSlots.add(1000 + i);
-        ctx.walk.addLink(from.clone(), to.clone(), linkSag(from.distanceTo(to)));
+        ctx.walk.addLink(from.clone(), to.clone(), linkArc(from.distanceTo(to)));
       }
     }
     // shadow bakes are a full scene render each — every 8th island is plenty

@@ -14,11 +14,11 @@
 // Both reuse the whole kit: worker-pool generation, slot pools, in-layer rope
 // bridges at agreed gate rows, spiral stair shafts through the layer overlaps.
 
-import { buildWorld, buildBridgeLink, type LightSpec } from "../scene/build";
+import { buildWorld, buildBridgeLink, buildSupportPiers, type LightSpec } from "../scene/build";
 import { pruneSlots } from "../scene/slots";
-import { CELL, ISLAND_GAP, PR_LARGE, TH } from "../config";
+import { CELL, ISLAND_GAP, PR_LARGE, TH, linkArc } from "../config";
 import type { Ctx } from "./context";
-import { gateWorld, linkSag, findShaftAnyhow, nextFrame } from "./helpers";
+import { gateWorld, findShaftAnyhow, nextFrame } from "./helpers";
 
 export type Monument = "ziggurat" | "reliquary";
 
@@ -132,19 +132,26 @@ export async function forgeMonument(ctx: Ctx, kind: Monument): Promise<void> {
       if (!from || !to) continue;
       ctx.worlds.push(buildBridgeLink(from, to, edgeSlot, ctx.scene));
       activeSlots.add(edgeSlot++);
-      ctx.walk.addLink(from.clone(), to.clone(), linkSag(from.distanceTo(to)));
+      ctx.walk.addLink(from.clone(), to.clone(), linkArc(from.distanceTo(to)));
     }
     // spiral stair shaft down through the layer-overlap: each block above the
-    // base tries its (up to four) supporting neighbors until a shaft fits
+    // base tries its (up to four) supporting neighbors until a shaft fits.
+    // Every supporting neighbor also gets masonry piers under its quadrant of
+    // the overlap — upper terraces must read as CARRIED, not floating.
     if (c.mk > 0) {
       const below: number[] = [];
       for (const [si, sj] of [[-0.5, -0.5], [0.5, -0.5], [-0.5, 0.5], [0.5, 0.5], [0, 0]] as const) {
         const j = at(c.mi + si, c.mj + sj, c.mk - 1);
         if (j >= 0) below.push(j);
       }
+      let stairDone = false;
       for (const j of below) {
-        const shaft = findShaftAnyhow(ctx.walk.islands[j], ctx.walk.islands[i]);
-        if (shaft) { ctx.stairs.build(shaft.x, shaft.z, shaft.y0, shaft.y1); break; }
+        if (!stairDone) {
+          const shaft = findShaftAnyhow(ctx.walk.islands[j], ctx.walk.islands[i]);
+          if (shaft) { ctx.stairs.build(shaft.x, shaft.z, shaft.y0, shaft.y1); stairDone = true; }
+        }
+        ctx.worlds.push(buildSupportPiers(ctx.walk.islands[j], ctx.walk.islands[i], edgeSlot, ctx.scene));
+        activeSlots.add(edgeSlot++);
       }
     }
   }

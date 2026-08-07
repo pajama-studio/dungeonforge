@@ -9,9 +9,9 @@ import type * as THREE from "three/webgpu";
 import type { Layout } from "../gen/dungeon";
 import { buildWorld, buildBridgeLink, type WorldHandle, type LightSpec } from "../scene/build";
 import { pruneSlots } from "../scene/slots";
-import { CELL, ISLAND_GAP } from "../config";
+import { CELL, ISLAND_GAP, linkArc } from "../config";
 import type { Ctx } from "./context";
-import { gateWorld, linkSag } from "./helpers";
+import { gateWorld } from "./helpers";
 
 interface StreamCell {
   key: string; mi: number; mj: number; slot: number; l: Layout;
@@ -130,7 +130,7 @@ export class EndlessWorld {
           this.edgeHandles.set(eKey, h);
         }
         ctx.worlds.push(h);
-        ctx.walk.addLink(from.clone(), to.clone(), linkSag(from.distanceTo(to)));
+        ctx.walk.addLink(from.clone(), to.clone(), linkArc(from.distanceTo(to)));
       }
     }
     for (const [k, slot] of this.edgeSlotMap) {

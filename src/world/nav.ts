@@ -163,10 +163,10 @@ export class NavMesh {
       if (step?.via) {
         const via = step.via;
         if (via.kind === "link" && via.link) {
-          const { a, b, sag } = via.link;
+          const { a, b, arc } = via.link;
           for (const tt of [0.75, 0.5, 0.25]) {
             const p = a.clone().lerp(b, tt);
-            p.y -= Math.sin(tt * Math.PI) * sag - 0.45;
+            p.y += Math.sin(tt * Math.PI) * arc + 0.45;
             pts.push(p);
           }
         } else if (via.kind === "stair" && via.tower) {

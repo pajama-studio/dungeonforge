@@ -16,8 +16,11 @@ await new Promise((resolve, reject) => {
 });
 let nextId = 0;
 const pending = new Map();
+let pageLoadResolve = null;
 ws.addEventListener("message", ({ data }) => {
-  const message = JSON.parse(data), job = pending.get(message.id);
+  const message = JSON.parse(data);
+  if (message.method === "Page.loadEventFired") { pageLoadResolve?.(); return; }
+  const job = pending.get(message.id);
   if (!job) return;
   pending.delete(message.id);
   message.error ? job.reject(new Error(message.error.message)) : job.resolve(message.result);
@@ -29,7 +32,13 @@ const call = (method, params = {}) => new Promise((resolve, reject) => {
 });
 
 await call("Page.enable");
+const pageLoaded = new Promise((resolve) => { pageLoadResolve = resolve; });
 await call("Page.reload", { ignoreCache: true });
+await Promise.race([
+  pageLoaded,
+  new Promise((_, reject) => setTimeout(() => reject(new Error("Page reload timed out")), 15000)),
+]);
+pageLoadResolve = null;
 const result = await call("Runtime.evaluate", {
   expression: `(async()=>{
     const sleep=(ms)=>new Promise(resolve=>setTimeout(resolve,ms));

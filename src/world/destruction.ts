@@ -4,17 +4,19 @@
 
 import * as THREE from "three/webgpu";
 import {
-  Fn, If, color, hash, instanceIndex, instancedArray, positionGeometry,
-  step, uniform, vec3,
+  Fn, If, hash, instanceIndex, instancedArray,
+  smoothstep, step, uniform, vec2, vec3,
 } from "three/tsl";
 import { CELL, COURSE, TH } from "../config";
 import { FLOOR } from "../gen/dungeon";
+import type { GroundSampler } from "../player/player";
 import { getKit } from "../scene/kit";
+import { makeStoneMat } from "../scene/kit/materials";
 import { masonryMeshes } from "../scene/slots";
 import type { MasonryBreachCell, MasonryStructureData } from "../scene/build";
 
 const DEBRIS_CAPACITY = 768;
-const FRAGMENTS_PER_HIT = 8;
+const FRAGMENTS_PER_HIT = 10;
 const BREACH_CAPACITY = 96;
 const PARK_Y = -1800;
 
@@ -25,6 +27,10 @@ interface DestructionStats {
   breaches: number;
   computeFrames: number;
   lastRaycastMs: number;
+  inheritedColors: number;
+  commandCommits: number;
+  uploadedCommandBytes: number;
+  fullUploadEquivalentBytes: number;
 }
 
 const _local = new THREE.Matrix4();
@@ -38,9 +44,19 @@ const _normal = new THREE.Vector3();
 const _axisX = new THREE.Vector3();
 const _axisY = new THREE.Vector3();
 const _axisZ = new THREE.Vector3();
-const _color = new THREE.Color();
 const _patchColor = new THREE.Color(0.44, 0.39, 0.31);
+const _sourceColor = new THREE.Color(1, 1, 1);
 const _groundPoint = new THREE.Vector3();
+const _shardPosition = new THREE.Vector3();
+const _shardSide = new THREE.Vector3();
+const _shardVelocity = new THREE.Vector3();
+const _shardScale = new THREE.Vector3();
+const _shardRotation = new THREE.Vector3();
+
+const GROUND_PROBES = [
+  [0, 0], [0.72, 0], [-0.72, 0], [0, 0.72], [0, -0.72],
+  [0.72, 0.72], [0.72, -0.72], [-0.72, 0.72], [-0.72, -0.72],
+] as const;
 
 function fract(v: number): number { return v - Math.floor(v); }
 function noise(seed: number): number { return fract(Math.sin(seed * 12.9898 + 78.233) * 43758.5453); }
@@ -50,7 +66,8 @@ export class GpuDestruction {
   readonly breachMesh: THREE.InstancedMesh;
   readonly stats: DestructionStats = {
     impacts: 0, spawned: 0, capacity: DEBRIS_CAPACITY, breaches: 0,
-    computeFrames: 0, lastRaycastMs: 0,
+    computeFrames: 0, lastRaycastMs: 0, inheritedColors: 0, commandCommits: 0,
+    uploadedCommandBytes: 0, fullUploadEquivalentBytes: 0,
   };
 
   enabled = false;
@@ -76,13 +93,19 @@ export class GpuDestruction {
   private version = 0;
   private breachCursor = 0;
   private activeUntil = 0;
+  private batchStart = 0;
+  private batchCount = 0;
+  private warmupPromise: Promise<void> | null = null;
 
   constructor(
     private readonly scene: THREE.Scene,
     private readonly camera: THREE.Camera,
     private readonly renderer: THREE.WebGPURenderer,
     private readonly canvas: HTMLCanvasElement,
+    private readonly sampleGround: GroundSampler,
     private readonly onTopologyChanged: () => void,
+    private readonly onMasonryHit: (slot: number) => void,
+    private readonly renderWarmFrame: () => void,
   ) {
     const makeState = () => {
       const data = new Float32Array(DEBRIS_CAPACITY * 4);
@@ -90,8 +113,8 @@ export class GpuDestruction {
       return instancedArray(data, "vec4");
     };
     this.statePosition = makeState();       // xyz position, w lifetime
-    this.stateVelocity = instancedArray(DEBRIS_CAPACITY, "vec4"); // xyz velocity, w ground
-    this.stateRotation = instancedArray(DEBRIS_CAPACITY, "vec4"); // xyz euler, w stone tone
+    this.stateVelocity = instancedArray(DEBRIS_CAPACITY, "vec4"); // xyz velocity, w contact height
+    this.stateRotation = instancedArray(DEBRIS_CAPACITY, "vec4"); // xyz euler, w packed patch xz
     this.stateScale = instancedArray(DEBRIS_CAPACITY, "vec4");    // xyz size, w command version
     this.spawnPosition = instancedArray(DEBRIS_CAPACITY, "vec4");
     this.spawnVelocity = instancedArray(DEBRIS_CAPACITY, "vec4");
@@ -121,21 +144,53 @@ export class GpuDestruction {
         r.assign(spawnRotation.element(instanceIndex));
         s.assign(spawnS);
       }).ElseIf(p.w.greaterThan(0), () => {
-        v.y.subAssign(dt.mul(19.5));
-        p.xyz.addAssign(v.xyz.mul(dt));
-        // A stable per-slot angular vector removes another writable buffer.
-        const spin = hash(instanceIndex.toFloat().add(0.37)).mul(2).add(0.55);
-        r.xyz.addAssign(vec3(spin.mul(1.7), spin.mul(2.3), spin.mul(1.1)).mul(dt));
-        v.xz.mulAssign(dt.mul(-0.35).exp());
+        const floorY = v.w;
+        // Two signed 12-bit quarter-unit coordinates share r.w exactly inside
+        // float32's integer mantissa. This preserves the original eight-buffer
+        // bind layout (the WebGPU minimum per-stage storage-buffer limit) while
+        // still retaining a finite collision neighbourhood per fragment.
+        const patchZCode = r.w.div(4096).floor();
+        const patchXCode = r.w.sub(patchZCode.mul(4096));
+        const patchCenter = vec2(patchXCode.sub(2048), patchZCode.sub(2048)).mul(0.25);
+        const patchDistance = p.xz.sub(patchCenter).length();
+        // The former infinite height plane caught fragments over an abyss and
+        // made high wall courses hover. Only a small real floor neighbourhood
+        // now supports the shard; outside it gravity continues unimpeded.
+        const overGround = step(patchDistance, CELL * 1.55);
+        const moving = step(0.18, v.xyz.length());
+        const grounded = step(p.y, floorY.add(0.003)).mul(overGround);
+        // Test sleep before gravity so a settled piece is not woken by -g*dt.
+        If(grounded.mul(moving.oneMinus()).greaterThan(0.5), () => {
+          p.y.assign(floorY);
+          v.xyz.assign(vec3(0));
+        }).Else(() => {
+          v.y.subAssign(dt.mul(19.5));
+          p.xyz.addAssign(v.xyz.mul(dt));
+          // Signed per-piece tumble with translation-to-roll coupling. Rotation
+          // is integrated in-place; its speed decays with linear collision
+          // energy and reaches the same stable sleep state as translation.
+          const id = instanceIndex.toFloat();
+          const spin = vec3(
+            hash(id.add(0.37)).mul(7.6).sub(3.8).add(v.z.mul(0.42)),
+            hash(id.add(2.71)).mul(9.2).sub(4.6),
+            hash(id.add(6.13)).mul(6.8).sub(3.4).sub(v.x.mul(0.42)),
+          );
+          r.xyz.addAssign(spin.mul(dt).mul(moving));
+          v.xz.mulAssign(dt.mul(-0.28).exp());
 
-        If(p.y.lessThan(v.w), () => {
-          p.y.assign(v.w);
-          If(v.y.lessThan(-0.5), () => {
-            v.y.assign(v.y.negate().mul(0.36));
-          }).Else(() => {
-            v.y.assign(0);
+          If(overGround.greaterThan(0.5), () => {
+            If(p.y.lessThan(floorY), () => {
+              p.y.assign(floorY);
+              If(v.y.lessThan(-0.48), () => {
+                v.y.assign(v.y.negate().mul(0.34));
+              }).Else(() => {
+                v.y.assign(0);
+              });
+              // Coulomb-like ground loss plus a little translation-to-roll
+              // coupling makes flat flakes skid, turn, and then genuinely rest.
+              v.xz.mulAssign(0.62);
+            });
           });
-          v.xz.mulAssign(0.7);
         });
 
         p.w.subAssign(dt);
@@ -147,24 +202,41 @@ export class GpuDestruction {
       });
     })().compute(DEBRIS_CAPACITY);
 
-    const material = new THREE.MeshBasicNodeMaterial({ vertexColors: true });
     const p = this.statePosition.toAttribute();
     const r = this.stateRotation.toAttribute();
     const s = this.stateScale.toAttribute();
-    const alive = step(0.001, p.w);
-    let q = positionGeometry.mul(s.xyz).mul(alive);
-    const cx = r.x.cos(), sx = r.x.sin();
-    q = vec3(q.x, q.y.mul(cx).sub(q.z.mul(sx)), q.y.mul(sx).add(q.z.mul(cx)));
-    const cy = r.y.cos(), sy = r.y.sin();
-    q = vec3(q.x.mul(cy).add(q.z.mul(sy)), q.y, q.z.mul(cy).sub(q.x.mul(sy)));
-    const cz = r.z.cos(), sz = r.z.sin();
-    q = vec3(q.x.mul(cz).sub(q.y.mul(sz)), q.x.mul(sz).add(q.y.mul(cz)), q.z);
-    material.positionNode = q.add(p.xyz);
-    material.colorNode = color(0xa89168)
-      .mul(hash(instanceIndex.toFloat().add(4.7)).mul(0.18).add(0.82))
-      .mul(r.w);
+    // Shrink through the floor over the final 0.28 s rather than popping.
+    const alive = smoothstep(0, 0.28, p.w);
+    // TSL's generated swizzle type loses its scalar component inference after
+    // repeated vec3 reassignment; keep this local expression opaque just like
+    // the compute node above (runtime node shape remains strongly defined).
+    const rotate = (source: any): any => {
+      let q: any = source;
+      const cx = r.x.cos(), sx = r.x.sin();
+      q = vec3(q.x, q.y.mul(cx).sub(q.z.mul(sx)), q.y.mul(sx).add(q.z.mul(cx)));
+      const cy = r.y.cos(), sy = r.y.sin();
+      q = vec3(q.x.mul(cy).add(q.z.mul(sy)), q.y, q.z.mul(cy).sub(q.x.mul(sy)));
+      const cz = r.z.cos(), sz = r.z.sin();
+      return vec3(q.x.mul(cz).sub(q.y.mul(sz)), q.x.mul(sz).add(q.y.mul(cz)), q.z);
+    };
+    const material = makeStoneMat({
+      // Use the authored chipped brick position as the fracture source, then
+      // apply the GPU simulation's scale/tumble/translation.
+      position: (local) => rotate(local.mul(s.xyz).mul(alive)).add(p.xyz),
+      // Non-uniform shard scale needs inverse-scale normal correction before
+      // the same Euler rotation or Lambert highlights visibly stay behind.
+      normal: (local) => rotate(local.div(s.xyz.max(vec3(0.001)))).normalize(),
+    });
+    material.name = "gpu-debris-authored-stone";
 
-    this.mesh = new THREE.InstancedMesh(getKit().blockGeoLo, material, DEBRIS_CAPACITY);
+    this.mesh = new THREE.InstancedMesh(getKit().debrisGeo, material, DEBRIS_CAPACITY);
+    // Allocate the final capacity up front. Growing this attribute after the
+    // WebGPU render object exists reproduces the stale binding / undersized
+    // buffer validation failure that previously broke regeneration.
+    this.mesh.instanceColor = new THREE.InstancedBufferAttribute(
+      new Float32Array(DEBRIS_CAPACITY * 3).fill(1), 3,
+    );
+    this.mesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
     this.mesh.name = "gpu-masonry-debris";
     this.mesh.count = DEBRIS_CAPACITY;
     this.mesh.frustumCulled = false;
@@ -199,10 +271,31 @@ export class GpuDestruction {
     return this.enabled;
   }
 
-  /** Compile the compute pipeline before the loading veil lifts. */
+  /** Idempotently compile the optional compute pipeline on first demand. */
   async warmup(): Promise<void> {
-    this.dtNode.value = 0;
-    await this.renderer.computeAsync(this.computeNode);
+    this.warmupPromise ??= (async () => {
+      this.dtNode.value = 0;
+      await this.renderer.computeAsync(this.computeNode);
+
+      // PostProcessing's scene pass owns a different render context from a
+      // plain renderer.compileAsync(scene, camera). Measured on the target
+      // WebGPU backend, the latter spent 332 ms arming yet still left a 126 ms
+      // first-fragment hitch. Submit one real post frame while every shard is
+      // parked below the world: it compiles the exact pipeline with no visual
+      // debris and moves that one-time work behind the explicit arming state.
+      const oldVisible = this.mesh.visible;
+      this.mesh.visible = true;
+      try {
+        this.renderWarmFrame();
+        const queue = (this.renderer.backend as unknown as {
+          device?: { queue?: { onSubmittedWorkDone?: () => Promise<void> } };
+        }).device?.queue;
+        await (queue?.onSubmittedWorkDone?.() ?? Promise.resolve());
+      } finally {
+        this.mesh.visible = oldVisible;
+      }
+    })();
+    await this.warmupPromise;
   }
 
   tick(dt: number): void {
@@ -225,6 +318,7 @@ export class GpuDestruction {
     this.cursor = 0;
     this.breachCursor = 0;
     this.activeUntil = 0;
+    this.batchCount = 0;
     this.mesh.visible = false;
     this.breachMesh.count = 0;
     this.breachMesh.visible = false;
@@ -238,6 +332,13 @@ export class GpuDestruction {
       pos[i * 4 + 3] = 0;
       scale[i * 4 + 3] = version;
     }
+    // Expiration rewrites every command slot. Remove any not-yet-consumed
+    // partial ranges so WebGPU performs the intended full upload on reset.
+    this.spawnPosition.value.clearUpdateRanges();
+    this.spawnVelocity.value.clearUpdateRanges();
+    this.spawnRotation.value.clearUpdateRanges();
+    this.spawnScale.value.clearUpdateRanges();
+    this.mesh.instanceColor!.clearUpdateRanges();
     this.spawnPosition.value.needsUpdate = true;
     this.spawnScale.value.needsUpdate = true;
   }
@@ -281,6 +382,9 @@ export class GpuDestruction {
             });
           }
         }
+        // The direct hit and all auto-collapsed companion courses are one GPU
+        // command transaction, so they share one set of partial uploads.
+        this.commitSpawnBatch();
         this.stats.lastRaycastMs = performance.now() - start;
         return true;
       }
@@ -301,8 +405,8 @@ export class GpuDestruction {
     _world.multiplyMatrices(mesh.matrixWorld, _local);
     _world.decompose(_position, _quaternion, _scale);
     _rotation.setFromQuaternion(_quaternion, "XYZ");
-    mesh.getColorAt(instanceId, _color);
-
+    if (mesh.instanceColor) mesh.getColorAt(instanceId, _sourceColor);
+    else _sourceColor.setRGB(1, 1, 1);
     _normal.copy(hit.face?.normal ?? new THREE.Vector3(0, 1, 0)).transformDirection(_world);
     if (_normal.dot(this.raycaster.ray.direction) > 0) _normal.negate();
     _axisX.set(1, 0, 0).applyQuaternion(_quaternion);
@@ -312,50 +416,90 @@ export class GpuDestruction {
     let gone = this.destroyed.get(mesh);
     if (!gone) { gone = new Set(); this.destroyed.set(mesh, gone); }
     gone.add(instanceId);
+    const slot = (mesh.parent?.userData as { slot?: number } | undefined)?.slot;
+    if (slot !== undefined) this.onMasonryHit(slot);
     mesh.setMatrixAt(instanceId, _hidden);
     mesh.instanceMatrix.needsUpdate = true; // shared by high/low/faded twins
+    const structure = (mesh.userData as { masonry?: MasonryStructureData }).masonry;
 
     // Quantize in ISLAND-LOCAL height, then transform back to world. Using a
     // global TH grid made debris hover or sink on islands with a random oy.
-    const localGroundY = Math.floor((localCourseY + 0.12) / TH) * TH + COURSE * 0.22;
-    const groundY = _groundPoint.set(0, localGroundY, 0).applyMatrix4(mesh.matrixWorld).y;
-    const tone = Math.max(0.62, Math.min(1.25, (_color.r + _color.g + _color.b) / 1.65));
+    this.resolveGroundPatch(mesh, localCourseY);
     const impactSeed = (++this.stats.impacts * 131 + instanceId * 17) >>> 0;
     for (let i = 0; i < FRAGMENTS_PER_HIT; i++) {
       const nx = noise(impactSeed + i * 7) - 0.5;
       const ny = noise(impactSeed + i * 11 + 1) - 0.35;
       const nz = noise(impactSeed + i * 17 + 2) - 0.5;
-      const shardPos = _position.clone()
+      const shardPos = _shardPosition.copy(_position)
         .addScaledVector(_axisX, nx * _scale.x * 1.2)
         .addScaledVector(_axisY, ny * _scale.y * 0.7)
         .addScaledVector(_axisZ, nz * _scale.z * 1.2);
-      const side = new THREE.Vector3(nx, Math.abs(ny) + 0.22, nz).normalize();
-      const velocity = _normal.clone().multiplyScalar(2.8 + noise(impactSeed + i * 23) * 4.5)
+      const side = _shardSide.set(nx, Math.abs(ny) + 0.22, nz).normalize();
+      // One readable core, four middle flakes and five quick chips. Capacity,
+      // geometry and draw count stay fixed; only the per-impact command mix
+      // changes, so breakage gains scale detail without raising GPU budget.
+      const classBase = i < 1 ? 0.30 : i < 5 ? 0.15 : 0.07;
+      const classRange = i < 1 ? 0.11 : i < 5 ? 0.10 : 0.075;
+      const speedBoost = i < 1 ? 0.74 : i < 5 ? 1 : 1.34;
+      const velocity = _shardVelocity.copy(_normal).multiplyScalar((2.8 + noise(impactSeed + i * 23) * 4.5) * speedBoost)
         .addScaledVector(side, 2.5 + noise(impactSeed + i * 31) * 4.0);
-      const shardScale = new THREE.Vector3(
-        Math.min(1.7, _scale.x) * (0.22 + noise(impactSeed + i * 37) * 0.2),
-        Math.min(1.7, _scale.y) * (0.28 + noise(impactSeed + i * 41) * 0.22),
-        Math.min(1.7, _scale.z) * (0.22 + noise(impactSeed + i * 43) * 0.2),
+      const thinX = i >= 5 && (i & 1) === 0 ? 0.36 : 1;
+      const thinZ = i >= 5 && (i & 1) === 1 ? 0.36 : 1;
+      const shardScale = _shardScale.set(
+        Math.min(1.7, _scale.x) * (classBase + noise(impactSeed + i * 37) * classRange) * thinX,
+        Math.min(1.7, _scale.y) * (classBase * 1.15 + noise(impactSeed + i * 41) * classRange),
+        Math.min(1.7, _scale.z) * (classBase + noise(impactSeed + i * 43) * classRange) * thinZ,
       );
       this.spawn(
-        shardPos, velocity, groundY,
-        new THREE.Vector3(
+        shardPos, velocity, _groundPoint,
+        _shardRotation.set(
           _rotation.x + nx * 1.8,
           _rotation.y + ny * 1.8,
           _rotation.z + nz * 1.8,
         ),
         shardScale,
-        tone * (0.88 + noise(impactSeed + i * 47) * 0.2),
-        5.5 + noise(impactSeed + i * 53) * 3.0,
+        (i < 1 ? 8.0 : i < 5 ? 5.0 : 2.4) + noise(impactSeed + i * 53) * 1.8,
+        _sourceColor,
       );
     }
-
-    const structure = (mesh.userData as { masonry?: MasonryStructureData }).masonry;
     const breach = structure?.byInstance.get(instanceId);
     if (breach && !breach.opened) {
       breach.destroyed.add(instanceId);
       if (breach.required.every((id) => breach.destroyed.has(id))) this.openBreach(mesh, breach);
     }
+  }
+
+  /** Find the nearest actual walkable surface below the struck course. The
+   * center probe is usually solid (it is the wall being broken), so the ring
+   * reaches adjacent corridor cells. This is O(9) only per impact, never per
+   * frame or per fragment. */
+  private resolveGroundPatch(mesh: THREE.InstancedMesh, localCourseY: number): void {
+    let bestScore = Infinity;
+    let bestX = _position.x, bestY = 0, bestZ = _position.z;
+    for (const [ox, oz] of GROUND_PROBES) {
+      const x = _position.x + ox * CELL;
+      const z = _position.z + oz * CELL;
+      const hit = this.sampleGround(x, z, _position.y);
+      if (!hit.ok) continue;
+      const drop = _position.y - hit.y;
+      if (drop < -0.28 || drop > TH * 5) continue;
+      const score = Math.max(0, drop) + Math.hypot(ox, oz) * 0.08;
+      if (score < bestScore) {
+        bestScore = score;
+        bestX = x; bestY = hit.y; bestZ = z;
+      }
+    }
+    if (bestScore < Infinity) {
+      _groundPoint.set(bestX, bestY, bestZ);
+      return;
+    }
+    // Defensive fallback for decorative masonry with no registered WalkMap.
+    // It remains finite in XZ, so it cannot create the former invisible shelf
+    // across the void even when its height has to be estimated.
+    const localGroundY = Math.floor((localCourseY + 0.12) / TH) * TH + 0.16;
+    _groundPoint.set(0, localGroundY, 0).applyMatrix4(mesh.matrixWorld);
+    _groundPoint.x = _position.x;
+    _groundPoint.z = _position.z;
   }
 
   private openBreach(mesh: THREE.InstancedMesh, breach: MasonryBreachCell): void {
@@ -389,27 +533,81 @@ export class GpuDestruction {
   private spawn(
     position: THREE.Vector3,
     velocity: THREE.Vector3,
-    ground: number,
+    ground: THREE.Vector3,
     rotation: THREE.Vector3,
     scale: THREE.Vector3,
-    tone: number,
     life: number,
+    sourceColor: THREE.Color,
   ): void {
     const i = this.cursor;
+    if (this.batchCount === 0) this.batchStart = i;
+    this.batchCount++;
     this.cursor = (this.cursor + 1) % DEBRIS_CAPACITY;
     const version = ++this.version;
     const o = i * 4;
-    (this.spawnPosition.value.array as Float32Array).set([position.x, position.y, position.z, life], o);
-    (this.spawnVelocity.value.array as Float32Array).set([velocity.x, velocity.y, velocity.z, ground], o);
-    (this.spawnRotation.value.array as Float32Array).set([rotation.x, rotation.y, rotation.z, tone], o);
-    (this.spawnScale.value.array as Float32Array).set([scale.x, scale.y, scale.z, version], o);
+    const positions = this.spawnPosition.value.array as Float32Array;
+    positions[o] = position.x;
+    positions[o + 1] = position.y;
+    positions[o + 2] = position.z;
+    positions[o + 3] = life;
+    // Approximate the rotating convex shard with a compact contact sphere.
+    // The old center-on-plane collision buried half of every fragment.
+    const contactRadius = Math.max(0.055, Math.min(0.46,
+      Math.max(COURSE * scale.y * 0.5, CELL * Math.max(scale.x, scale.z) * 0.18),
+    ));
+    const patchX = Math.max(0, Math.min(4095, Math.round(ground.x * 4) + 2048));
+    const patchZ = Math.max(0, Math.min(4095, Math.round(ground.z * 4) + 2048));
+    const packedPatch = patchX + patchZ * 4096;
+    const velocities = this.spawnVelocity.value.array as Float32Array;
+    velocities[o] = velocity.x;
+    velocities[o + 1] = velocity.y;
+    velocities[o + 2] = velocity.z;
+    velocities[o + 3] = ground.y + contactRadius;
+    const rotations = this.spawnRotation.value.array as Float32Array;
+    rotations[o] = rotation.x;
+    rotations[o + 1] = rotation.y;
+    rotations[o + 2] = rotation.z;
+    rotations[o + 3] = packedPatch;
+    const scales = this.spawnScale.value.array as Float32Array;
+    scales[o] = scale.x;
+    scales[o + 1] = scale.y;
+    scales[o + 2] = scale.z;
+    scales[o + 3] = version;
+    const colorOffset = i * 3;
+    const colors = this.mesh.instanceColor!.array as Float32Array;
+    colors[colorOffset] = sourceColor.r;
+    colors[colorOffset + 1] = sourceColor.g;
+    colors[colorOffset + 2] = sourceColor.b;
+    this.stats.spawned++;
+    this.stats.inheritedColors++;
+    this.activeUntil = Math.max(this.activeUntil, performance.now() + life * 1000 + 250);
+  }
+
+  private commitSpawnBatch(): void {
+    if (this.batchCount === 0) return;
+    const addWrappedRange = (attribute: THREE.BufferAttribute, itemSize: number): void => {
+      const firstCount = Math.min(this.batchCount, DEBRIS_CAPACITY - this.batchStart);
+      const wrappedCount = this.batchCount - firstCount;
+      // Keep ranges sorted for WebGPUBindingUtils' contiguous merge path.
+      if (wrappedCount > 0) attribute.addUpdateRange(0, wrappedCount * itemSize);
+      attribute.addUpdateRange(this.batchStart * itemSize, firstCount * itemSize);
+    };
+    addWrappedRange(this.spawnPosition.value, 4);
+    addWrappedRange(this.spawnVelocity.value, 4);
+    addWrappedRange(this.spawnRotation.value, 4);
+    addWrappedRange(this.spawnScale.value, 4);
+    addWrappedRange(this.mesh.instanceColor!, 3);
     this.spawnPosition.value.needsUpdate = true;
     this.spawnVelocity.value.needsUpdate = true;
     this.spawnRotation.value.needsUpdate = true;
     this.spawnScale.value.needsUpdate = true;
-    this.stats.spawned++;
-    this.activeUntil = Math.max(this.activeUntil, performance.now() + life * 1000 + 250);
+    this.mesh.instanceColor!.needsUpdate = true;
     this.mesh.visible = true;
+    this.stats.commandCommits++;
+    // Four vec4 command buffers plus one RGB instance color.
+    this.stats.uploadedCommandBytes += this.batchCount * (4 * 4 * 4 + 3 * 4);
+    this.stats.fullUploadEquivalentBytes += DEBRIS_CAPACITY * (4 * 4 * 4 + 3 * 4);
+    this.batchCount = 0;
   }
 
   private readonly onPointerDown = (event: PointerEvent): void => {

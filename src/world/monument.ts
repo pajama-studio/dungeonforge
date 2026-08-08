@@ -15,7 +15,7 @@
 // bridges at agreed gate rows, spiral stair shafts through the layer overlaps.
 
 import { buildWorld, buildBridgeLink, buildSupportPiers, type LightSpec } from "../scene/build";
-import type { VerticalAnchor } from "../gen/dungeon";
+import { FOOTPRINT_KINDS, type VerticalAnchor } from "../gen/dungeon";
 import { pruneSlots } from "../scene/slots";
 import { CELL, ISLAND_GAP, PR_LARGE, TH, linkArc } from "../config";
 import type { Ctx } from "./context";
@@ -55,16 +55,20 @@ export async function forgeMonument(ctx: Ctx, kind: Monument): Promise<void> {
       cells.push({ mi: i - off, mj: j - off, mk: k });
     }
   });
+  ctx.reportForgeStage?.("generating", {
+    token: tok, seed, mode: kind, detail: "solving monument layouts", completed: 0, total: cells.length,
+  });
 
   // the story lives in the per-layer generation parameters
   const storyFor = (c: MCell) => {
     const t = L === 1 ? 1 : c.mk / (L - 1);
     const jit = ((ch(c.mi * 2, c.mj * 2, c.mk, 0x88) % 100) / 100 - 0.5) * 0.15;
     const rot = ch(c.mi * 2, c.mj * 2, c.mk, 0xaa) % 4;
+    const footprint = FOOTPRINT_KINDS[(ch(c.mi * 2, c.mj * 2, 0, 0xc1) + c.mk) % FOOTPRINT_KINDS.length];
     if (kind === "ziggurat") {
       const apex = c.mk === L - 1;
       return {
-        rot,
+        rot, footprint,
         // ONLY the crown carries a true temple; some base blocks keep small shrines
         templeOn: apex || ch(c.mi * 2, c.mj * 2, c.mk, 0x92) % 100 < 35,
         decay: Math.min(1, Math.max(0.08, 0.82 - 0.68 * t + jit)),
@@ -75,7 +79,7 @@ export async function forgeMonument(ctx: Ctx, kind: Monument): Promise<void> {
     }
     const lowTip = c.mk === 0, highTip = c.mk === L - 1;
     return {
-      rot,
+      rot, footprint,
       templeOn: highTip || (!lowTip && ch(c.mi * 2, c.mj * 2, c.mk, 0x92) % 100 < 40),
       decay: lowTip ? 1 : highTip ? 0.06 : Math.min(1, Math.max(0.15, 0.75 - 0.55 * t + jit)),
       mound: highTip ? Math.max(3.5, genParams.mound * 1.2) : 0,
@@ -143,6 +147,9 @@ export async function forgeMonument(ctx: Ctx, kind: Monument): Promise<void> {
     });
   }));
   if (tok !== state.token) return;
+  ctx.reportForgeStage?.("assembling", {
+    token: tok, seed, mode: kind, detail: "placing terraces, bridges and supports", completed: 0, total: cells.length,
+  });
 
   ctx.worlds.length = 0;
   ctx.walk.clear();
@@ -165,6 +172,9 @@ export async function forgeMonument(ctx: Ctx, kind: Monument): Promise<void> {
     ctx.actors.addIsland(l, { ox, oy, oz }, i);
     await pacer.tick();
     if (tok !== state.token) return;
+    ctx.reportForgeStage?.("assembling", {
+      token: tok, seed, mode: kind, detail: "placing terraces, bridges and supports", completed: i + 1, total: cells.length,
+    });
     if ((i & 7) === 7) {
       ctx.env.bakeShadows();
       await pacer.tick();
@@ -235,6 +245,9 @@ export async function forgeMonument(ctx: Ctx, kind: Monument): Promise<void> {
   ctx.hud.name.textContent = kind === "ziggurat" ? "the Ziggurat" : "the Reliquary";
   const floors = layouts.reduce((s2, l) => s2 + l.stats.floor, 0);
   ctx.hud.seed.textContent = `seed ${seed} · ${kind} · ${cells.length} blocks · ${floors} floor`;
+  ctx.reportForgeStage?.("assembling", {
+    token: tok, seed, mode: kind, detail: "scene graph complete", completed: cells.length, total: cells.length,
+  });
   const url = new URL(location.href);
   url.searchParams.set("seed", String(seed));
   url.searchParams.set("mode", kind);

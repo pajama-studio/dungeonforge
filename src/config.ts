@@ -27,7 +27,11 @@ export const districtLinkArc = (dist: number): number => Math.min(0.32, dist * 0
 
 /** FIXED global light pool size: three's WebGPU forward path recompiles every
  *  pipeline whenever the scene's light count changes — so the count never does. */
-export const LIGHT_POOL_SIZE = 24;
+// Fourteen real torch lights are interleaved across districts; wall/floor glow
+// cards preserve the remaining flame cues. Two persistent cinematic slots
+// complete the 16-light rig, cutting the per-fragment light loop by one third
+// versus the former 24-light pool without changing topology after startup.
+export const LIGHT_POOL_SIZE = 16;
 
 /** fill rate is the budget: bigger worlds render at a slightly lower ratio */
 export const PR_BASE = 1.5;
@@ -38,6 +42,11 @@ export const PR_LARGE = 1.25;
  *  geometry swaps */
 export const LOD_NEAR = 95;
 export const LOD_FAR = 112;
+/** The collapsed multi-course prisms are a FAR tier, not the immediate
+ * neighbour of hand-cut masonry. Between these bands a one-instance-per-brick
+ * lightweight mesh preserves silhouette, placement and authored tint. */
+export const LOD_MID_NEAR = 138;
+export const LOD_MID_FAR = 160;
 
 /** Square spiral staircase (old-stairwell style): flights wind around a square
  *  core with corner turns. */

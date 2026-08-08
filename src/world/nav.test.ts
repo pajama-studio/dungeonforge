@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bridgeBacktrackFractions } from "./nav";
+import { bridgeBacktrackFractions, linkOverlaySegmentCount } from "./nav";
 import { WalkMap } from "./walkmap";
 import * as THREE from "three/webgpu";
 import { fuseDistrictBoundary } from "./helpers";
@@ -11,6 +11,17 @@ describe("bridge route sampling", () => {
     const reverse = [1, ...bridgeBacktrackFractions(false).slice().reverse(), 0];
     expect(forward).toEqual([0, 0.25, 0.5, 0.75, 1]);
     expect(reverse).toEqual([1, 0.75, 0.5, 0.25, 0]);
+  });
+
+  it("allocates a continuous overlay strip for analytic bridge portals", () => {
+    const link = {
+      a: new THREE.Vector3(-7.92, 2, 0),
+      b: new THREE.Vector3(7.92, 2, 0),
+      arc: 0.9,
+      width: 1.5,
+    };
+    expect(linkOverlaySegmentCount(link)).toBe(10);
+    expect(linkOverlaySegmentCount({ ...link, b: new THREE.Vector3(-7.8, 2, 0) })).toBe(1);
   });
 });
 

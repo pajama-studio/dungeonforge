@@ -25,6 +25,13 @@ export const NAV_K = 1 << 20; // key = islandIndex * NAV_K + cellIndex
 export const bridgeBacktrackFractions = (forward: boolean): readonly number[] =>
   forward ? [0.75, 0.5, 0.25] : [0.25, 0.5, 0.75];
 
+/** Overlay tessellation only; the navigation crossing itself remains one
+ * graph portal. Short, overlapping strips make the analytic curved deck
+ * visible without adding hundreds of tiny square instances. */
+export function linkOverlaySegmentCount(link: LinkWalk): number {
+  return Math.max(1, Math.ceil(Math.hypot(link.b.x - link.a.x, link.b.z - link.a.z) / (CELL * 0.72)));
+}
+
 export interface NavPortal {
   to: number;
   kind: "link" | "stair";
@@ -301,6 +308,7 @@ export class NavOverlay {
   private mesh: THREE.InstancedMesh | null = null;
   private shownToken = -1;
   private shownRevision = -1;
+  readonly stats = { floorInstances: 0, linkInstances: 0, links: 0 };
   visible = false;
 
   constructor(private ctx: Ctx, private nav: NavMesh) {}
@@ -320,10 +328,20 @@ export class NavOverlay {
       portalCells.add(k);
       for (const p of ps) portalCells.add(p.to);
     }
-    let total = 0;
-    for (const w of islands) total += w.l.stats.floor;
-    const mesh = new THREE.InstancedMesh(R.navCellGeo, R.navMat, total);
+    // Count the emitted cells rather than trusting Layout.stats.floor: gate
+    // repair mutates the real grid after generation, and the bridge strips are
+    // analytic surfaces with no grid cells of their own.
+    let floorTotal = 0;
+    for (let i = 0; i < islands.length; i++) {
+      const w = islands[i];
+      for (let c = 0; c < w.l.N * w.l.N; c++) {
+        if (w.l.kind[c] === FLOOR && !this.nav.isBlockedCell(i, c)) floorTotal++;
+      }
+    }
+    const linkTotal = this.ctx.walk.links.reduce((sum, link) => sum + linkOverlaySegmentCount(link), 0);
+    const mesh = new THREE.InstancedMesh(R.navCellGeo, R.navMat, Math.max(1, floorTotal + linkTotal));
     const m = new THREE.Matrix4();
+    const scale = new THREE.Matrix4();
     const col = new THREE.Color();
     let n = 0;
     for (let i = 0; i < islands.length; i++) {
@@ -343,6 +361,42 @@ export class NavOverlay {
         n++;
       }
     }
+    const along = new THREE.Vector3();
+    const across = new THREE.Vector3();
+    const normal = new THREE.Vector3();
+    const p0 = new THREE.Vector3();
+    const p1 = new THREE.Vector3();
+    const center = new THREE.Vector3();
+    const pointAt = (link: LinkWalk, t: number, out: THREE.Vector3): THREE.Vector3 => out.set(
+      link.a.x + (link.b.x - link.a.x) * t,
+      link.a.y + (link.b.y - link.a.y) * t + Math.sin(t * Math.PI) * link.arc + 0.13,
+      link.a.z + (link.b.z - link.a.z) * t,
+    );
+    // The bridge/causeway surface is part of the navmesh even though it has no
+    // island-grid cells. Draw an oriented strip following the exact WalkMap
+    // arc so the overlay and the feet of an actor agree at every sample.
+    for (const link of this.ctx.walk.links) {
+      const count = linkOverlaySegmentCount(link);
+      across.set(-(link.b.z - link.a.z), 0, link.b.x - link.a.x).normalize();
+      for (let segment = 0; segment < count; segment++) {
+        pointAt(link, segment / count, p0);
+        pointAt(link, (segment + 1) / count, p1);
+        center.copy(p0).add(p1).multiplyScalar(0.5);
+        along.copy(p1).sub(p0);
+        const length = along.length();
+        if (length < 1e-5) continue;
+        along.multiplyScalar(1 / length);
+        normal.crossVectors(across, along).normalize();
+        m.makeBasis(along, normal, across);
+        m.setPosition(center);
+        scale.makeScale(length / (CELL * 0.94) * 1.04, 1, link.width / (CELL * 0.94));
+        m.multiply(scale);
+        mesh.setMatrixAt(n, m);
+        col.setHex(0x55e7ff);
+        mesh.setColorAt(n, col);
+        n++;
+      }
+    }
     mesh.count = n;
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
@@ -351,6 +405,9 @@ export class NavOverlay {
     this.ctx.scene.add(mesh);
     this.shownToken = this.ctx.state.token;
     this.shownRevision = this.ctx.walk.revision;
+    this.stats.floorInstances = floorTotal;
+    this.stats.linkInstances = n - floorTotal;
+    this.stats.links = this.ctx.walk.links.length;
     this.visible = true;
   }
 
@@ -360,6 +417,9 @@ export class NavOverlay {
       this.mesh.dispose();
       this.mesh = null;
     }
+    this.stats.floorInstances = 0;
+    this.stats.linkInstances = 0;
+    this.stats.links = 0;
     this.visible = false;
   }
 

@@ -5,6 +5,7 @@
 import type { Layout, Params } from "./dungeon";
 
 export class GenPool {
+  readonly backend = "typescript" as const;
   private workers: Worker[];
   private nextId = 0;
   private rr = 0;
@@ -25,7 +26,9 @@ export class GenPool {
     return new Promise((resolve) => {
       const id = ++this.nextId;
       this.pending.set(id, resolve);
-      this.workers[this.rr++ % this.workers.length].postMessage({ id, seed, params: { ...params, ...overrides } });
+      this.workers[this.rr++ % this.workers.length].postMessage({
+        id, seed, params: { ...params, ...overrides },
+      });
     });
   }
 }

@@ -11,6 +11,7 @@ const port = Number(opts.get("--port") ?? 9337);
 const wanted = Number(opts.get("--impacts") ?? 24);
 const urlNeedle = opts.get("--url") ?? "127.0.0.1:4173";
 const screenshot = opts.get("--screenshot");
+const closeup = opts.get("--closeup") === "true";
 
 const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
 const target = targets.find((entry) => entry.type === "page" && entry.url.includes(urlNeedle));
@@ -24,13 +25,21 @@ await new Promise((resolve, reject) => {
 
 let nextId = 0;
 const pending = new Map();
+let pageLoadResolve = null;
 const gpuErrors = [];
 const failures = [];
+const frameBlocks = [];
 ws.addEventListener("message", (event) => {
   const message = JSON.parse(event.data);
+  if (message.method === "Page.loadEventFired") {
+    pageLoadResolve?.();
+    return;
+  }
   if (message.method === "Runtime.consoleAPICalled") {
     const line = message.params.args.map((arg) => arg.value ?? arg.description ?? "").join(" ");
+    if (line === "[destruction-regression] start") frameBlocks.length = 0;
     if (/GPUValidationError|Invalid CommandBuffer|Instance range|binding size/i.test(line)) gpuErrors.push(line);
+    if (/^\[frame\] render\(\) blocked/.test(line)) frameBlocks.push(line);
   } else if (message.method === "Log.entryAdded") {
     const line = message.params.entry.text;
     if (/GPUValidationError|Invalid CommandBuffer|Instance range|binding size/i.test(line)) gpuErrors.push(line);
@@ -53,8 +62,13 @@ const call = (method, params = {}) => new Promise((resolve, reject) => {
 await call("Runtime.enable");
 await call("Log.enable");
 await call("Page.enable");
+const pageLoaded = new Promise((resolve) => { pageLoadResolve = resolve; });
 await call("Page.reload", { ignoreCache: true });
-await new Promise((resolve) => setTimeout(resolve, 750));
+await Promise.race([
+  pageLoaded,
+  new Promise((_, reject) => setTimeout(() => reject(new Error("Page reload timed out")), 15000)),
+]);
+pageLoadResolve = null;
 await call("Emulation.setDeviceMetricsOverride", {
   width: 1280, height: 720, deviceScaleFactor: 1, mobile: false,
 });
@@ -65,12 +79,69 @@ const evaluated = await call("Runtime.evaluate", {
     const readyBy = performance.now() + 40000;
     while ((!window.__df || !window.__df.decorReady) && performance.now() < readyBy) await sleep(100);
     if (!window.__df?.decorReady) throw new Error("Dungeonforge did not become render-ready");
+    console.log("[destruction-regression] start");
     window.__df.controls.autoRotate = false;
     const destruction = window.__df.destruction;
+    const warmupStarted = performance.now();
+    await destruction.warmup();
+    const warmupMs = performance.now() - warmupStarted;
+    const sampleFrameDeltas = async (count) => {
+      const deltas = [];
+      let previous = await new Promise((resolve) => requestAnimationFrame(resolve));
+      for (let i = 0; i < count; i++) {
+        const next = await new Promise((resolve) => requestAnimationFrame(resolve));
+        deltas.push(next - previous);
+        previous = next;
+      }
+      return deltas;
+    };
+    const summarizeFrames = (values) => {
+      const ordered = [...values].sort((a, b) => a - b);
+      return {
+        median: ordered[Math.floor(ordered.length * 0.5)] ?? 0,
+        p95: ordered[Math.floor(ordered.length * 0.95)] ?? 0,
+        max: ordered[ordered.length - 1] ?? 0,
+      };
+    };
+    const idleFrames = summarizeFrames(await sampleFrameDeltas(10));
+    if (${closeup}) {
+      let source = null;
+      window.__df.ctx.scene.traverse((object) => {
+        if (!source && object.isInstancedMesh && object.name === "blocks" && (object.userData?.n ?? 0) > 0) source = object;
+      });
+      if (!source) throw new Error("No masonry source available for close-up");
+      source.updateWorldMatrix(true, false);
+      const world = source.matrixWorld.clone();
+      const local = source.matrixWorld.clone();
+      const focus = window.__df.camera.position.clone();
+      const origin = window.__df.camera.position.clone().setFromMatrixPosition(source.matrixWorld);
+      let bestScore = -Infinity;
+      const count = Math.min(source.userData.n, source.count);
+      for (let i = 0; i < count; i++) {
+        source.getMatrixAt(i, local);
+        world.multiplyMatrices(source.matrixWorld, local);
+        const x = world.elements[12], y = world.elements[13], z = world.elements[14];
+        // Prefer a lower outer façade: exposed enough for a clean ray, close
+        // enough to a real floor that the physical settling is also visible.
+        const score = Math.hypot(x - origin.x, z - origin.z) - Math.abs(y - (origin.y + 3.4)) * 0.9;
+        if (score > bestScore) { bestScore = score; focus.set(x, y, z); }
+      }
+      const view = focus.clone().sub(origin);
+      view.y = Math.max(2.2, Math.abs(view.y) * 0.2);
+      view.normalize();
+      window.__df.controls.autoRotate = false;
+      window.__df.controls.target.copy(focus);
+      window.__df.camera.position.copy(focus).addScaledVector(view, 8.5);
+      window.__df.camera.lookAt(focus);
+      window.__df.camera.updateMatrixWorld(true);
+      await sampleFrameDeltas(3);
+    }
     const canvas = window.__df.ctx.renderer.domElement;
     const rect = canvas.getBoundingClientRect();
     const impacts = [];
     const samples = [];
+    let firstVisibleFrameMs = 0;
+    let fractureFrames = { median: 0, p95: 0, max: 0 };
     for (let ring = 0; ring < 7 && impacts.length < ${wanted}; ring++) {
       const cols = 16 + ring * 3;
       const rows = 9 + ring * 2;
@@ -84,6 +155,11 @@ const evaluated = await call("Runtime.evaluate", {
           samples.push(raycastMs);
           if (hit) {
             impacts.push({ x, y, raycastMs });
+            if (impacts.length === 1) {
+              const frameStarted = performance.now();
+              fractureFrames = summarizeFrames(await sampleFrameDeltas(8));
+              firstVisibleFrameMs = performance.now() - frameStarted;
+            }
             await sleep(34);
           }
         }
@@ -107,9 +183,33 @@ const evaluated = await call("Runtime.evaluate", {
     });
     const sorted = [...samples].sort((a, b) => a - b);
     const tour = window.__df.nav.tour();
+    const debrisColors = destruction.mesh.instanceColor?.array ?? [];
+    const touchedColorCount = Math.min(destruction.stats.spawned, destruction.stats.capacity) * 3;
+    const debrisColorBuckets = new Set();
+    for (let i = 0; i < touchedColorCount; i += 3) {
+      debrisColorBuckets.add(
+        Math.round(debrisColors[i] * 31) + ":" +
+        Math.round(debrisColors[i + 1] * 31) + ":" +
+        Math.round(debrisColors[i + 2] * 31)
+      );
+    }
     return {
       requested: ${wanted}, impacts: impacts.length,
       fragments: destruction.stats.spawned,
+      inheritedColors: destruction.stats.inheritedColors,
+      commandCommits: destruction.stats.commandCommits,
+      bufferDirtyMarks: destruction.stats.commandCommits * 5,
+      legacyBufferDirtyMarks: destruction.stats.spawned * 5,
+      uploadedCommandBytes: destruction.stats.uploadedCommandBytes,
+      fullUploadEquivalentBytes: destruction.stats.fullUploadEquivalentBytes,
+      commandUploadReduction: destruction.stats.fullUploadEquivalentBytes > 0
+        ? 1 - destruction.stats.uploadedCommandBytes / destruction.stats.fullUploadEquivalentBytes : 0,
+      inheritedColorRatio: destruction.stats.spawned > 0
+        ? destruction.stats.inheritedColors / destruction.stats.spawned : 0,
+      debrisMaterial: destruction.mesh.material.name,
+      debrisMaterialClass: destruction.mesh.material.constructor.name,
+      debrisColorCapacity: destruction.mesh.instanceColor?.count ?? 0,
+      debrisColorBuckets: debrisColorBuckets.size,
       capacity: destruction.stats.capacity,
       breaches: destruction.stats.breaches,
       breachFloorInstances: destruction.breachMesh.count,
@@ -120,6 +220,10 @@ const evaluated = await call("Runtime.evaluate", {
       raycasts: samples.length,
       raycastMedianMs: sorted[Math.floor(sorted.length * 0.5)] ?? 0,
       raycastP95Ms: sorted[Math.floor(sorted.length * 0.95)] ?? 0,
+      warmupMs,
+      firstVisibleFrameMs,
+      idleFrames,
+      fractureFrames,
       undersized,
     };
   })()`,
@@ -135,10 +239,12 @@ if (screenshot) {
   mkdirSync(dirname(screenshot), { recursive: true });
   writeFileSync(screenshot, Buffer.from(captured.data, "base64"));
 }
-const report = { gpuErrors, failures, result };
+const report = { gpuErrors, failures, frameBlocks, result };
 console.log(JSON.stringify(report));
 ws.close();
 if (
   gpuErrors.length || failures.length || !result || result.impacts < wanted ||
-  result.undersized.length || result.breaches < 1 || result.unreachable > 0
+  result.undersized.length || (!closeup && result.breaches < 1) || result.unreachable > 0 ||
+  result.inheritedColorRatio !== 1 || result.debrisMaterial !== "gpu-debris-authored-stone" ||
+  result.debrisColorCapacity < result.capacity
 ) process.exitCode = 1;

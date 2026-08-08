@@ -43,6 +43,7 @@ const evaluated = await call("Runtime.evaluate", {
     court.updateWorldMatrix(true,true);
     const stones=court.children.find(child=>child.isInstancedMesh && child.count>0);
     if(!stones?.boundingSphere) throw new Error("Court has no bounded stone instances");
+    const stoneInstances=stones.count;
     const center=stones.boundingSphere.center.clone();
     court.localToWorld(center);
     df.ctx.renderer.setAnimationLoop(null);
@@ -58,7 +59,7 @@ const evaluated = await call("Runtime.evaluate", {
       if(!df.ctx.walk.sample(point.x,point.z,point.y).ok) ungrounded++;
       if(df.ctx.walk.isBlocked(point.x,point.y,point.z)) blocked++;
     }
-    return {courts:courts.length,stoneInstances:stones.count,center:{x:center.x,y:center.y,z:center.z},routePoints:route?.pts.length??0,unreachable:route?.unreachable.length??-1,ungrounded,blocked};
+    return {courts:courts.length,stoneInstances,center:{x:center.x,y:center.y,z:center.z},routePoints:route?.pts.length??0,unreachable:route?.unreachable.length??-1,ungrounded,blocked};
   })()`,
   awaitPromise: true,
   returnByValue: true,

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { generate, checksum, FLOOR, WALL, DX, DY, type Layout } from "./dungeon";
+import {
+  generate, checksum, FLOOR, WALL, VOID, DX, DY, FOOTPRINT_KINDS,
+  type Layout,
+} from "./dungeon";
 
 function bfsReachAll(l: Layout): boolean {
   const gi = (x: number, y: number) => y * l.N + x;
@@ -124,12 +127,33 @@ describe("dungeon generator", () => {
     }
   });
 
-  it("survives 40 arbitrary seeds without throwing, few attempts", () => {
-    for (let s = 100; s < 140; s++) {
+  it("solves every non-square footprint with gates and vertical courts intact", () => {
+    for (let i = 0; i < FOOTPRINT_KINDS.length; i++) {
+      const footprint = FOOTPRINT_KINDS[i];
+      const l = generate({
+        seed: 7_000 + i, size: 13, footprint,
+        gateSides: [0, 2], gateRows: [7, 19],
+        verticalAnchors: [{ id: 700 + i, x: 8, y: 15, dockDir: 0 }],
+      });
+      expect(l.footprint).toBe(footprint);
+      expect(bfsReachAll(l), footprint).toBe(true);
+      expect(l.gates.map((g) => g.dir)).toEqual(expect.arrayContaining([0, 2]));
+      expect(l.kind.reduce((sum, cell) => sum + Number(cell === VOID), 0)).toBeGreaterThan(l.N);
+      const anchor = l.verticalAnchors.find((a) => a.id === 700 + i)!;
+      expect(l.shaftMask[anchor.y * l.N + anchor.x], footprint).toBe(1);
+    }
+  });
+
+  it("survives 100 arbitrary shape-varying seeds without throwing, few attempts", () => {
+    const seen = new Set<string>();
+    for (let s = 100; s < 200; s++) {
       const l = generate(s);
+      seen.add(l.footprint);
       expect(l.stats.attempts).toBeLessThanOrEqual(6);
       expect(l.stairs.length).toBeGreaterThanOrEqual(6);
       expect(l.torches.length).toBeGreaterThan(8);
+      expect(bfsReachAll(l), `seed ${s} (${l.footprint})`).toBe(true);
     }
+    expect(seen).toEqual(new Set(FOOTPRINT_KINDS));
   });
 });

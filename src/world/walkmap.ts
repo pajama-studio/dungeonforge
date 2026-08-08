@@ -54,7 +54,7 @@ export class WalkMap {
       this.addLink(
         b.axis === 0 ? new THREE.Vector3(ox + c0, by, oz + at) : new THREE.Vector3(ox + at, by, oz + c0),
         b.axis === 0 ? new THREE.Vector3(ox + c1, by, oz + at) : new THREE.Vector3(ox + at, by, oz + c1),
-        -0.7,
+        -0.7, 1.5,
       );
     }
     return isl;

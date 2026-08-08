@@ -6,7 +6,7 @@
 // is ever created.
 
 import type * as THREE from "three/webgpu";
-import type { Layout } from "../gen/dungeon";
+import { FOOTPRINT_KINDS, type Layout } from "../gen/dungeon";
 import { buildWorld, buildBridgeLink, type WorldHandle, type LightSpec } from "../scene/build";
 import { pruneSlots } from "../scene/slots";
 import { CELL, ISLAND_GAP, linkArc } from "../config";
@@ -79,6 +79,7 @@ export class EndlessWorld {
     for (const { e, side } of edges) if (e.has) { gateSides.push(side); gateRows.push(e.row); }
     const l = await ctx.gen.generate(this.eh32(mi, mj, 0x11) || 1, ctx.genParams, {
       gateSides, gateRows, size,
+      footprint: FOOTPRINT_KINDS[this.eh32(mi, mj, 0xc1) % FOOTPRINT_KINDS.length],
       rot: this.eh32(mi, mj, 0x44) % 4,
       templeOn: this.eh32(mi, mj, 0x55) % 100 < 65,
       ravineOn: this.eh32(mi, mj, 0x66) % 100 < 75,

@@ -85,6 +85,8 @@ export class InstList {
     this.count++;
   }
 
+
+
   clear(): void {
     this.count = 0;
     this.minX = this.minY = this.minZ = Infinity;

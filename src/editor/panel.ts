@@ -10,13 +10,16 @@ import type { AssetDef, GizmoMode, PlacementRecord } from "./types";
 
 export interface EditorHooks {
   onSpawn: (asset: AssetDef) => void;
-  onSelect: (uid: string | null) => void;
+  onSelect: (uid: string | null, additive?: boolean) => void;
   onDelete: (uid: string) => void;
   onDuplicate: () => void;
   onModeChange: (mode: GizmoMode) => void;
   onSnapChange: (snap: boolean) => void;
   onTransformEdit: (axis: "x" | "y" | "z", channel: GizmoMode, value: number) => void;
   onResetWorld: () => void;
+  onSpaceChange: (space: "world" | "local") => void;
+  onFrame: () => void;
+  onArray: (count: number, axis: "x" | "y" | "z", spacing: number) => void;
   onParams: () => void;
   onReforge: () => void;
   onSave: () => void;
@@ -38,6 +41,8 @@ export class EditorPanel {
   private numberInputs = new Map<string, HTMLInputElement>();
   private placementActions!: HTMLElement;
   private worldActions!: HTMLElement;
+  private arrayRow!: HTMLElement;
+  private transformFields!: HTMLElement;
   private subjectLabel!: HTMLElement;
   private activeTab: Tab = "library";
   private selectedUid: string | null = null;
@@ -135,19 +140,37 @@ export class EditorPanel {
     }
     this.inspectorBody.appendChild(modes);
 
+    const options = document.createElement("div");
+    options.className = "editor-opts";
     const snapRow = document.createElement("label");
     snapRow.className = "editor-check";
     const snap = document.createElement("input");
     snap.type = "checkbox";
     snap.checked = true;
     snap.addEventListener("change", () => this.hooks.onSnapChange(snap.checked));
-    snapRow.append(snap, document.createTextNode(" snap to grid"));
-    this.inspectorBody.appendChild(snapRow);
+    snapRow.append(snap, document.createTextNode(" snap"));
+    const spaceRow = document.createElement("label");
+    spaceRow.className = "editor-check";
+    const localSpace = document.createElement("input");
+    localSpace.type = "checkbox";
+    localSpace.addEventListener("change", () => {
+      this.hooks.onSpaceChange(localSpace.checked ? "local" : "world");
+    });
+    spaceRow.append(localSpace, document.createTextNode(" local axes"));
+    const frame = document.createElement("button");
+    frame.className = "editor-mini";
+    frame.textContent = "⌖ Frame";
+    frame.title = "frame the selection (F)";
+    frame.addEventListener("click", () => this.hooks.onFrame());
+    options.append(snapRow, spaceRow, frame);
+    this.inspectorBody.appendChild(options);
 
+    this.transformFields = document.createElement("div");
+    this.inspectorBody.appendChild(this.transformFields);
     for (const channel of ["translate", "rotate", "scale"] as GizmoMode[]) {
       const title = document.createElement("h3");
       title.textContent = { translate: "Position", rotate: "Rotation°", scale: "Scale" }[channel];
-      this.inspectorBody.appendChild(title);
+      this.transformFields.appendChild(title);
       const row = document.createElement("div");
       row.className = "editor-vec";
       for (const axis of ["x", "y", "z"] as const) {
@@ -163,7 +186,7 @@ export class EditorPanel {
         wrap.append(document.createTextNode(axis.toUpperCase()), field);
         row.appendChild(wrap);
       }
-      this.inspectorBody.appendChild(row);
+      this.transformFields.appendChild(row);
     }
 
     this.placementActions = document.createElement("div");
@@ -179,6 +202,45 @@ export class EditorPanel {
     });
     this.placementActions.append(duplicate, remove);
     this.inspectorBody.appendChild(this.placementActions);
+
+    // Array duplicate: the one gesture that turns a single column into a
+    // colonnade, which is most of what dressing a corridor actually is.
+    this.arrayRow = document.createElement("div");
+    this.arrayRow.className = "editor-array";
+    const arrayTitle = document.createElement("h3");
+    arrayTitle.textContent = "Repeat along axis";
+    const controls = document.createElement("div");
+    controls.className = "editor-array-row";
+    const count = document.createElement("input");
+    count.type = "number";
+    count.value = "3";
+    count.min = "1";
+    count.max = "64";
+    count.title = "copies";
+    const axis = document.createElement("select");
+    for (const value of ["x", "y", "z"] as const) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = value.toUpperCase();
+      axis.appendChild(option);
+    }
+    const spacing = document.createElement("input");
+    spacing.type = "number";
+    spacing.value = "4";
+    spacing.step = "0.5";
+    spacing.title = "spacing";
+    const go = document.createElement("button");
+    go.textContent = "Repeat";
+    go.addEventListener("click", () => {
+      this.hooks.onArray(
+        Math.max(1, Math.min(64, Number(count.value) || 1)),
+        axis.value as "x" | "y" | "z",
+        Number(spacing.value) || 1,
+      );
+    });
+    controls.append(count, axis, spacing, go);
+    this.arrayRow.append(arrayTitle, controls);
+    this.inspectorBody.appendChild(this.arrayRow);
 
     // A generated object can't be deleted (the forge owns it) — it can only
     // be moved and put back, so it gets its own action row.
@@ -277,7 +339,14 @@ export class EditorPanel {
    *  gizmo drags, so typing and dragging agree). `world` marks a generated
    *  object, which swaps Duplicate/Delete for Reset. */
   setSelection(
-    subject: { label: string; position: [number, number, number]; rotation: [number, number, number]; scale: [number, number, number]; uid?: string } | null,
+    subject: {
+      label: string;
+      position: [number, number, number];
+      rotation: [number, number, number];
+      scale: [number, number, number];
+      uid?: string;
+      count?: number;
+    } | null,
     world = false,
   ): void {
     this.selectedUid = subject?.uid ?? null;
@@ -285,8 +354,15 @@ export class EditorPanel {
     this.inspectorBody.style.display = subject ? "" : "none";
     this.placementActions.style.display = subject && !world ? "" : "none";
     this.worldActions.style.display = subject && world ? "" : "none";
+    this.arrayRow.style.display = subject && !world ? "" : "none";
     if (!subject) return;
-    this.subjectLabel.textContent = world ? `⛰ ${subject.label} (generated)` : `◆ ${subject.label}`;
+    this.subjectLabel.textContent = world
+      ? `⛰ ${subject.label} (generated)`
+      : subject.count && subject.count > 1
+        ? `◆ ${subject.count} selected`
+        : `◆ ${subject.label}`;
+    // a multi-selection has no single transform to show
+    this.transformFields.style.display = subject.count && subject.count > 1 ? "none" : "";
     const write = (channel: GizmoMode, values: [number, number, number], scale = 1) => {
       (["x", "y", "z"] as const).forEach((axis, index) => {
         const field = this.numberInputs.get(`${channel}.${axis}`);
@@ -301,7 +377,8 @@ export class EditorPanel {
     if (this.activeTab === "library") this.setTab("inspect");
   }
 
-  setOutliner(records: PlacementRecord[], selectedUid: string | null): void {
+  setOutliner(records: PlacementRecord[], selectedUids: string[]): void {
+    const selected = new Set(selectedUids);
     this.outliner.textContent = "";
     if (records.length === 0) {
       const none = document.createElement("p");
@@ -313,9 +390,9 @@ export class EditorPanel {
     for (const record of records) {
       const row = document.createElement("button");
       row.className = "editor-row";
-      row.classList.toggle("active", record.uid === selectedUid);
+      row.classList.toggle("active", selected.has(record.uid));
       row.textContent = record.assetId;
-      row.addEventListener("click", () => this.hooks.onSelect(record.uid));
+      row.addEventListener("click", (event) => this.hooks.onSelect(record.uid, event.shiftKey));
       this.outliner.appendChild(row);
     }
   }

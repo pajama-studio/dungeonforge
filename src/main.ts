@@ -1609,6 +1609,8 @@ void boot().catch((error) => {
   get forgeRuns() { return structuredClone(forgeRuns); },
   startupTiming,
   godrayStats,
+  get editor() { return editor; },
+  openEditor: (open?: boolean) => toggleEditor(open),
   stoneStyle,
   gpuScene,
   destruction,

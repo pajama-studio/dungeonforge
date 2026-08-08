@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import * as THREE from "three/webgpu";
-import { selectableEntity } from "./stage";
+import { selectableEntity, surfaceAlignment } from "./stage";
 
 function node(name: string, children: THREE.Object3D[] = []): THREE.Object3D {
   const object = new THREE.Group();
@@ -65,6 +65,16 @@ describe("selectableEntity", () => {
     }
   });
 
+  it("never adopts the editor's own placement layer as world geometry", () => {
+    // placements are picked by uid on a separate path; if this rule ever
+    // returned them too, a click would select the same prop twice over
+    const mesh = new THREE.Mesh();
+    const layer = node("editor-placements", [node("crate-p1", [mesh])]);
+    const scene = new THREE.Scene();
+    scene.add(layer);
+    expect(selectableEntity(mesh, scene)).toBeNull();
+  });
+
   it("refuses a bare container and unnamed graphs", () => {
     const scene = new THREE.Scene();
     const container = node("abyss-landmarks", bag(9));
@@ -74,5 +84,25 @@ describe("selectableEntity", () => {
     const orphan = new THREE.Mesh(); // unnamed, straight under the scene
     scene.add(orphan);
     expect(selectableEntity(orphan, scene)).toBeNull();
+  });
+});
+
+describe("surfaceAlignment", () => {
+  it("leaves props upright on flat ground", () => {
+    expect(surfaceAlignment(new THREE.Vector3(0, 1, 0))).toBeNull();
+  });
+
+  it("leaves props upright on a wall rather than laying them on their side", () => {
+    expect(surfaceAlignment(new THREE.Vector3(1, 0, 0))).toBeNull();
+    expect(surfaceAlignment(new THREE.Vector3(0, 0.1, 0.99).normalize())).toBeNull();
+  });
+
+  it("tilts a prop to match a slope", () => {
+    const slope = new THREE.Vector3(0.5, 0.8, 0).normalize();
+    const tilt = surfaceAlignment(slope);
+    expect(tilt).not.toBeNull();
+    // the prop's local up must end up pointing along the surface normal
+    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(tilt!);
+    expect(up.angleTo(slope)).toBeLessThan(1e-6);
   });
 });

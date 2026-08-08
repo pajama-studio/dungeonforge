@@ -212,7 +212,18 @@
     .editor-seg { display: flex; gap: 4px; margin: 9px 0 4px; }
     .editor-seg button { flex: 1; padding: 6px 2px; font-size: 10.5px; }
     .editor-seg button.active { background: rgba(64, 54, 34, .7); color: #f0d79f; border-color: #6b5f45; }
-    .editor-check { display: flex; align-items: center; gap: 6px; font-size: 11px; margin: 8px 0; }
+    .editor-check { display: flex; align-items: center; gap: 5px; font-size: 10.5px; margin: 0; white-space: nowrap; }
+    .editor-opts { display: flex; align-items: center; gap: 10px; margin: 9px 0 2px; }
+    .editor-mini { margin-left: auto; padding: 3px 8px; font-size: 10.5px; }
+    .editor-array-row { display: grid; grid-template-columns: 3rem 3rem 1fr auto; gap: 4px; margin-top: 5px; }
+    .editor-array-row input, .editor-array-row select {
+      width: 100%; min-width: 0; padding: 4px 5px; font-size: 11px;
+    }
+    .editor-array-row select {
+      background: rgba(16, 20, 36, .78); color: #cdbf9d;
+      border: 1px solid #33334c; border-radius: 7px; font-family: Georgia, serif;
+    }
+    .editor-array-row button { padding: 4px 8px; font-size: 11px; }
     .editor-vec { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin-top: 5px; }
     .editor-vec label { display: flex; align-items: center; gap: 4px; font-size: 10px; color: #6f6a58; }
     .editor-vec input { width: 100%; min-width: 0; padding: 4px 5px; font-size: 11px; }

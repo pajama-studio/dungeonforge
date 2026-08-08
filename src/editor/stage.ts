@@ -44,6 +44,18 @@ export function selectableEntity(
  *  landmark groups but never touches it, so edits survive a re-forge. */
 export const EDITOR_LAYER = "editor-placements";
 
+/** Should a prop dropped on this face be tilted to match it?
+ *
+ *  Flat ground (normal ≈ +Y) needs no rotation — tilting there only
+ *  introduces float error. A wall (normal ≈ horizontal) must not lay the prop
+ *  on its side either: a crate hung off a vertical face reads as a bug. Only
+ *  the slopes in between get aligned. Pure, and exported, because this is the
+ *  rule that decides whether a placement looks planted or broken. */
+export function surfaceAlignment(normal: THREE.Vector3): THREE.Quaternion | null {
+  if (normal.y >= 0.98 || normal.y <= 0.15) return null;
+  return new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), normal);
+}
+
 let uidCounter = 0;
 function nextUid(): string {
   uidCounter += 1;
@@ -67,10 +79,17 @@ export class EditorStage {
   private transform: TransformControls | null = null;
   private transformLoad: Promise<TransformControls> | null = null;
   private selectedUid: string | null = null;
+  /** every selected placement; `selectedUid` is the primary of this set */
+  private selection = new Set<string>();
+  /** proxy the gizmo drives when several props move as one */
+  private pivot = new THREE.Group();
+  /** each member's transform in pivot space, captured when the drag starts */
+  private pivotOffsets = new Map<string, THREE.Matrix4>();
   /** a generated object currently under the gizmo (not a placement) */
   private worldSelection: THREE.Object3D | null = null;
   private overrides = new Map<string, WorldOverride>();
   private mode: GizmoMode = "translate";
+  private space: "world" | "local" = "world";
   private snap = true;
   /** transform state captured on mouseDown, so one drag is one undo step */
   private dragStart: PlacementRecord | null = null;
@@ -84,7 +103,8 @@ export class EditorStage {
     private events: StageEvents = {},
   ) {
     this.group.name = EDITOR_LAYER;
-    scene.add(this.group);
+    this.pivot.name = "editor-multi-pivot";
+    scene.add(this.group, this.pivot);
   }
 
   get selected(): THREE.Object3D | null {
@@ -119,8 +139,10 @@ export class EditorStage {
         t.addEventListener("mouseDown", () => {
           const record = this.selectedRecord;
           this.dragStart = record ? { ...record } : null;
+          this.capturePivotOffsets();
         });
         t.addEventListener("objectChange", () => {
+          this.applyPivotToSelection();
           this.syncRecordFromObject();
           this.events.onChange?.();
         });
@@ -141,6 +163,9 @@ export class EditorStage {
     const t = this.transform;
     if (!t) return;
     t.setMode(this.mode);
+    // A multi-selection is driven through a pivot with no rotation of its
+    // own, so "local" there would just mean world — keep it world.
+    t.setSpace(this.selection.size > 1 ? "world" : this.space);
     // Snapping keeps hand placement aligned with the CELL grid the generator
     // uses, so authored props sit flush against procedural masonry.
     t.setTranslationSnap(this.snap ? 0.5 : null);
@@ -164,6 +189,82 @@ export class EditorStage {
 
   getSnap(): boolean {
     return this.snap;
+  }
+
+  setSpace(space: "world" | "local"): void {
+    this.space = space;
+    this.applyGizmoSettings();
+  }
+
+  getSpace(): "world" | "local" {
+    return this.space;
+  }
+
+  /** The object the gizmo is currently driving — a placement, a generated
+   *  entity, or the multi-selection pivot. */
+  get activeObject(): THREE.Object3D | null {
+    if (this.selection.size > 1) return this.pivot;
+    return this.selected ?? this.worldSelection;
+  }
+
+  /** Objects the user is acting on, for framing and nudging. */
+  selectedObjects(): THREE.Object3D[] {
+    if (this.worldSelection) return [this.worldSelection];
+    return [...this.selection]
+      .map((uid) => this.placed.get(uid)?.object)
+      .filter((o): o is THREE.Object3D => Boolean(o));
+  }
+
+  selectionSize(): number {
+    return this.worldSelection ? 1 : this.selection.size;
+  }
+
+  /** Freeze each member's transform relative to the pivot so the whole set
+   *  can be rigidly carried by one gizmo drag. */
+  private capturePivotOffsets(): void {
+    this.pivotOffsets.clear();
+    if (this.selection.size < 2) return;
+    this.pivot.updateMatrixWorld(true);
+    const inverse = new THREE.Matrix4().copy(this.pivot.matrixWorld).invert();
+    for (const uid of this.selection) {
+      const object = this.placed.get(uid)?.object;
+      if (!object) continue;
+      object.updateMatrixWorld(true);
+      this.pivotOffsets.set(uid, new THREE.Matrix4().multiplyMatrices(inverse, object.matrixWorld));
+    }
+  }
+
+  private applyPivotToSelection(): void {
+    if (this.pivotOffsets.size === 0) return;
+    this.pivot.updateMatrixWorld(true);
+    const composed = new THREE.Matrix4();
+    for (const [uid, offset] of this.pivotOffsets) {
+      const entry = this.placed.get(uid);
+      if (!entry) continue;
+      composed.multiplyMatrices(this.pivot.matrixWorld, offset);
+      composed.decompose(entry.object.position, entry.object.quaternion, entry.object.scale);
+      entry.object.updateMatrixWorld(true);
+      entry.record.position = entry.object.position.toArray() as [number, number, number];
+      entry.record.rotation = [
+        entry.object.rotation.x, entry.object.rotation.y, entry.object.rotation.z,
+      ];
+      entry.record.scale = entry.object.scale.toArray() as [number, number, number];
+    }
+  }
+
+  /** Seat the pivot at the selection's centroid with no rotation or scale, so
+   *  a drag reads as "move the group" rather than "move around some corner". */
+  private seatPivot(): void {
+    const objects = this.selectedObjects();
+    if (objects.length === 0) return;
+    const centroid = new THREE.Vector3();
+    const world = new THREE.Vector3();
+    for (const object of objects) centroid.add(object.getWorldPosition(world));
+    centroid.divideScalar(objects.length);
+    this.pivot.position.copy(centroid);
+    this.pivot.rotation.set(0, 0, 0);
+    this.pivot.scale.setScalar(1);
+    this.pivot.updateMatrixWorld(true);
   }
 
   private pushUndo(before: PlacementRecord): void {
@@ -216,6 +317,7 @@ export class EditorStage {
     asset: AssetDef,
     at: THREE.Vector3,
     restore?: PlacementRecord,
+    options: { silent?: boolean; normal?: THREE.Vector3 | null } = {},
   ): Promise<PlacementRecord> {
     const object = await asset.build();
     const uid = restore?.uid ?? nextUid();
@@ -226,8 +328,9 @@ export class EditorStage {
       object.scale.fromArray(restore.scale);
     } else {
       object.position.copy(at);
-      const s = asset.scale ?? 1;
-      object.scale.setScalar(s);
+      object.scale.setScalar(asset.scale ?? 1);
+      const tilt = options.normal ? surfaceAlignment(options.normal) : null;
+      if (tilt) object.quaternion.copy(tilt);
     }
     object.userData.editorAsset = asset.id;
     object.userData.editorUid = uid;
@@ -241,28 +344,58 @@ export class EditorStage {
       scale: object.scale.toArray() as [number, number, number],
     };
     this.placed.set(uid, { record, object, asset });
-    if (!restore) await this.select(uid);
+    if (!restore && !options.silent) await this.select(uid);
     this.events.onChange?.();
     return record;
   }
 
-  async select(uid: string | null): Promise<void> {
-    this.selectedUid = uid;
+  /** `additive` extends the selection (shift-click) instead of replacing it.
+   *  One member drives the gizmo directly; several are carried by the pivot. */
+  async select(uid: string | null, additive = false): Promise<void> {
     this.worldSelection = null; // placements and world objects are exclusive
-    const entry = uid ? this.placed.get(uid) : null;
-    if (!entry) {
-      this.transform?.detach();
+    if (uid === null) {
+      this.selection.clear();
+    } else if (additive) {
+      if (this.selection.has(uid)) this.selection.delete(uid);
+      else this.selection.add(uid);
     } else {
-      const t = await this.ensureTransform();
-      if (this.selectedUid !== uid) return; // selection changed while loading
-      t.attach(entry.object);
+      this.selection.clear();
+      this.selection.add(uid);
     }
-    this.events.onSelect?.(uid);
+    // the primary is whatever is still in the set; prefer the clicked one
+    this.selectedUid = this.selection.has(uid ?? "")
+      ? uid
+      : [...this.selection][this.selection.size - 1] ?? null;
+
+    if (this.selection.size === 0) {
+      this.transform?.detach();
+      this.events.onSelect?.(null);
+      return;
+    }
+    const token = this.selectedUid;
+    const t = await this.ensureTransform();
+    if (this.selectedUid !== token) return; // selection changed while loading
+    if (this.selection.size > 1) {
+      this.seatPivot();
+      t.attach(this.pivot);
+    } else {
+      const entry = this.selectedUid ? this.placed.get(this.selectedUid) : null;
+      if (entry) t.attach(entry.object);
+      else t.detach();
+    }
+    this.applyGizmoSettings();
+    this.events.onSelect?.(this.selectedUid);
+  }
+
+  selectedUids(): string[] {
+    return [...this.selection];
   }
 
   remove(uid: string): void {
     const entry = this.placed.get(uid);
     if (!entry) return;
+    this.selection.delete(uid);
+    this.pivotOffsets.delete(uid);
     if (this.selectedUid === uid) {
       this.transform?.detach();
       this.selectedUid = null;
@@ -274,29 +407,130 @@ export class EditorStage {
     this.events.onChange?.();
   }
 
+  /** Delete everything selected in one step. */
+  removeSelected(): void {
+    for (const uid of [...this.selection]) this.remove(uid);
+    void this.select(null);
+  }
+
   clear(): void {
     for (const uid of [...this.placed.keys()]) this.remove(uid);
     this.undoStack.length = 0;
   }
 
-  /** Duplicate the selection, offset by one snap step so it is visible. */
-  async duplicate(): Promise<void> {
-    const entry = this.selectedUid ? this.placed.get(this.selectedUid) : null;
-    if (!entry) return;
-    const at = entry.object.position.clone().add(new THREE.Vector3(2, 0, 2));
-    const clone = await this.place(entry.asset, at);
-    const object = this.placed.get(clone.uid)?.object;
-    if (object) {
-      object.rotation.copy(entry.object.rotation);
-      object.scale.copy(entry.object.scale);
-      this.syncRecordFromObject();
+  /** Duplicate every selected prop, offset so the copies are visible. */
+  async duplicate(offset = new THREE.Vector3(2, 0, 2)): Promise<string[]> {
+    const sources = [...this.selection]
+      .map((uid) => this.placed.get(uid))
+      .filter((e): e is Placed => Boolean(e));
+    const made: string[] = [];
+    for (const source of sources) {
+      const at = source.object.position.clone().add(offset);
+      const clone = await this.place(source.asset, at, undefined, { silent: true });
+      const object = this.placed.get(clone.uid)?.object;
+      if (object) {
+        object.rotation.copy(source.object.rotation);
+        object.scale.copy(source.object.scale);
+        const record = this.placed.get(clone.uid)!.record;
+        record.rotation = [object.rotation.x, object.rotation.y, object.rotation.z];
+        record.scale = object.scale.toArray() as [number, number, number];
+      }
+      made.push(clone.uid);
     }
+    if (made.length > 0) {
+      await this.select(made[0]);
+      for (const uid of made.slice(1)) await this.select(uid, true);
+    }
+    return made;
+  }
+
+  /** Repeat the selection along one axis — one column becomes a colonnade. */
+  async duplicateArray(count: number, axis: "x" | "y" | "z", spacing: number): Promise<void> {
+    const sources = [...this.selection]
+      .map((uid) => this.placed.get(uid))
+      .filter((e): e is Placed => Boolean(e));
+    if (sources.length === 0 || count < 1) return;
+    const made: string[] = [];
+    for (let step = 1; step <= count; step++) {
+      const offset = new THREE.Vector3();
+      offset[axis] = spacing * step;
+      for (const source of sources) {
+        const at = source.object.position.clone().add(offset);
+        const clone = await this.place(source.asset, at, undefined, { silent: true });
+        const object = this.placed.get(clone.uid)?.object;
+        if (object) {
+          object.rotation.copy(source.object.rotation);
+          object.scale.copy(source.object.scale);
+          const record = this.placed.get(clone.uid)!.record;
+          record.rotation = [object.rotation.x, object.rotation.y, object.rotation.z];
+          record.scale = object.scale.toArray() as [number, number, number];
+        }
+        made.push(clone.uid);
+      }
+    }
+    if (made.length > 0) {
+      await this.select(made[0]);
+      for (const uid of made.slice(1)) await this.select(uid, true);
+    }
+  }
+
+  /** Shift everything selected by a world-space delta (arrow-key nudge). */
+  nudge(delta: THREE.Vector3): void {
+    for (const object of this.selectedObjects()) {
+      object.position.add(delta);
+      object.updateMatrixWorld(true);
+    }
+    if (this.selection.size > 1) this.seatPivot();
+    this.syncSelectionRecords();
+    this.events.onChange?.();
+  }
+
+  private syncSelectionRecords(): void {
+    if (this.worldSelection) {
+      this.syncRecordFromObject();
+      return;
+    }
+    for (const uid of this.selection) {
+      const entry = this.placed.get(uid);
+      if (!entry) continue;
+      entry.record.position = entry.object.position.toArray() as [number, number, number];
+      entry.record.rotation = [
+        entry.object.rotation.x, entry.object.rotation.y, entry.object.rotation.z,
+      ];
+      entry.record.scale = entry.object.scale.toArray() as [number, number, number];
+    }
+  }
+
+  /** Where a new asset should land: the surface under the cursor, so props
+   *  sit ON masonry instead of floating at the orbit target. Returns null
+   *  when the ray leaves the world entirely. */
+  surfaceDrop(ndc: THREE.Vector2): { point: THREE.Vector3; normal: THREE.Vector3 } | null {
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(ndc, this.camera as THREE.PerspectiveCamera);
+    for (const hit of raycaster.intersectObject(this.scene, true)) {
+      if (!hit.face) continue;
+      // ignore the editor's own scaffolding and anything already placed
+      let node: THREE.Object3D | null = hit.object;
+      let skip = false;
+      while (node) {
+        if (node === this.group || node === this.pivot
+          || node.name === "editor-transform-gizmo"
+          || node.name.startsWith("dragon-placement")) { skip = true; break; }
+        node = node.parent;
+      }
+      if (skip) continue;
+      const normal = hit.face.normal.clone()
+        .transformDirection(hit.object.matrixWorld)
+        .normalize();
+      return { point: hit.point.clone(), normal };
+    }
+    return null;
   }
 
   /** Click-to-select. Placed props win; otherwise the ray falls through to
    *  the generated world so landmarks, water sheets and whole islands can be
    *  adopted for editing too. Returns true when anything was selected. */
-  pickAt(ndc: THREE.Vector2): boolean {
+  pickAt(ndc: THREE.Vector2, additive = false): boolean {
     const raycaster = new THREE.Raycaster();
     raycaster.setFromCamera(ndc, this.camera as THREE.PerspectiveCamera);
 
@@ -306,10 +540,13 @@ export class EditorStage {
       while (node && node.userData.editorUid === undefined) node = node.parent;
       const uid = node?.userData.editorUid as string | undefined;
       if (uid) {
-        void this.select(uid);
+        void this.select(uid, additive);
         return true;
       }
     }
+    // shift-click is for building a set of placements; it never adopts world
+    // geometry, so a stray shift-click on masonry can't blow the set away
+    if (additive) return false;
 
     for (const hit of raycaster.intersectObject(this.scene, true)) {
       const entity = this.selectableAncestor(hit.object);

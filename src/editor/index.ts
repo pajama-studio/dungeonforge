@@ -26,10 +26,15 @@ export interface EditorHost {
 }
 
 export class DungeonEditor {
-  private stage: EditorStage;
+  /** public so the dev hook can drive placement from a script — the same
+   *  surface the screenshot/verification tooling uses */
+  readonly stage: EditorStage;
   private panel: EditorPanel;
   private pointerDown = new THREE.Vector2();
   private ndc = new THREE.Vector2();
+  /** live cursor in NDC, so a spawn can land under the pointer */
+  private hoverNdc = new THREE.Vector2();
+  private pointerInViewport = false;
   private restoring = false;
 
   constructor(private host: EditorHost) {
@@ -42,13 +47,16 @@ export class DungeonEditor {
     );
     this.panel = new EditorPanel(host.genParams, {
       onSpawn: (asset) => void this.spawn(asset),
-      onSelect: (uid) => void this.stage.select(uid),
+      onSelect: (uid, additive) => void this.stage.select(uid, additive),
       onDelete: (uid) => this.stage.remove(uid),
       onDuplicate: () => void this.stage.duplicate(),
       onModeChange: (mode) => this.setMode(mode),
       onSnapChange: (snap) => this.stage.setSnap(snap),
       onTransformEdit: (axis, channel, value) => this.editTransform(axis, channel, value),
       onResetWorld: () => { this.stage.resetWorldSelection(); this.refreshPanel(); },
+      onSpaceChange: (space) => this.stage.setSpace(space),
+      onFrame: () => this.frameSelection(),
+      onArray: (count, axis, spacing) => void this.stage.duplicateArray(count, axis, spacing),
       onParams: () => host.reforge(),
       onReforge: () => host.reforge(),
       onSave: () => this.save(),
@@ -88,12 +96,34 @@ export class DungeonEditor {
     this.panel.setMode(mode);
   }
 
-  /** Spawn in front of the camera, at the orbit target's depth — the asset
-   *  lands where the user is actually looking rather than at the origin. */
+  /** Land the asset ON the surface under the cursor, standing it up on that
+   *  face. Falls back to the orbit target when the pointer is over open sky
+   *  or has not entered the viewport yet. */
   private async spawn(asset: AssetDef): Promise<void> {
-    const at = this.host.controls.target.clone();
-    await this.stage.place(asset, at);
-    this.host.toast?.(`placed ${asset.label}`);
+    const drop = this.pointerInViewport ? this.stage.surfaceDrop(this.hoverNdc) : null;
+    const at = drop?.point.clone() ?? this.host.controls.target.clone();
+    await this.stage.place(asset, at, undefined, { normal: drop?.normal ?? null });
+    this.host.toast?.(drop ? `placed ${asset.label} on surface` : `placed ${asset.label}`);
+  }
+
+  /** Pull the camera back until the selection fits, keeping the current view
+   *  direction. Without this a landmark dropped at monument scale engulfs the
+   *  camera and there is no way to find it. */
+  frameSelection(): void {
+    const objects = this.stage.selectedObjects();
+    if (objects.length === 0) return;
+    const box = new THREE.Box3();
+    for (const object of objects) box.expandByObject(object);
+    if (box.isEmpty()) return;
+    const center = box.getCenter(new THREE.Vector3());
+    const radius = Math.max(box.getSize(new THREE.Vector3()).length() * 0.5, 1);
+    const camera = this.host.camera;
+    const back = camera.position.clone().sub(this.host.controls.target);
+    if (back.lengthSq() < 1e-6) back.set(1, 0.6, 1);
+    const fov = (camera.fov * Math.PI) / 180;
+    back.setLength((radius / Math.sin(fov * 0.5)) * 1.25);
+    camera.position.copy(center).add(back);
+    this.host.controls.target.copy(center);
   }
 
   private editTransform(axis: "x" | "y" | "z", channel: GizmoMode, value: number): void {
@@ -109,7 +139,21 @@ export class DungeonEditor {
     this.refreshPanel();
   }
 
+  private toNdc(event: { clientX: number; clientY: number }, out: THREE.Vector2): THREE.Vector2 {
+    const rect = this.host.dom.getBoundingClientRect();
+    return out.set(
+      ((event.clientX - rect.left) / rect.width) * 2 - 1,
+      -((event.clientY - rect.top) / rect.height) * 2 + 1,
+    );
+  }
+
   private bindPointer(): void {
+    this.host.dom.addEventListener("pointermove", (event) => {
+      if (!this.panel.open) return;
+      this.toNdc(event, this.hoverNdc);
+      this.pointerInViewport = true;
+    });
+    this.host.dom.addEventListener("pointerleave", () => { this.pointerInViewport = false; });
     this.host.dom.addEventListener("pointerdown", (event) => {
       if (!this.panel.open || event.button !== 0) return;
       this.pointerDown.set(event.clientX, event.clientY);
@@ -119,12 +163,10 @@ export class DungeonEditor {
       // a drag is an orbit, not a click — only pick on a near-stationary tap
       const moved = Math.hypot(event.clientX - this.pointerDown.x, event.clientY - this.pointerDown.y);
       if (moved > 4) return;
-      const rect = this.host.dom.getBoundingClientRect();
-      this.ndc.set(
-        ((event.clientX - rect.left) / rect.width) * 2 - 1,
-        -((event.clientY - rect.top) / rect.height) * 2 + 1,
-      );
-      if (!this.stage.pickAt(this.ndc)) void this.stage.select(null);
+      this.toNdc(event, this.ndc);
+      if (!this.stage.pickAt(this.ndc, event.shiftKey)) {
+        if (!event.shiftKey) void this.stage.select(null);
+      }
     });
   }
 
@@ -139,9 +181,11 @@ export class DungeonEditor {
       if (key === "1") this.setMode("translate");
       else if (key === "2") this.setMode("rotate");
       else if (key === "3") this.setMode("scale");
-      else if (key === "delete" || key === "backspace") {
-        const uid = this.stage.selectedRecord?.uid;
-        if (uid) { event.preventDefault(); this.stage.remove(uid); }
+      else if (key === "f") {
+        event.preventDefault();
+        this.frameSelection();
+      } else if (key === "delete" || key === "backspace") {
+        if (this.stage.selectionSize() > 0) { event.preventDefault(); this.stage.removeSelected(); }
       } else if (key === "d" && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
         void this.stage.duplicate();
@@ -150,6 +194,21 @@ export class DungeonEditor {
         this.stage.undo();
       } else if (key === "escape") {
         void this.stage.select(null);
+      } else if (key.startsWith("arrow")) {
+        // nudge along the ground plane, or vertically with shift
+        const step = this.stage.getSnap() ? 0.5 : 0.1;
+        const delta = new THREE.Vector3();
+        if (event.shiftKey) {
+          if (key === "arrowup") delta.y = step;
+          else if (key === "arrowdown") delta.y = -step;
+        } else if (key === "arrowleft") delta.x = -step;
+        else if (key === "arrowright") delta.x = step;
+        else if (key === "arrowup") delta.z = -step;
+        else if (key === "arrowdown") delta.z = step;
+        if (delta.lengthSq() > 0 && this.stage.selectionSize() > 0) {
+          event.preventDefault();
+          this.stage.nudge(delta);
+        }
       }
     });
   }
@@ -166,9 +225,10 @@ export class DungeonEditor {
       }, true);
     } else {
       const record = this.stage.selectedRecord;
-      this.panel.setSelection(record ? { ...record, label: record.assetId } : null);
+      const count = this.stage.selectionSize();
+      this.panel.setSelection(record ? { ...record, label: record.assetId, count } : null);
     }
-    this.panel.setOutliner(this.stage.list(), this.stage.selectedRecord?.uid ?? null);
+    this.panel.setOutliner(this.stage.list(), this.stage.selectedUids());
   }
 
   /** Called by the host after a forge: generated objects were rebuilt or had

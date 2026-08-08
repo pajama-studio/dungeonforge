@@ -23,7 +23,9 @@ import { makeHandPaintedLandmarkStoneMaterial } from "./kit/materials";
  *  gets its own build: a breathing radial halo, two turbulence octaves that
  *  tear real licking tongues into the flame edge, and a hot core ramp. All
  *  layers emit >1 linear values so bloom finishes the effect. */
-function makeEyeFireMat(): THREE.MeshBasicNodeMaterial {
+function makeEyeFireMat(
+  coreHex = 0xeafff6, midHex = 0x5ef2d6, deepHex = 0x0b8071,
+): THREE.MeshBasicNodeMaterial {
   const mat = new THREE.MeshBasicNodeMaterial({
     transparent: true, depthWrite: false, side: THREE.DoubleSide,
     blending: THREE.AdditiveBlending,
@@ -38,8 +40,8 @@ function makeEyeFireMat(): THREE.MeshBasicNodeMaterial {
   const shape = smoothstep(1.0, 0.08, v.add(cx.pow(1.4).mul(1.05)).add(turb.mul(0.58).sub(0.28)))
     .mul(smoothstep(0.0, 0.16, float(1).sub(cx)));
   const ramp = mix(
-    color(0xeafff6),
-    mix(color(0x5ef2d6), color(0x0b8071), smoothstep(0.25, 0.95, v)),
+    color(coreHex),
+    mix(color(midHex), color(deepHex), smoothstep(0.25, 0.95, v)),
     smoothstep(0.04, 0.6, v.add(turb.mul(0.2))),
   );
   const sway = sin(time.mul(6.3).add(v.mul(4.2))).mul(v).mul(0.05);
@@ -58,7 +60,9 @@ function makeAbyssPoolMat(): THREE.MeshBasicNodeMaterial {
   });
   const fall = smoothstep(1.0, 0.06, length(uv().sub(0.5)).mul(2));
   const ripple = triNoise3D(vec3(uv().mul(3.2), 0.7), 0.18, time).mul(0.42).add(0.72);
-  mat.colorNode = color(0x1fd4b4).mul(fall.pow(1.8)).mul(ripple).mul(2.3);
+  // peaks reach ~2.5 linear — well past the bloom threshold, so the water
+  // genuinely GLOWS instead of merely being tinted
+  mat.colorNode = color(0x1fd4b4).mul(fall.pow(1.8)).mul(ripple).mul(3.0);
   mat.opacityNode = fall.mul(0.9);
   return mat;
 }
@@ -71,9 +75,10 @@ function makeAbyssBasinMat(): THREE.MeshBasicNodeMaterial {
   });
   const fall = smoothstep(1.0, 0.1, length(uv().sub(0.5)).mul(2));
   const blooms = triNoise3D(vec3(uv().mul(2.6), 0.4), 0.12, time);
-  const patch = smoothstep(0.28, 0.78, blooms).mul(0.85).add(0.1);
-  mat.colorNode = color(0x13836f).mul(fall).mul(patch).mul(1.2);
-  mat.opacityNode = fall.mul(patch).mul(0.8);
+  const patch = smoothstep(0.28, 0.78, blooms).mul(0.85).add(0.16);
+  // bright blooms cross 1.0 and halo; the dark water between them stays dark
+  mat.colorNode = color(0x13836f).mul(fall).mul(patch).mul(1.9);
+  mat.opacityNode = fall.mul(patch).mul(0.85);
   return mat;
 }
 
@@ -86,7 +91,7 @@ function makeAbyssShoreMat(): THREE.MeshBasicNodeMaterial {
   const r = length(uv().sub(0.5)).mul(2);
   const band = smoothstep(0.74, 0.87, r).mul(smoothstep(1.0, 0.94, r));
   const shimmer = triNoise3D(vec3(uv().mul(6.2), 1.7), 0.3, time).mul(0.5).add(0.7);
-  mat.colorNode = color(0x3af2cf).mul(band).mul(shimmer).mul(2.6);
+  mat.colorNode = color(0x3af2cf).mul(band).mul(shimmer).mul(3.4);
   mat.opacityNode = band.mul(0.9);
   return mat;
 }
@@ -1745,6 +1750,28 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
     glowMesh.renderOrder = 1; // over the abyss plane, under the fog raymarch
     root.add(glowMesh);
   }
+
+  // Warm brazier fires at the warden ranks' feet: the painted reference dots
+  // the outer ruins with small warm lights so the teal basin has counter-
+  // sparks. Same layered fire shader as the gaze, ember-orange ramp; one
+  // shared material, twelve tiny quads, no lights.
+  const brazierMat = makeEyeFireMat(0xfff3d8, 0xffb054, 0x9c4a12);
+  const brazierPlane = new THREE.PlaneGeometry(0.34, 0.52);
+  brazierPlane.translate(0, 0.2, 0);
+  const wardenBraziers = new THREE.Group();
+  wardenBraziers.name = "warden-rank-braziers";
+  for (let i = 0; i < 6; i++) {
+    const brazier = new THREE.Group();
+    for (let cross = 0; cross < 2; cross++) {
+      const quad = new THREE.Mesh(brazierPlane, brazierMat);
+      quad.rotation.y = cross * Math.PI / 2;
+      quad.castShadow = false;
+      quad.receiveShadow = false;
+      brazier.add(quad);
+    }
+    wardenBraziers.add(brazier);
+  }
+  root.add(wardenBraziers);
   const attachOracleGaze = (loaded: THREE.Group) => {
     // Socket anchors hand-tuned with the in-page gizmo (2026-08-08), in the
     // streamed GLB's local frame (10 units tall, faces +X before the parent
@@ -1922,6 +1949,13 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
         q.setFromEuler(new THREE.Euler(0, Math.atan2(z, -x), 0)),
         s.setScalar(rankScale),
       );
+      // ember brazier in front of each warden's pedestal: inset by the
+      // pedestal depth (~2.6× the warden scale) so the fire sits on open
+      // floor at their feet instead of inside the base rock
+      const brazier = wardenBraziers.children[i];
+      const inset = (radius - rankScale * 2.6 - 4) / radius;
+      brazier.position.set(x * inset, ABYSS * TH - 6, z * inset);
+      brazier.scale.setScalar(5);
     }
     wardenRankStream.sync();
 

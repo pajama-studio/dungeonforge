@@ -97,11 +97,23 @@ export function buildEnvironment(
     const disc = smoothstep(0.99955, 0.99985, md).mul(2.6);
     const halo = md.pow(220).mul(0.5);
     const broadHalo = md.pow(28).mul(0.14).mul(float(1).sub(storm.mul(0.55)));
+    // one warm meteor scratch high in the sky (painted-reference garnish):
+    // a thin bright arc segment, head hot and tail fading
+    const meteorA = new THREE.Vector3(-0.55, 0.6, -0.58).normalize();
+    const meteorB = new THREE.Vector3(-0.38, 0.72, -0.58).normalize();
+    const meteorN = new THREE.Vector3().crossVectors(meteorA, meteorB).normalize();
+    const meteorMid = new THREE.Vector3().addVectors(meteorA, meteorB).normalize();
+    const meteorHead = new THREE.Vector3().subVectors(meteorB, meteorA).normalize();
+    const meteor = smoothstep(0.005, 0.0012, dir.dot(vec3(meteorN.x, meteorN.y, meteorN.z)).abs())
+      .mul(smoothstep(0.9952, 0.9995, dir.dot(vec3(meteorMid.x, meteorMid.y, meteorMid.z))))
+      .mul(smoothstep(-0.1, 0.14, dir.dot(vec3(meteorHead.x, meteorHead.y, meteorHead.z))))
+      .mul(1.8);
     const skyRaw = base.mul(float(1).sub(storm.mul(0.2)))
       .add(stormColor)
       .add(color(0xb9d2f2).mul(microVisible))
       .add(heroTemperature.mul(heroVisible).mul(2.1))
       .add(color(0x8fa3d8).mul(milky))
+      .add(color(0xffc9a0).mul(meteor))
       .add(color(0xdfe8ff).mul(disc.add(halo).add(broadHalo)));
     // horizon fog band: below the true horizon the sky settles into the same
     // hazy air the post-pass paints on far geometry. Without this the abyss
@@ -241,6 +253,31 @@ export function buildEnvironment(
     shadowSource: "shared-static-moon-map",
   };
   group.add(cavernAperture);
+
+  // Dust curtain inside the godray shaft: two crossed additive quads spanning
+  // aperture→maze with slow-sinking noise, so the beam carries drifting motes
+  // like the painted reference instead of being an optically empty cone.
+  const shaftDustMat = new THREE.MeshBasicNodeMaterial({
+    transparent: true, depthWrite: false, side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+  });
+  {
+    const u = uv().x;
+    const v = uv().y;
+    const drift = triNoise3D(vec3(u.mul(2.6), v.mul(5.4).add(time.mul(0.05)), 2.7), 0.12, time);
+    const core = float(1).sub(u.sub(0.5).abs().mul(2)).clamp(0, 1).pow(1.6);
+    const ends = smoothstep(0.02, 0.3, v).mul(smoothstep(1.0, 0.7, v));
+    shaftDustMat.colorNode = color(0xd8c491).mul(drift).mul(core).mul(ends).mul(0.5);
+    shaftDustMat.opacityNode = drift.mul(core).mul(ends).mul(0.5);
+  }
+  const shaftDust = new THREE.Group();
+  shaftDust.name = "godray-dust-curtain";
+  for (let cross = 0; cross < 2; cross++) {
+    const quad = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), shaftDustMat);
+    quad.rotation.y = cross * Math.PI / 2;
+    shaftDust.add(quad);
+  }
+  group.add(shaftDust);
 
   // One simple instanced low-poly draw supplies both cold dust motes and sparse
   // warm embers. This intentionally uses the already-hot Basic pipeline: the
@@ -582,6 +619,14 @@ export function buildEnvironment(
         roofY,
         center: cavernAperture.position.toArray(),
       };
+      // seat the dust curtain along the aperture→maze shaft axis
+      const shaftBottom = new THREE.Vector3(centerX, 4, centerZ);
+      const shaftAxis = cavernAperture.position.clone().sub(shaftBottom);
+      const shaftLength = shaftAxis.length();
+      shaftDust.position.copy(shaftBottom).addScaledVector(shaftAxis, 0.5);
+      shaftDust.quaternion.setFromUnitVectors(
+        new THREE.Vector3(0, 1, 0), shaftAxis.normalize());
+      shaftDust.scale.set(openingRadius * 2.1, shaftLength, openingRadius * 2.1);
       const lightHeight = roofY + 130;
       moon.position.set(
         centerX + lightHeight * tiltX,

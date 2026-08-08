@@ -13,10 +13,25 @@ import { FLOOR, WALL, VOID, ABYSS, DX, DY } from "../gen/dungeon";
 import { hash2, hash3 } from "../gen/rng";
 import { TH, CELL, COURSE, linkArc, districtLinkArc } from "../config";
 import { getKit } from "./kit";
-import { getSlot, putInstanced, putInstancedTwin, isDecorSuppressed } from "./slots";
+import {
+  getSlot, putInstanced, putInstancedCombined, putInstancedTwin,
+  isDecorSuppressed, setSlotDetail, setSlotLodLevel,
+} from "./slots";
 import { InstArena, InstList } from "./instances";
 
 export interface LightSpec { x: number; y: number; z: number; color: number; base: number; dist: number; ph: number }
+
+/** Fixed-slot landmark lighting. These are authored alongside the procedural
+ * abyss landmarks, but consumed by LightPool so the WebGPU light topology is
+ * present before the first pipeline compile and never changes at runtime. */
+export interface CinematicLightSpec extends LightSpec {
+  kind: "spot" | "point";
+  targetX?: number;
+  targetY?: number;
+  targetZ?: number;
+  angle?: number;
+  penumbra?: number;
+}
 
 export interface WorldHandle {
   group: THREE.Group;
@@ -51,6 +66,8 @@ export interface MasonryStructureData {
 
 const _axisY = new THREE.Vector3(0, 1, 0);
 const _hexColor = new THREE.Color();
+const _paintCool = new THREE.Color(0x566a82);
+const _paintWarm = new THREE.Color(0x89664b);
 const _mat4 = new THREE.Matrix4();
 const _stairYaw = new THREE.Quaternion();
 const _stairPitch = new THREE.Quaternion();
@@ -107,6 +124,13 @@ export function horizontalLinkWidth(style: HorizontalLinkStyle): number {
   return style === "bridge" ? 2.2 : style === "court" ? 9.4 : style === "causeway" ? 5.4 : 4.8;
 }
 
+/** Walkable width excludes the parapet/jamb thickness. Keeping structural
+ * width and nav width separate prevents wide district links from advertising
+ * a strip that runs through their edge masonry. */
+export function horizontalLinkWalkWidth(style: HorizontalLinkStyle): number {
+  return style === "bridge" ? 2.2 : horizontalLinkWidth(style) - 1.25;
+}
+
 export function buildBridgeLink(
   a: THREE.Vector3, b: THREE.Vector3, slot: number, sceneRoot: THREE.Object3D,
   riseDelay = 0, style: HorizontalLinkStyle = "bridge",
@@ -139,7 +163,7 @@ export function buildBridgeLink(
     const y = deckY(t);
     const h1 = hash3(seed, i, 3, 1);
     // deck slabs
-    setHsl(c, 0.088, 0.2, 0.33 + hash3(seed, i, 4, 2) * 0.09);
+    setHsl(c, 0.60, 0.24, 0.37 + hash3(seed, i, 4, 2) * 0.09);
     stones.pushY(
       px, y - 0.3, pz, rotY + (h1 - 0.5) * 0.03,
       segLen * 1.08, fused ? 0.78 : 0.65, fused ? horizontalLinkWidth(style) / CELL * 1.06 : 1.55, c,
@@ -149,10 +173,10 @@ export function buildBridgeLink(
     const drop = fused
       ? 0.9 + Math.abs(t - 0.5) * 0.5
       : (1 - Math.sin(t * Math.PI)) * Math.min(3.2, dist * 0.17) + 0.7;
-    setHsl(c, 0.088, 0.18, 0.27 + hash3(seed, i, 5, 3) * 0.07);
+    setHsl(c, 0.60, 0.22, 0.29 + hash3(seed, i, 5, 3) * 0.07);
     stones.pushY(px, y - 0.45 - drop / 2, pz, rotY, segLen * 1.02, drop / COURSE, 1.1, c);
     // low parapet walls
-    setHsl(c, 0.088, 0.2, 0.37 + hash3(seed, i, 6, 4) * 0.08);
+    setHsl(c, 0.60, 0.25, 0.39 + hash3(seed, i, 6, 4) * 0.08);
     for (const side of fused ? [-halfWidth, halfWidth] : [-1.75, 1.75]) {
       stones.pushY(px + perp.x * side, y + 0.22, pz + perp.z * side, rotY + (h1 - 0.5) * 0.03, segLen * 0.94, 0.55, 0.16, c);
     }
@@ -193,16 +217,25 @@ export function buildBridgeLink(
     }
   }
 
-  // abutment pylons: broad footings that grip both islands' edges, crowned
-  // by the lantern fire that marks every crossing
+  // Abutment pylons flank the crossing. The old implementation placed one
+  // broad block on the deck centreline at each end: navigation treated that
+  // volume as open while the rendered bridge visibly ran through solid stone.
+  // Two narrow jambs preserve the load-bearing silhouette and leave a wider
+  // clear opening than the analytic nav strip.
   for (const [end, sgn] of [[a, 1], [b, -1]] as const) {
     for (let k = 0; k < 3; k++) {
       const w = (fused ? 2.55 : 2.0) - k * 0.25;
-      setHsl(c, 0.088, 0.2, 0.3 + hash3(seed, k, sgn + 2, 5) * 0.08);
-      stones.pushY(
-        end.x + dirN.x * sgn * 0.5, end.y - 0.9 + k * COURSE, end.z + dirN.z * sgn * 0.5,
-        rotY + (hash3(seed, k, sgn + 4, 6) - 0.5) * 0.06, w * 0.62, 1, w, c,
-      );
+      setHsl(c, 0.60, 0.24, 0.34 + hash3(seed, k, sgn + 2, 5) * 0.08);
+      for (const side of [-1, 1]) {
+        const jambOffset = fused ? halfWidth : 1.68;
+        stones.pushY(
+          end.x + dirN.x * sgn * 0.5 + perp.x * side * jambOffset,
+          end.y - 0.9 + k * COURSE,
+          end.z + dirN.z * sgn * 0.5 + perp.z * side * jambOffset,
+          rotY + (hash3(seed, k, sgn + side + 7, 6) - 0.5) * 0.06,
+          0.62 + (2 - k) * 0.08, 1, Math.max(0.34, w * 0.2), c,
+        );
+      }
     }
     // lantern: a small bowl seated on the parapet, flame rising out of it
     const lanternSide = fused ? halfWidth : 1.75;
@@ -210,8 +243,13 @@ export function buildBridgeLink(
     flames.pushY(end.x + perp.x * lanternSide, end.y + 0.85, end.z + perp.z * lanternSide, 0, 0.8, 0.85, 0.8, hex(0xffffff));
   }
   putInstanced(pool, "linkStones", R.blockGeo, R.stoneMat, stones, true);
+  putInstancedTwin(pool, "linkStonesLo", "linkStones", R.blockGeoLo, R.stoneLoMat, true);
   putInstanced(pool, "linkBowls", R.bowlGeo, R.woodMat, bowls, false);
   putInstanced(pool, "linkFlames", R.flameGeo, R.flameWarm, flames, false);
+  // A new/rebuilt companion slot must start in exactly one LOD. Leaving both
+  // twins visible until the distance scheduler ran caused z-fighting, a pale
+  // double layer and an unnecessary cold compile of the high stone shader.
+  setSlotDetail(slot, false);
 
   const rise2 = makeRise(group, riseDelay);
   return {
@@ -304,7 +342,7 @@ export function buildSupportPiers(
       const h1 = hash3(seed, s, k, 5);
       // entasis: broad footing and flared capital, slimmer waist
       const w = 1.0 - Math.sin(t * Math.PI) * 0.25 + (h1 - 0.5) * 0.06;
-      setHsl(c, 0.088, 0.18, 0.28 + hash3(seed, s, k, 6) * 0.09);
+      setHsl(c, 0.60, 0.22, 0.31 + hash3(seed, s, k, 6) * 0.08);
       bricks.pushY(
         px + (hash3(seed, s, k, 7) - 0.5) * 0.12, baseY + (k + 0.5) * COURSE,
         pz + (hash3(seed, s, k, 8) - 0.5) * 0.12,
@@ -314,6 +352,8 @@ export function buildSupportPiers(
     blockers.push({ x: px, z: pz, y0: baseY, y1: topY, radius: CELL * 0.58, slot });
   }
   putInstanced(pool, "blocks", R.blockGeo, R.stoneMat, bricks, true);
+  putInstancedTwin(pool, "blocksLo", "blocks", R.blockGeoLo, R.stoneLoMat, true);
+  setSlotDetail(slot, false);
   const rise = makeRise(pool.group, riseDelay);
   return { group: pool.group, lights: [], tick: rise, dispose() {}, blockers };
 }
@@ -362,9 +402,13 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   const perBuildGeos = pool.perBuildGeos;
 
   // ---------------------------------------------------------------- masonry
-  const blocks = list(N * N * 4);
+  const blocks = list(N * N * 2);
+  const blockMids = list(N * N * 3);
+  const blockTops = list(N * N);
+  const blocksLow = list(N * N);
   const merlons = list(N * 4);
   const tiles = list(N * N);
+  const tilesLow = list(N * N / 2);
   const redTiles = list(128);
   const stoneColor = new THREE.Color();
 
@@ -420,6 +464,8 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   }
   const breachCells = new Map<number, MasonryBreachCell>();
   const breachByInstance = new Map<number, MasonryBreachCell>();
+  const breachByMiddleInstance = new Map<number, MasonryBreachCell>();
+  const breachByTopInstance = new Map<number, MasonryBreachCell>();
   let masonryPotential = 0;
   let masonryInteriorCulled = 0;
   let masonryDoorCulled = 0;
@@ -476,29 +522,110 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
       const h3v = hash3(seed, x * 131 + y, k, 3);
       // baked AO: courses far below the nearest floor sit in shadowed crevices
       const rel = Math.min(1, Math.max(0, (yMid - refFloorTier * TH) / (2.6 * TH) + 0.72));
-      const lum = (0.54 + h1 * 0.17) * (0.55 + 0.45 * rel);
-      const hue = 0.092 + warm * 0.012 + (h2v - 0.5) * 0.016;
-      const sat = 0.42 + warm * 0.08 + (h3v - 0.5) * 0.08;
+      const lumRaw = (0.50 + h1 * 0.16) * (0.55 + 0.45 * rel);
+      // Painterly value grouping is baked once per course instead of
+      // quantised per fragment. Broad authored-looking patches survive while
+      // the hot masonry shader stays exactly as cheap as before.
+      const lumBand = (Math.floor(lumRaw * 6) + 0.5) / 6;
+      const lum = lumRaw * 0.45 + lumBand * 0.55;
+      // Moon-facing masonry is painted in a cool slate family rather than an
+      // ochre base merely neutralised by blue lighting. Temple masses retain
+      // a restrained earthen family, giving torch pools something warm to
+      // reveal without turning the whole fortress grey.
+      const hue = warm ? 0.085 + (h2v - 0.5) * 0.025 : 0.59 + (h2v - 0.5) * 0.045;
+      const sat = warm ? 0.32 + (h3v - 0.5) * 0.08 : 0.25 + (h3v - 0.5) * 0.09;
       setHsl(stoneColor, hue, sat, lum);
+      const palettePick = hash3(seed, x * 197 + y, k, 93);
+      if (palettePick < 0.46) stoneColor.lerp(_paintCool, 0.22 + (0.46 - palettePick) * 0.34);
+      else if (palettePick > 0.76) stoneColor.lerp(_paintWarm, 0.12 + (palettePick - 0.76) * 0.25);
       if (yMid < refFloorTier * TH + COURSE && h1 < 0.12) stoneColor.lerp(MOSS_TINT, 0.45); // moss
-      const jx = (h2v - 0.5) * 0.07 + ((k % 2) ? 0.035 : -0.035);
-      const jz = (h3v - 0.5) * 0.07 + ((k % 2) ? -0.035 : 0.035);
+      const jx = (h2v - 0.5) * 0.12 + ((k % 2) ? 0.05 : -0.05);
+      const jz = (h3v - 0.5) * 0.12 + ((k % 2) ? -0.05 : 0.05);
       // cornice ring every 5th course on towers — segmented silhouette
       const cornice = scaleXZ > 1.2 && k % 5 === 4 ? 1.14 : 1;
-      const s = scaleXZ * cornice * (0.985 + h1 * 0.045);
-      const instanceId = blocks.count;
-      blocks.pushY(cx + jx, yMid, cz + jz, (h1 - 0.5) * 0.05, s * sx, 1, s * sz, stoneColor);
+      const s = scaleXZ * cornice;
+      const handSx = 0.965 + h1 * 0.07;
+      const handSz = 0.965 + h3v * 0.07;
       const floorTier = breachTier[cell];
-      if (floorTier !== ABYSS && yMid > floorTier * TH && yMid < floorTier * TH + 2.65) {
+      // Keep a passage band's companion courses in the same full source mesh:
+      // a single impact can collapse them atomically. Ordinary lower courses
+      // have masonry beneath them, so they join the open side-only pool; only
+      // the exposed top course needs a cap (and never a hidden bottom).
+      const breachCourse = floorTier !== ABYSS
+        && yMid > floorTier * TH && yMid < floorTier * TH + 2.65;
+      const topCourse = k === nCourses - 1 && !breachCourse;
+      const openCourse = k < nCourses - 1 && !breachCourse;
+      const target = topCourse ? blockTops : (openCourse || breachCourse) ? blockMids : blocks;
+      const targetBreaches = topCourse ? breachByTopInstance
+        : (openCourse || breachCourse) ? breachByMiddleInstance : breachByInstance;
+      const instanceId = target.count;
+      target.pushY(cx + jx, yMid, cz + jz, (h1 - 0.5) * 0.065, s * handSx * sx, 1, s * handSz * sz, stoneColor);
+      if (breachCourse) {
         let breach = breachCells.get(cell);
         if (!breach) {
           breach = { layout: l, cell, gx: x, gy: y, floorTier, required: [], destroyed: new Set(), opened: false };
           breachCells.set(cell, breach);
         }
         breach.required.push(instanceId);
-        breachByInstance.set(instanceId, breach);
+        targetBreaches.set(instanceId, breach);
       }
     }
+
+    // Far representation: collapse consecutive regular courses into one tall
+    // prism. Door gaps and proud tower cornices remain explicit boundaries;
+    // the cheap low material draws course seams analytically. This removes
+    // hidden inter-course caps and tens of thousands of distant instances.
+    const pushLowSpan = (start: number, end: number, proud = 1) => {
+      if (end <= start) return;
+      // Very tall single prisms saved instances but read as extruded CAD walls.
+      // Split them into irregular 7–10-course brush blocks: still far cheaper
+      // than one instance per brick, but with authored horizontal rhythm and a
+      // fresh baked palette sample at each broad stroke. The first 3–5-course
+      // pass raised low-detail triangles from 284k to 397k and cost 7–8%; this
+      // cadence keeps the painted breakup without throwing away the LOD win.
+      let cursor = start;
+      while (cursor < end) {
+        const brushCourses = 7 + Math.floor(hash3(seed, x * 131 + y, cursor, 91) * 4);
+        const next = Math.min(end, cursor + brushCourses);
+        const midK = Math.floor((cursor + next - 1) / 2);
+        const h1 = hash3(seed, x * 131 + y, midK, 1);
+        const h2v = hash3(seed, x * 131 + y, midK, 2);
+        const h3v = hash3(seed, x * 131 + y, midK, 3);
+        const yMid = baseTier * TH + (cursor + next) * COURSE * 0.5;
+        const rel = Math.min(1, Math.max(0, (yMid - refFloorTier * TH) / (2.6 * TH) + 0.72));
+        const lum = (0.48 + h1 * 0.14) * (0.55 + 0.45 * rel);
+        setHsl(
+          stoneColor,
+          warm ? 0.085 + (h2v - 0.5) * 0.025 : 0.59 + (h2v - 0.5) * 0.04,
+          warm ? 0.30 : 0.23,
+          lum,
+        );
+        const palettePick = hash3(seed, x * 197 + y, midK, 92);
+        if (palettePick < 0.46) stoneColor.lerp(_paintCool, 0.18 + (0.46 - palettePick) * 0.24);
+        else if (palettePick > 0.76) stoneColor.lerp(_paintWarm, 0.10 + (palettePick - 0.76) * 0.2);
+        blocksLow.pushY(
+          cx, yMid, cz, 0,
+          scaleXZ * proud * sx, next - cursor, scaleXZ * proud * sz, stoneColor,
+        );
+        cursor = next;
+      }
+    };
+    let runStart = -1;
+    for (let k = 0; k < nCourses; k++) {
+      const y0 = baseTier * TH + k * COURSE;
+      const yMid = y0 + COURSE / 2;
+      const hidden = k < nCourses - 1 && y0 + COURSE <= occlH - 0.01;
+      const doorGap = doorCell && l.door
+        ? yMid > l.door.tier * TH && yMid < l.door.tier * TH + 2.6
+        : false;
+      const cornice = scaleXZ > 1.2 && k % 5 === 4;
+      if (hidden || doorGap || cornice) {
+        if (runStart >= 0) pushLowSpan(runStart, k);
+        runStart = -1;
+        if (!hidden && !doorGap) pushLowSpan(k, k + 1, 1.14);
+      } else if (runStart < 0) runStart = k;
+    }
+    if (runStart >= 0) pushLowSpan(runStart, nCourses);
   };
 
   for (let y = 0; y < N; y++) {
@@ -518,8 +645,9 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
         // floor reads as continuing beneath the wall
         if (sx < 1 || sz < 1) {
           const hp = hash2(seed, c, 23);
-          setHsl(stoneColor, 0.088, 0.22, 0.34 + hp * 0.1);
+          setHsl(stoneColor, 0.60, 0.22, 0.31 + hp * 0.1);
           tiles.pushY(worldCoord[x], wallBase[c] * TH + 0.07, worldCoord[y], 0, 0.995, 1, 0.995, stoneColor);
+          tilesLow.pushY(worldCoord[x], wallBase[c] * TH + 0.07, worldCoord[y], 0, 0.995, 1, 0.995, stoneColor);
         }
         // battlement teeth ONLY where the wall meets the outside or the ravine —
         // interior maze walls keep clean tops (center studs read as lego bricks)
@@ -531,7 +659,7 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
         if (voidDir >= 0 && !tower && !l.doorMask[c] && !l.ruinMask[c]) {
           const alongX = DY[voidDir] !== 0; // rim runs perpendicular to the void
           for (const off of [-0.58, 0.58]) {
-            setHsl(stoneColor, 0.09, 0.34, 0.38 + hash2(seed, c, 9) * 0.1);
+            setHsl(stoneColor, 0.59, 0.28, 0.34 + hash2(seed, c, 9) * 0.09);
             merlons.pushY(
               worldCoord[x] + (alongX ? off : 0), wallTop[c] * TH + 0.16, worldCoord[y] + (alongX ? 0 : off),
               0, 0.8, 0.92, 0.8, stoneColor,
@@ -573,12 +701,12 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   }
   // pavilion roof slabs on towers
   for (const t of l.towers) {
-    setHsl(stoneColor, 0.09, 0.36, 0.42);
+    setHsl(stoneColor, 0.59, 0.28, 0.38);
     blocks.pushY(worldCoord[t.x], t.top * TH + (t.beacon ? 1.9 : 0) + 0.1, worldCoord[t.y], 0, t.scale * 1.22, t.beacon ? 0.55 : 0.45, t.scale * 1.22, stoneColor);
     if (t.beacon) {
       // four corner posts holding the roof over the beacon
       for (const [mx, mz] of [[-0.62, -0.62], [0.62, -0.62], [-0.62, 0.62], [0.62, 0.62]]) {
-        setHsl(stoneColor, 0.09, 0.34, 0.38);
+        setHsl(stoneColor, 0.59, 0.27, 0.34);
         blocks.pushY(worldCoord[t.x] + mx * t.scale, t.top * TH + 1.0, worldCoord[t.y] + mz * t.scale, 0, 0.22, 2.4, 0.22, stoneColor);
       }
     }
@@ -598,15 +726,49 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
         setHsl(stoneColor, 0.015, 0.5, 0.14 + h1 * 0.05);
         target = redTiles;
       } else if (l.templeMask[c]) {
-        setHsl(stoneColor, 0.1, 0.4, 0.5 + h1 * 0.14);
+        setHsl(stoneColor, 0.09, 0.32, 0.46 + h1 * 0.12);
       } else if (l.plazaMask[c]) {
-        setHsl(stoneColor, 0.09, 0.3, 0.43 + h1 * 0.12);
+        setHsl(stoneColor, 0.59, 0.25, 0.40 + h1 * 0.11);
       } else {
-        setHsl(stoneColor, 0.088 + (h2v - 0.5) * 0.02, 0.24, 0.37 + h1 * 0.13);
+        setHsl(stoneColor, 0.60 + (h2v - 0.5) * 0.035, 0.22, 0.35 + h1 * 0.11);
       }
       target.pushY(
         worldCoord[x] + (h2v - 0.5) * 0.05, tier[c] * TH + 0.07, worldCoord[y] + (h1 - 0.5) * 0.05,
         (h1 - 0.5) * 0.04, 0.985, 1, 0.985, stoneColor,
+      );
+    }
+  }
+  // Far floor representation: greedy horizontal spans preserve height and
+  // narrative surface class, but remove the one-box-per-cell silhouette and
+  // all internal side faces. High detail keeps the authored individual slabs.
+  for (let y = 0; y < N; y++) {
+    let x = 0;
+    while (x < N) {
+      const startCell = gi(x, y);
+      if (kind[startCell] !== FLOOR || l.stairMask[startCell] || l.redMask[startCell]) { x++; continue; }
+      const start = x;
+      const floorTier = tier[startCell];
+      const surfaceClass = l.templeMask[startCell] ? 1 : l.plazaMask[startCell] ? 2 : 0;
+      x++;
+      while (x < N) {
+        const c = gi(x, y);
+        const cls = l.templeMask[c] ? 1 : l.plazaMask[c] ? 2 : 0;
+        if (kind[c] !== FLOOR || l.stairMask[c] || l.redMask[c] || tier[c] !== floorTier || cls !== surfaceClass) break;
+        x++;
+      }
+      const end = x;
+      const midX = Math.floor((start + end - 1) / 2);
+      const sampleCell = gi(midX, y);
+      const h1 = hash2(seed, sampleCell, 21), h2v = hash2(seed, sampleCell, 22);
+      if (surfaceClass === 1) setHsl(stoneColor, 0.09, 0.32, 0.46 + h1 * 0.12);
+      else if (surfaceClass === 2) setHsl(stoneColor, 0.59, 0.25, 0.40 + h1 * 0.11);
+      else setHsl(stoneColor, 0.60 + (h2v - 0.5) * 0.035, 0.22, 0.35 + h1 * 0.11);
+      tilesLow.pushY(
+        (worldCoord[start] + worldCoord[end - 1]) * 0.5,
+        floorTier * TH + 0.07,
+        worldCoord[y], 0,
+        (end - start) * 0.985, 1, 0.985,
+        stoneColor,
       );
     }
   }
@@ -824,28 +986,22 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
       planks.pushY(bX(s, 0), yTop - sag, bZ(s, 0), rotB + (h1 - 0.5) * 0.1, 1, 1.2, 1.45, hex(0x4a3624));
     }
     putInstanced(pool, "ravinePlanks", R.plankGeo, R.woodMat, planks, false);
-    // rope rails from post top to hand height (same easing as buildBridgeLink)
-    for (const side of [-0.8, 0.8]) {
-      const pts: THREE.Vector3[] = [];
-      for (let i = 0; i <= 8; i++) {
-        const t = i / 8;
-        const s = s0 + (s1 - s0) * t;
-        const drop = Math.pow(Math.sin(t * Math.PI), 1.7) * 1.7;
-        pts.push(new THREE.Vector3(bX(s, side), yTop + 1.5 - drop, bZ(s, side)));
-      }
-      const geo = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 16, 0.05, 5);
-      perBuildGeos.push(geo);
-      addUnique(new THREE.Mesh(geo, R.ropeMat));
-    }
-    const posts = list();
-    for (const s of [s0, s1]) for (const side of [-0.8, 0.8]) {
-      posts.pushY(bX(s, side), yTop + 0.7, bZ(s, side), rotB, 1.25, 1.45, 1.25, hex(0x3a2c1c));
-    }
-    putInstanced(pool, "ravinePosts", R.postGeo, R.woodMat, posts, false);
-    // stone abutments anchoring both ends + a lantern flame on each near post
+    // Keep the short internal crossing visually subordinate to the stair/court
+    // connection. The former sagging rope pair and four tall posts projected
+    // into a U-shaped altar plus a centreline obstruction from the overview,
+    // even though they served no navigation or structural purpose. Stone side
+    // abutments below already communicate that the deck is anchored.
+    // Stone abutments anchoring both ends. Keep the rope-bridge centreline
+    // completely clear: the former single 4.2-unit-wide block visibly sealed
+    // both landings even though WalkMap marked them traversable.
     for (const [s, sgn] of [[s0, -1], [s1, 1]] as const) {
-      setHsl(stoneColor, 0.09, 0.3, 0.4);
-      blocks.pushY(bX(s + sgn * 0.5, 0), yTop - 0.35, bZ(s + sgn * 0.5, 0), rotB, 0.75, 1.15, 1.9, stoneColor);
+      setHsl(stoneColor, 0.60, 0.26, 0.40);
+      for (const side of [-0.98, 0.98]) {
+        blocks.pushY(
+          bX(s + sgn * 0.5, side), yTop - 0.35, bZ(s + sgn * 0.5, side),
+          rotB, 0.75, 1.15, 0.34, stoneColor,
+        );
+      }
       warmFlames.pushY(bX(s, 0.8), yTop + 1.55, bZ(s, 0.8), 0, 0.8, 0.85, 0.8, hex(0xffffff));
       flameAnchors.push({ x: bX(s, 0.8), y: yTop + 1.7, z: bZ(s, 0.8) });
     }
@@ -900,6 +1056,8 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   const bramblesB = list();
   const links = list();
   const moss = list(N * N);
+  const bloodStains = list(Math.ceil(N * N * 0.04));
+  const greenGrime = list(Math.ceil(N * N * 0.08));
   const cols = list();
   const roots = list();
   const decay = Math.min(1, Math.max(0, l.params?.decay ?? 0.5));
@@ -947,6 +1105,40 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
                 hb * 6.28, sc, 1, sc * (0.7 + hb * 0.5), stoneColor,
               );
             }
+          }
+          // Narrative residue, not navigation blockers: sparse dried blood
+          // around ruined/quiet corridors and sickly damp smears at wall feet.
+          // Hash tags are independent so a seed keeps the same composition
+          // across reloads and unrelated generator changes.
+          const nearWall = (() => {
+            for (let d = 0; d < 4; d++) if (kind[gi(x + DX[d], y + DY[d])] === WALL) return true;
+            return false;
+          })();
+          const bloodChance = 0.012 + (nearRuin ? 0.045 : 0) + (decay > 0.62 ? 0.012 : 0);
+          if (hash2(seed, c, 181) < bloodChance) {
+            const ha = hash2(seed, c, 182), hb = hash2(seed, c, 183);
+            const sc = 0.48 + hash2(seed, c, 184) * 0.92;
+            bloodStains.pushY(
+              worldCoord[x] + (ha - 0.5) * 0.9,
+              tier[c] * TH + 0.169,
+              worldCoord[y] + (hb - 0.5) * 0.9,
+              hash2(seed, c, 185) * Math.PI * 2,
+              sc * (0.72 + hb * 0.72), 1, sc * (0.7 + ha * 0.65),
+              hex(0x4d0d0a),
+            );
+          }
+          const grimeChance = (nearWall ? 0.038 : 0.012) + decay * (nearRuin ? 0.085 : 0.035);
+          if (hash2(seed, c, 186) < grimeChance) {
+            const ha = hash2(seed, c, 187), hb = hash2(seed, c, 188);
+            const sc = 0.62 + hash2(seed, c, 189) * 1.15;
+            greenGrime.pushY(
+              worldCoord[x] + (ha - 0.5) * 1.15,
+              tier[c] * TH + 0.166,
+              worldCoord[y] + (hb - 0.5) * 1.15,
+              hash2(seed, c, 190) * Math.PI * 2,
+              sc * (0.65 + ha * 0.8), 1, sc * (0.58 + hb * 0.66),
+              hex(0x40531d),
+            );
           }
           // crates in quiet dead ends the totems didn't claim
           let deg = 0;
@@ -1251,9 +1443,8 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   // ------------------------------------------------------- instanced meshes
   // created last so every section above could still contribute masonry/flames
   putInstanced(pool, "blocks", R.blockGeo, R.stoneMat, blocks);
-  (pool.meshes.get("blocks")!.userData as { masonry?: MasonryStructureData }).masonry = {
-    byInstance: breachByInstance,
-  };
+  putInstanced(pool, "blockMids", R.blockMiddleGeo, R.stoneMat, blockMids);
+  putInstanced(pool, "blockTops", R.blockTopGeo, R.stoneMat, blockTops);
   (pool.meshes.get("blocks")!.userData as {
     masonryCull?: { potential: number; interior: number; authoredGaps: number; emitted: number };
   }).masonryCull = {
@@ -1262,24 +1453,63 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
     authoredGaps: masonryDoorCulled,
     emitted: masonryPotential - masonryInteriorCulled - masonryDoorCulled,
   };
-  putInstancedTwin(pool, "blocksLo", "blocks", R.blockGeoLo, R.stoneMat);
+  putInstanced(pool, "blocksLo", R.blockGeoLo, R.stoneLoMat, blocksLow);
+  // Middle LOD keeps the exact authored transform/color of every visible
+  // course. Only bevel topology and the expensive near material disappear;
+  // the vertically collapsed blocksLo representation is reserved for far.
+  putInstancedTwin(pool, "blocksMidLo", "blocks", R.blockGeoLo, R.stoneLoMat, true);
+  putInstancedTwin(pool, "blockMidsLo", "blockMids", R.blockGeoLo, R.stoneLoMat, true);
+  putInstancedTwin(pool, "blockTopsLo", "blockTops", R.blockGeoLo, R.stoneLoMat, true);
+  (pool.meshes.get("blocks")!.userData as { masonry?: MasonryStructureData }).masonry = {
+    byInstance: breachByInstance,
+  };
+  (pool.meshes.get("blockMids")!.userData as { masonry?: MasonryStructureData }).masonry = {
+    byInstance: breachByMiddleInstance,
+  };
+  (pool.meshes.get("blockTops")!.userData as { masonry?: MasonryStructureData }).masonry = {
+    byInstance: breachByTopInstance,
+  };
   putInstancedTwin(pool, "blocksFade", "blocks", R.blockGeo, R.stoneFadeMat, false);
-  putInstancedTwin(pool, "blocksLoFade", "blocksLo", R.blockGeoLo, R.stoneFadeMat, false);
+  putInstancedTwin(pool, "blocksMidLoFade", "blocksMidLo", R.blockGeoLo, R.stoneLoFadeMat, false);
+  putInstancedTwin(pool, "blocksLoFade", "blocksLo", R.blockGeoLo, R.stoneLoFadeMat, false);
+  putInstancedTwin(pool, "blockMidsFade", "blockMids", R.blockMiddleGeo, R.stoneFadeMat, false);
+  putInstancedTwin(pool, "blockMidsLoFade", "blockMidsLo", R.blockGeoLo, R.stoneLoFadeMat, false);
+  putInstancedTwin(pool, "blockTopsFade", "blockTops", R.blockTopGeo, R.stoneFadeMat, false);
+  putInstancedTwin(pool, "blockTopsLoFade", "blockTopsLo", R.blockGeoLo, R.stoneLoFadeMat, false);
   pool.meshes.get("blocksFade")!.count = 0;
+  pool.meshes.get("blocksMidLoFade")!.count = 0;
   pool.meshes.get("blocksLoFade")!.count = 0;
+  pool.meshes.get("blockMidsFade")!.count = 0;
+  pool.meshes.get("blockMidsLoFade")!.count = 0;
+  pool.meshes.get("blockTopsFade")!.count = 0;
+  pool.meshes.get("blockTopsLoFade")!.count = 0;
   putInstanced(pool, "merlons", R.merlonGeo, R.stoneMat, merlons);
   putInstanced(pool, "tiles", R.tileGeo, R.stoneMat, tiles, true);
-  putInstancedTwin(pool, "tilesLo", "tiles", R.tileGeoLo, R.stoneMat, true);
+  putInstanced(pool, "tilesLo", R.tileGeoLo, R.stoneLoMat, tilesLow, true);
+  putInstancedTwin(pool, "tilesMidLo", "tiles", R.tileGeoLo, R.stoneLoMat, true);
   // Every rebuilt slot starts in the cheap state. The main loop promotes at
   // most one nearby island per frame after the background high-detail compile.
   const blockHi = pool.meshes.get("blocks"), blockLo = pool.meshes.get("blocksLo");
+  const blockMidHi = pool.meshes.get("blockMids");
+  const blockTopHi = pool.meshes.get("blockTops");
   const tileHi = pool.meshes.get("tiles"), tileLo = pool.meshes.get("tilesLo");
-  if (blockHi) { blockHi.visible = true; blockHi.count = 0; }
-  if (tileHi) { tileHi.visible = true; tileHi.count = 0; }
-  if (blockLo) { blockLo.visible = true; blockLo.count = ((blockLo.userData as { n?: number }).n ?? 0); }
-  if (tileLo) { tileLo.visible = true; tileLo.count = ((tileLo.userData as { n?: number }).n ?? 0); }
+  if (blockHi) { blockHi.visible = false; blockHi.count = 0; }
+  if (tileHi) { tileHi.visible = false; tileHi.count = 0; }
+  if (blockLo) {
+    blockLo.count = ((blockLo.userData as { n?: number }).n ?? 0);
+    blockLo.visible = blockLo.count > 0;
+  }
+  if (blockMidHi) { blockMidHi.visible = false; blockMidHi.count = 0; }
+  if (blockTopHi) { blockTopHi.visible = false; blockTopHi.count = 0; }
+  if (tileLo) {
+    tileLo.count = ((tileLo.userData as { n?: number }).n ?? 0);
+    tileLo.visible = tileLo.count > 0;
+  }
   putInstanced(pool, "redTiles", R.tileGeo, R.redMat, redTiles, true);
   putInstanced(pool, "steps", R.stepGeo, R.stoneMat, steps);
+  putInstancedTwin(pool, "stepsLo", "steps", R.stepGeo, R.stoneLoMat, true);
+  pool.meshes.get("steps")!.count = 0;
+  pool.meshes.get("steps")!.visible = false;
   putInstanced(pool, "cheeks", R.cheekGeo, R.stoneMat, cheeks, false);
   putInstanced(pool, "flamesW", R.flameGeo, R.flameWarm, warmFlames, false);
   putInstanced(pool, "flamesB", R.flameGeo, R.flameBlue, blueFlames, false);
@@ -1294,9 +1524,17 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   putInstanced(pool, "bramblesB", R.brambleGeoB, R.brambleMat, bramblesB, false);
   putInstanced(pool, "links", R.linkGeo, R.woodMat, links, false);
   putInstanced(pool, "moss", R.mossGeo, R.mossMat, moss, false);
+  putInstancedCombined(pool, "stains", R.stainGeo, R.stainMat, [bloodStains, greenGrime], false);
   putInstanced(pool, "cols", R.colGeo, R.stoneMat, cols, true);
+  putInstancedTwin(pool, "colsLo", "cols", R.colGeo, R.stoneLoMat, true);
   putInstancedTwin(pool, "colsFade", "cols", R.colGeo, R.stoneFadeMat, false);
+  putInstancedTwin(pool, "colsLoFade", "colsLo", R.colGeo, R.stoneLoFadeMat, false);
+  pool.meshes.get("cols")!.count = 0;
+  pool.meshes.get("cols")!.visible = false;
   pool.meshes.get("colsFade")!.count = 0;
+  pool.meshes.get("colsFade")!.visible = false;
+  pool.meshes.get("colsLoFade")!.count = 0;
+  pool.meshes.get("colsLoFade")!.visible = false;
   putInstanced(pool, "roots", R.rootGeo, R.brambleMat, roots, false);
   // smoke wisps rising from every flame
   {
@@ -1382,6 +1620,9 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   }
 
   // ---------------------------------------------------------------- handle
+  // Reused pools can retain the previous camera's tier. Finish every rebuild
+  // in one unambiguous far state after all three-tier twins exist.
+  setSlotLodLevel(slot, 0);
   const rise = makeRise(group, riseDelay);
   return {
     group,

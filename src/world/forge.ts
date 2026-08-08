@@ -2,9 +2,9 @@
 // bridged at facing gates, stacked pairs joined through shared stair courts.
 
 import type * as THREE from "three/webgpu";
-import type { Dir, Layout, VerticalAnchor } from "../gen/dungeon";
+import { FOOTPRINT_KINDS, type Dir, type Layout, type VerticalAnchor } from "../gen/dungeon";
 import {
-  buildWorld, buildBridgeLink, buildSupportPiers, horizontalLinkArc, horizontalLinkWidth,
+  buildWorld, buildBridgeLink, buildSupportPiers, horizontalLinkArc, horizontalLinkWalkWidth,
   type HorizontalLinkStyle, type LightSpec,
 } from "../scene/build";
 import { pruneSlots } from "../scene/slots";
@@ -23,6 +23,9 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   //    first guarantees start→summit progression; ordered Markov rules then
   //    grow optional branches from the path's live frontier.
   const tok = ++state.token;
+  ctx.reportForgeStage?.("generating", {
+    token: tok, seed, mode: "chain", detail: "solving spatial plan and maze workers", completed: 0, total: nIsl,
+  });
   const h32 = (a: number, b: number) => (Math.imul(seed ^ a, 0x9e3779b1) ^ Math.imul(b, 0x85ebca6b)) >>> 0;
   const spatialPlan = generateSpatialPlan(nIsl, seed);
   const macro = spatialPlan.cells;
@@ -80,6 +83,10 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
       narrativeRole: role,
       districtId: macro[i].district,
       storyLandmark: macro[i].landmark,
+      // Adjacent and stacked districts get different generation domains; the
+      // footprint is solved together with gates/courts rather than clipped in
+      // the renderer.
+      footprint: FOOTPRINT_KINDS[(h32(i, 170) + macro[i].mk) % FOOTPRINT_KINDS.length],
       // orientation & structure variety: each satellite faces its own way,
       // ~half go temple-less, a quarter go ravine-less
       rot: h32(i, 61) % 4,
@@ -95,6 +102,15 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
       newest: Math.min(1, Math.max(0.2, genParams.newest + (v(5) - 0.5) * 0.5)),
       mound: macro[i].landmark ? genParams.mound * 1.25 : genParams.mound * 0.25,
     });
+  });
+
+  // Preserve the currently visible dungeon until at least one replacement
+  // layout exists. Shared instance pools switch into assembly only after this
+  // await; main.ts keeps a snapshot visible until GPU submission completes.
+  const firstLayout = await layoutPromises[0];
+  if (tok !== state.token) return;
+  ctx.reportForgeStage?.("assembling", {
+    token: tok, seed, mode: "chain", detail: "placing blocks, links and supports", completed: 0, total: nIsl,
   });
 
   ctx.worlds.length = 0; // slot pools persist; pruneSlots() hides the unused ones
@@ -117,7 +133,7 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   // so no frame ever carries more than ~one unit past the 6ms budget
   const pacer = new Pacer(6);
   for (let i = 0; i < layoutPromises.length; i++) {
-    const l = await layoutPromises[i];
+    const l = i === 0 ? firstLayout : await layoutPromises[i];
     if (tok !== state.token) return; // superseded while generating
     layouts.push(l);
     // the crossing must EXIST before alignment and build: if the generator
@@ -206,6 +222,9 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
     minZ = Math.min(minZ, oz - half); maxZ = Math.max(maxZ, oz + half);
     await pacer.tick(); // the island build is the heaviest single step
     if (tok !== state.token) return;
+    ctx.reportForgeStage?.("assembling", {
+      token: tok, seed, mode: "chain", detail: "placing blocks, links and supports", completed: i + 1, total: nIsl,
+    });
 
     // Generator-owned interior stair court joining this stacked pair.
     if (pIdx >= 0 && macro[i].dirFromParent === 4) {
@@ -233,7 +252,7 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
         activeSlots.add(1000 + i);
         ctx.walk.addLink(
           from.clone(), to.clone(),
-          horizontalLinkArc(style, from.distanceTo(to)), horizontalLinkWidth(style),
+          horizontalLinkArc(style, from.distanceTo(to)), horizontalLinkWalkWidth(style),
         );
         await pacer.tick();
         if (tok !== state.token) return;
@@ -326,6 +345,9 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   const floorSum = layouts.reduce((s2, l) => s2 + l.stats.floor, 0);
   const forgeMs = Math.round(performance.now() - tForge);
   ctx.hud.seed.textContent = `seed ${seed} · ${spatialPlan.stats.layers} layers · ${spatialPlan.stats.fusedLinks} fused seams · ${spatialPlan.stats.crossBlockCourts} cross-block courts · ${floorSum} floor · forged in ${forgeMs}ms`;
+  ctx.reportForgeStage?.("assembling", {
+    token: tok, seed, mode: "chain", detail: "scene graph complete", completed: nIsl, total: nIsl,
+  });
   const url = new URL(location.href);
   url.searchParams.set("seed", String(seed));
   url.searchParams.delete("mode"); // chain forge is the default mode

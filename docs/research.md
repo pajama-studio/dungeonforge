@@ -92,6 +92,25 @@
 - [BorisTheBrave/DeBroglie](https://github.com/BorisTheBrave/DeBroglie) — 带全局路径约束的 WFC(C#,思路可移植)
 - 本 repo 内:`src/gpulab/dungeon/generate.ts` — 已有的确定性平面 dungeon 生成器(RNG/火把间距/BFS 距离场可复用)
 
+### `threejs-procedural-dungeon` 吸收边界（2026-08-07 核验）
+
+这个参照的主线是 `scatter → separate → Delaunay → MST + loops → room semantics →
+tile carve → BFS validation → decoration`，许可证为 MIT。它适合作为**宏观拓扑与叙事标注参考**，
+不作为当前渲染架构或多层空间实现的底座。
+
+| 参考点 | 在 Dungeonforge 中的用法 | 决策 |
+|---|---|---|
+| MST 保底连通、再按概率加回短环 | 用于 block/island 级候选连接图；Markov 仍只负责 block 内局部立体细化 | 吸收思想 |
+| 从入口 BFS 得到深度、critical path 与房间角色 | 驱动敌人强度、宝箱、神殿/精英房，以及传送门前奖励；上下层连接也进入同一语义图 | 优先移植 |
+| `doorway`、`nearDoor`、`interior`、占用 mask 后再散布装饰 | 统一约束柱子、宝箱、敌人和破坏后通路，避免把被柱体占据的格子判成可走 | 优先移植 |
+| 生成阶段/graph/difficulty overlay 与实时统计 | 给多层连接、路线回头和 GPU Scene cull 做可视化验收 | 吸收思想 |
+| 单层二维 tile、L 形走廊 | 无法表达当前楼层随机衔接、桥、螺旋梯和 block 内立体结构 | 不移植 |
+| WebGL 后处理、每类一个普通 `InstancedMesh` | 没有 HZB、cluster culling、GPU compaction 或 indirect draw，不能解决大量遮挡砖块 | 不移植 |
+| 单文件中耦合生成、渲染与 UI | 与当前 pure-data worker + slot pool 架构冲突 | 不移植 |
+
+若以后直接改写其具体实现而非只采用算法思想，需要在派生文件中保留 MIT 版权归属；
+当前阶段只记录设计模式，不复制源代码。
+
 ## 六、针对本图的推荐架构(dungeonforge v1)
 
 ```

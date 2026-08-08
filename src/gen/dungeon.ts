@@ -15,8 +15,9 @@
 // On validation failure the whole attempt re-rolls with a derived seed (≤ 6
 // attempts), so a broken layout never ships.
 
-import { Rng, hash2, valueNoise2 } from "./rng";
+import { Rng, hash2 } from "./rng";
 import { generateInteriorVolumePlan } from "../markov/volume-plan";
+import { generateMazeCoreTs, type MazeCoreGenerator } from "./maze-core";
 
 export const VOID = 0;
 export const FLOOR = 1;
@@ -48,6 +49,18 @@ export interface VerticalAnchor { id: number; x: number; y: number; dockDir: Dir
 export type StoryRole =
   | "threshold" | "archive" | "ossuary" | "forge"
   | "pilgrim" | "overgrowth" | "sanctum";
+
+/** The authored domain in which the local maze is allowed to exist. These
+ * are deliberately broad silhouettes, not post-build cookie cutters: gates,
+ * stair courts and landmarks reserve cells before the domain is applied, and
+ * the connectivity pass then solves the surviving maze. */
+export type FootprintKind =
+  | "octagon" | "cruciform" | "l-court"
+  | "terraced" | "hourglass" | "bastion";
+
+export const FOOTPRINT_KINDS: readonly FootprintKind[] = [
+  "octagon", "cruciform", "l-court", "terraced", "hourglass", "bastion",
+] as const;
 
 export interface Params {
   seed: number;
@@ -96,6 +109,8 @@ export interface Params {
   districtId?: number;
   /** exactly one story cell owns the final portal landmark. */
   storyLandmark?: boolean;
+  /** non-square generation domain; omitted chooses a deterministic shape. */
+  footprint?: FootprintKind;
 }
 
 export const DEFAULT_PARAMS: Params = {
@@ -119,6 +134,7 @@ export interface Layout {
   name: string;
   N: number;
   params: Params;
+  footprint: FootprintKind;
   kind: Uint8Array;      // VOID | FLOOR | WALL
   tier: Int8Array;       // floor cells: floor tier. walls/void: 0 (unused)
   wallTop: Int8Array;    // wall cells: top tier
@@ -166,10 +182,46 @@ function makeName(rng: Rng): string {
   return `The ${rng.pick(ADJ)} ${rng.pick(NOUN)} of ${rng.pick(SYL_A)}${rng.pick(SYL_B)}`;
 }
 
-function attempt(p: Params, seed: number): Layout | string {
+function chooseFootprint(p: Params): FootprintKind {
+  if (p.footprint && FOOTPRINT_KINDS.includes(p.footprint)) return p.footprint;
+  const district = p.districtId ?? 0;
+  const index = Math.floor(hash2(p.seed, district, 1701) * FOOTPRINT_KINDS.length);
+  return FOOTPRINT_KINDS[Math.min(FOOTPRINT_KINDS.length - 1, index)];
+}
+
+/** Smooth normalized tests give each block a recognizable macro silhouette
+ * while leaving enough interior area for the maze grammar and repair pass. */
+function footprintContains(kind: FootprintKind, x: number, y: number, N: number): boolean {
+  const r = (N - 1) / 2;
+  const nx = (x - r) / r, ny = (y - r) / r;
+  const ax = Math.abs(nx), ay = Math.abs(ny);
+  switch (kind) {
+    case "octagon":
+      return ax <= 0.96 && ay <= 0.96 && ax + ay <= 1.58;
+    case "cruciform":
+      return ax <= 0.96 && ay <= 0.96 && (ax <= 0.68 || ay <= 0.68);
+    case "l-court":
+      return ax <= 0.96 && ay <= 0.96 && !(nx > 0.24 && ny > 0.18);
+    case "terraced": { // asymmetric, broad ziggurat-like steps
+      const band = Math.min(4, Math.max(0, Math.floor((ny + 1) * 2.5)));
+      const left = -0.94 + band * 0.035;
+      const right = 0.94 - (4 - band) * 0.055;
+      return ny >= -0.96 && ny <= 0.96 && nx >= left && nx <= right;
+    }
+    case "hourglass":
+      return ay <= 0.96 && ax <= 0.70 + ay * 0.25;
+    case "bastion":
+      return ax <= 0.96 && ay <= 0.96
+        && ax + ay <= 1.72
+        && !(nx < -0.48 && ny > 0.42);
+  }
+}
+
+function attempt(p: Params, seed: number, coreGenerator: MazeCoreGenerator): Layout | string {
   const rng = new Rng(seed);
   const M = Math.max(7, Math.min(23, Math.round(p.size))) | 0;
   const N = 2 * M + 1;
+  const footprint = chooseFootprint(p);
 
   // A deliberately partial 3D grammar inside each block. Vertical courts are
   // excluded because the inter-block solver owns those volumes end-to-end.
@@ -177,82 +229,11 @@ function attempt(p: Params, seed: number): Layout | string {
     x: Math.round((a.x - 1) / 2), y: Math.round((a.y - 1) / 2), radius: 3,
   })));
 
-  // -- Stage 1: growing-tree maze over maze-cell space, tiers carved alongside.
   const ci = M >> 1; // temple column (maze coords)
-  const tierTarget = (i: number, j: number): number => {
-    const n = valueNoise2(seed ^ 0x51ab, i * 0.46, j * 0.46) * p.heightAmp;
-    const dx = i - ci, dy = j - 1.2;
-    const dTemple = Math.sqrt(dx * dx + dy * dy);
-    const mound = Math.max(0, p.mound - dTemple * 0.48);
-    const volumeBias = volumePlan.bias[mi(i, j)];
-    return Math.max(0, Math.min(7, Math.round(n + mound - 0.4 + volumeBias)));
-  };
-
-  const mTier = new Int8Array(M * M).fill(-1);
-  // open[cell*4+dir] — passage between maze cells (dir in maze space, same DX/DY)
-  const open = new Uint8Array(M * M * 4);
   const mi = (i: number, j: number) => j * M + i;
-  const connect = (i: number, j: number, d: Dir) => {
-    open[mi(i, j) * 4 + d] = 1;
-    open[mi(i + DX[d], j + DY[d]) * 4 + (d ^ 1)] = 1;
-  };
-
-  {
-    const start = mi(ci, M - 1);
-    mTier[start] = Math.min(2, tierTarget(ci, M - 1));
-    // growing tree: 70% newest (river-y like recursive backtracker), 30% random (branchy)
-    const active: number[] = [start];
-    while (active.length > 0) {
-      const pickIdx = rng.chance(p.newest) ? active.length - 1 : rng.int(0, active.length - 1);
-      const cur = active[pickIdx];
-      const cx = cur % M, cy = (cur / M) | 0;
-      const dirs: Dir[] = [];
-      for (let d = 0 as Dir; d < 4; d++) {
-        const nx = cx + DX[d], ny = cy + DY[d];
-        if (nx < 0 || ny < 0 || nx >= M || ny >= M) continue;
-        if (mTier[mi(nx, ny)] < 0) dirs.push(d as Dir);
-      }
-      if (dirs.length === 0) {
-        active.splice(pickIdx, 1);
-        continue;
-      }
-      const d = rng.pick(dirs);
-      const nx = cx + DX[d], ny = cy + DY[d];
-      const t = mTier[cur];
-      mTier[mi(nx, ny)] = Math.max(0, Math.min(7, Math.max(t - 1, Math.min(t + 1, tierTarget(nx, ny)))));
-      connect(cx, cy, d);
-      active.push(mi(nx, ny));
-    }
-  }
-
-  // -- Stage 2: braiding — open a fraction of dead ends into loops.
-  for (let j = 0; j < M; j++) {
-    for (let i = 0; i < M; i++) {
-      const c = mi(i, j);
-      let deg = 0;
-      for (let d = 0; d < 4; d++) deg += open[c * 4 + d];
-      if (deg !== 1 || !rng.chance(p.braid)) continue;
-      const options: Dir[] = [];
-      for (let d = 0 as Dir; d < 4; d++) {
-        if (open[c * 4 + d]) continue;
-        const nx = i + DX[d], ny = j + DY[d];
-        if (nx < 0 || ny < 0 || nx >= M || ny >= M) continue;
-        if (Math.abs(mTier[mi(nx, ny)] - mTier[c]) <= 1) options.push(d as Dir);
-      }
-      if (options.length > 0) connect(i, j, rng.pick(options));
-    }
-  }
-  // a few extra loops anywhere the tiers allow
-  for (let j = 0; j < M; j++) {
-    for (let i = 0; i < M; i++) {
-      for (const d of [0, 2] as Dir[]) {
-        const nx = i + DX[d], ny = j + DY[d];
-        if (nx >= M || ny >= M) continue;
-        if (open[mi(i, j) * 4 + d]) continue;
-        if (Math.abs(mTier[mi(nx, ny)] - mTier[mi(i, j)]) <= 1 && rng.chance(p.loops)) connect(i, j, d);
-      }
-    }
-  }
+  const core = coreGenerator(M, seed, p, volumePlan.bias, rng);
+  const mTier = core.tiers;
+  const open = core.open;
 
   // -- Stage 3: rasterize maze → grid.
   const kind = new Uint8Array(N * N).fill(WALL);
@@ -413,6 +394,43 @@ function attempt(p: Params, seed: number): Layout | string {
         setFloor(gx, gy, rt);
         redMask[gi(gx, gy)] = 1;
       }
+    }
+  }
+
+  // -- Stage 4.5: constrain the maze to an authored, non-square footprint.
+  // This happens after landmark/court stamps but BEFORE the ravine and graph
+  // repair. The shape therefore changes the route graph itself. Critical
+  // interfaces reserve their local cells first, so a silhouette can never
+  // trim away a bridge dock, the entrance, or a shared vertical stair court.
+  const footprintKeep = new Uint8Array(N * N);
+  const keepRect = (x0: number, y0: number, x1: number, y1: number) => {
+    for (let y = Math.max(0, y0); y <= Math.min(N - 1, y1); y++) {
+      for (let x = Math.max(0, x0); x <= Math.min(N - 1, x1); x++) footprintKeep[gi(x, y)] = 1;
+    }
+  };
+  // The canonical entrance and north objective sit on the center spine.
+  keepRect(gcx - 2, N - 5, gcx + 2, N - 1);
+  if (templeOn) keepRect(gcx - 6, 0, gcx + 6, 7);
+  for (let c = 0; c < N * N; c++) {
+    if (templeMask[c] || plazaMask[c] || redMask[c] || doorMask[c] || shaftReserve[c]) footprintKeep[c] = 1;
+  }
+  // Preserve a broad local dock for each requested world link. Its boundary
+  // cell stays wall until the ordinary gate pass opens exactly one crossing.
+  for (let g = 0; g < (p.gateSides ?? []).length; g++) {
+    const side = (p.gateSides ?? [])[g] as Dir;
+    const row = Math.max(2, Math.min(N - 3, Math.round(p.gateRows?.[g] ?? (N - 1) / 2)));
+    if (side === 0) keepRect(N - 5, row - 2, N - 1, row + 2);
+    else if (side === 1) keepRect(0, row - 2, 4, row + 2);
+    else if (side === 2) keepRect(row - 2, N - 5, row + 2, N - 1);
+    else keepRect(row - 2, 0, row + 2, 4);
+  }
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const c = gi(x, y);
+      if (footprintKeep[c] || footprintContains(footprint, x, y, N)) continue;
+      kind[c] = VOID;
+      tier[c] = 0;
+      volumeMask[c] = 0;
     }
   }
 
@@ -835,7 +853,7 @@ function attempt(p: Params, seed: number): Layout | string {
   if (stairs.length < 6) return "too flat (no stairs)";
 
   return {
-    seed, name: makeName(rng), N, params: p,
+    seed, name: makeName(rng), N, params: p, footprint,
     kind, tier, wallTop, wallBase, support,
     stairMask, ruinMask, redMask, templeMask, plazaMask, doorMask, shaftMask, volumeMask,
     stairs, gates, verticalAnchors, torches, banners, towers, medallions, braziers, bridge, door,
@@ -944,7 +962,7 @@ function unrotateVerticalAnchors(anchors: VerticalAnchor[], k: number, N: number
   });
 }
 
-export function generate(input: number | Partial<Params>): Layout {
+function generateWithCore(input: number | Partial<Params>, coreGenerator: MazeCoreGenerator): Layout {
   const p: Params = typeof input === "number"
     ? { ...DEFAULT_PARAMS, seed: input }
     : { ...DEFAULT_PARAMS, ...input };
@@ -961,7 +979,7 @@ export function generate(input: number | Partial<Params>): Layout {
   const reasons: string[] = [];
   for (let a = 0; a < 6; a++) {
     const s = (Math.imul(p.seed + a, 0x9e3779b1) ^ Math.imul(a, 0x85ebca6b)) >>> 0;
-    let r = attempt(pGen, s === 0 ? 1 : s);
+    let r = attempt(pGen, s === 0 ? 1 : s, coreGenerator);
     if (typeof r === "string") { reasons.push(r); continue; }
     for (let i = 0; i < k; i++) r = rotateOnce(r);
     r.params = p; // report the world-space params
@@ -971,6 +989,10 @@ export function generate(input: number | Partial<Params>): Layout {
     return r;
   }
   throw new Error(`dungeon generation failed after 6 attempts (seed=${p.seed}): ${reasons.join("; ")}`);
+}
+
+export function generate(input: number | Partial<Params>): Layout {
+  return generateWithCore(input, generateMazeCoreTs);
 }
 
 /** FNV-1a over the structural arrays — determinism tests + HUD. */

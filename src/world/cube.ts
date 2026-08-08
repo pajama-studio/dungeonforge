@@ -2,7 +2,7 @@
 // pair bridges, every vertical pair gets a spiral stair shaft. The showcase build.
 
 import { buildWorld, buildBridgeLink, buildSupportPiers, type LightSpec } from "../scene/build";
-import type { VerticalAnchor } from "../gen/dungeon";
+import { FOOTPRINT_KINDS, type VerticalAnchor } from "../gen/dungeon";
 import { pruneSlots } from "../scene/slots";
 import { CELL, ISLAND_GAP, PR_LARGE, linkArc } from "../config";
 import type { Ctx } from "./context";
@@ -13,6 +13,9 @@ export async function forgeCube(ctx: Ctx): Promise<void> {
   const { genParams, state } = ctx;
   const seed = state.seed;
   const tok = ++state.token;
+  ctx.reportForgeStage?.("generating", {
+    token: tok, seed, mode: "cube", detail: "solving 27 linked layouts", completed: 0, total: 27,
+  });
   const size = 11, N = 2 * size + 1, pitch = N * CELL + ISLAND_GAP, LAYER = 36;
   const ch = (a: number, b: number, c: number, salt: number) =>
     (Math.imul(seed ^ Math.imul(a + 7, 73856093) ^ Math.imul(b + 7, 19349663) ^ Math.imul(c + 7, 83492791), 0x9e3779b1 ^ salt) >>> 0);
@@ -49,6 +52,7 @@ export async function forgeCube(ctx: Ctx): Promise<void> {
     return ctx.gen.generate(ch(c.mi, c.mj, c.mk, 0x77) || 1, genParams, {
       gateSides: gs, gateRows: gr, size, plazas: 1, totems: 2,
       verticalAnchors: verticalByCell[cellIndex],
+      footprint: FOOTPRINT_KINDS[(ch(c.mi, c.mj, 0, 0xc1) + c.mk) % FOOTPRINT_KINDS.length],
       rot: ch(c.mi, c.mj, c.mk, 0xaa) % 4,
       templeOn: ch(c.mi, c.mj, c.mk, 0xab) % 100 < 60,
       mound: c.mi === 0 && c.mj === 0 && c.mk === 2 ? genParams.mound : genParams.mound * 0.3,
@@ -56,6 +60,9 @@ export async function forgeCube(ctx: Ctx): Promise<void> {
     });
   }));
   if (tok !== state.token) return;
+  ctx.reportForgeStage?.("assembling", {
+    token: tok, seed, mode: "cube", detail: "placing lattice, bridges and stair shafts", completed: 0, total: cells.length,
+  });
 
   ctx.worlds.length = 0;
   ctx.walk.clear();
@@ -78,6 +85,9 @@ export async function forgeCube(ctx: Ctx): Promise<void> {
     ctx.actors.addIsland(l, { ox, oy, oz }, i);
     await pacer.tick();
     if (tok !== state.token) return;
+    ctx.reportForgeStage?.("assembling", {
+      token: tok, seed, mode: "cube", detail: "placing lattice, bridges and stair shafts", completed: i + 1, total: cells.length,
+    });
     if ((i & 7) === 7) {
       ctx.env.bakeShadows();
       await pacer.tick();
@@ -133,4 +143,7 @@ export async function forgeCube(ctx: Ctx): Promise<void> {
   ctx.state.prCap = PR_LARGE;
   ctx.hud.name.textContent = "the Cube";
   ctx.hud.seed.textContent = `seed ${seed} · 3×3×3 · ${layouts.reduce((s2, l) => s2 + l.stats.floor, 0)} floor`;
+  ctx.reportForgeStage?.("assembling", {
+    token: tok, seed, mode: "cube", detail: "scene graph complete", completed: cells.length, total: cells.length,
+  });
 }

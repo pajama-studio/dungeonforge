@@ -16,6 +16,7 @@ export interface EditorHooks {
   onModeChange: (mode: GizmoMode) => void;
   onSnapChange: (snap: boolean) => void;
   onTransformEdit: (axis: "x" | "y" | "z", channel: GizmoMode, value: number) => void;
+  onResetWorld: () => void;
   onParams: () => void;
   onReforge: () => void;
   onSave: () => void;
@@ -35,6 +36,9 @@ export class EditorPanel {
   private inspectorBody: HTMLElement;
   private emptyNote: HTMLElement;
   private numberInputs = new Map<string, HTMLInputElement>();
+  private placementActions!: HTMLElement;
+  private worldActions!: HTMLElement;
+  private subjectLabel!: HTMLElement;
   private activeTab: Tab = "library";
   private selectedUid: string | null = null;
 
@@ -115,6 +119,9 @@ export class EditorPanel {
   }
 
   private buildInspector(): void {
+    this.subjectLabel = document.createElement("p");
+    this.subjectLabel.className = "editor-subject";
+    this.inspectorBody.appendChild(this.subjectLabel);
     const modes = document.createElement("div");
     modes.className = "editor-seg";
     for (const [mode, glyph] of [
@@ -159,8 +166,8 @@ export class EditorPanel {
       this.inspectorBody.appendChild(row);
     }
 
-    const actions = document.createElement("div");
-    actions.className = "editor-actions";
+    this.placementActions = document.createElement("div");
+    this.placementActions.className = "editor-actions";
     const duplicate = document.createElement("button");
     duplicate.textContent = "⧉ Duplicate";
     duplicate.addEventListener("click", () => this.hooks.onDuplicate());
@@ -170,8 +177,18 @@ export class EditorPanel {
     remove.addEventListener("click", () => {
       if (this.selectedUid) this.hooks.onDelete(this.selectedUid);
     });
-    actions.append(duplicate, remove);
-    this.inspectorBody.appendChild(actions);
+    this.placementActions.append(duplicate, remove);
+    this.inspectorBody.appendChild(this.placementActions);
+
+    // A generated object can't be deleted (the forge owns it) — it can only
+    // be moved and put back, so it gets its own action row.
+    this.worldActions = document.createElement("div");
+    this.worldActions.className = "editor-actions";
+    const reset = document.createElement("button");
+    reset.textContent = "↺ Reset to generated";
+    reset.addEventListener("click", () => this.hooks.onResetWorld());
+    this.worldActions.appendChild(reset);
+    this.inspectorBody.appendChild(this.worldActions);
   }
 
   private buildGenerate(): void {
@@ -257,12 +274,19 @@ export class EditorPanel {
   }
 
   /** Mirror the live transform into the numeric fields (called while the
-   *  gizmo drags, so typing and dragging agree). */
-  setSelection(record: PlacementRecord | null): void {
-    this.selectedUid = record?.uid ?? null;
-    this.emptyNote.style.display = record ? "none" : "";
-    this.inspectorBody.style.display = record ? "" : "none";
-    if (!record) return;
+   *  gizmo drags, so typing and dragging agree). `world` marks a generated
+   *  object, which swaps Duplicate/Delete for Reset. */
+  setSelection(
+    subject: { label: string; position: [number, number, number]; rotation: [number, number, number]; scale: [number, number, number]; uid?: string } | null,
+    world = false,
+  ): void {
+    this.selectedUid = subject?.uid ?? null;
+    this.emptyNote.style.display = subject ? "none" : "";
+    this.inspectorBody.style.display = subject ? "" : "none";
+    this.placementActions.style.display = subject && !world ? "" : "none";
+    this.worldActions.style.display = subject && world ? "" : "none";
+    if (!subject) return;
+    this.subjectLabel.textContent = world ? `⛰ ${subject.label} (generated)` : `◆ ${subject.label}`;
     const write = (channel: GizmoMode, values: [number, number, number], scale = 1) => {
       (["x", "y", "z"] as const).forEach((axis, index) => {
         const field = this.numberInputs.get(`${channel}.${axis}`);
@@ -271,9 +295,9 @@ export class EditorPanel {
         }
       });
     };
-    write("translate", record.position);
-    write("rotate", record.rotation, 180 / Math.PI);
-    write("scale", record.scale);
+    write("translate", subject.position);
+    write("rotate", subject.rotation, 180 / Math.PI);
+    write("scale", subject.scale);
     if (this.activeTab === "library") this.setTab("inspect");
   }
 

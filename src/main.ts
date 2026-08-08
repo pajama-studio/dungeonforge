@@ -359,6 +359,10 @@ async function runReforge(): Promise<void> {
     }).device?.queue;
     await (queue?.onSubmittedWorkDone?.() ?? Promise.resolve());
     if (ctx.state.token !== expectedToken || activeMode !== modeAtStart) return;
+    // The forge resets slot-group transforms and rebuilds landmarks, so any
+    // hand-adjusted generated object has to be stamped back to the user's
+    // values now that the new world exists.
+    editor?.reapplyOverrides();
     reportForgeStage("ready", {
       token: expectedToken,
       seed: ctx.state.seed,

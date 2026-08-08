@@ -48,13 +48,18 @@ export class DungeonEditor {
       onModeChange: (mode) => this.setMode(mode),
       onSnapChange: (snap) => this.stage.setSnap(snap),
       onTransformEdit: (axis, channel, value) => this.editTransform(axis, channel, value),
+      onResetWorld: () => { this.stage.resetWorldSelection(); this.refreshPanel(); },
       onParams: () => host.reforge(),
       onReforge: () => host.reforge(),
       onSave: () => this.save(),
       onLoad: () => void this.load(),
       onExport: () => exportFile(this.document()),
       onImport: () => void this.importDocument(),
-      onClear: () => { this.stage.clear(); this.refreshPanel(); },
+      onClear: () => {
+        this.stage.clear();
+        this.stage.clearOverrides();
+        this.refreshPanel();
+      },
     });
     this.panel.setMode(this.stage.getMode());
     this.bindPointer();
@@ -92,14 +97,16 @@ export class DungeonEditor {
   }
 
   private editTransform(axis: "x" | "y" | "z", channel: GizmoMode, value: number): void {
-    const object = this.stage.selected;
+    const object = this.stage.selected ?? this.stage.selectedWorld;
     if (!object) return;
     if (channel === "translate") object.position[axis] = value;
     else if (channel === "rotate") object.rotation[axis] = (value * Math.PI) / 180;
     else object.scale[axis] = value === 0 ? 0.001 : value;
     object.updateMatrixWorld(true);
     // re-attaching refreshes the gizmo's cached matrix without a full reselect
-    void this.stage.select(this.stage.selectedRecord?.uid ?? null);
+    if (this.stage.selectedWorld) void this.stage.selectWorld(this.stage.selectedWorld);
+    else void this.stage.select(this.stage.selectedRecord?.uid ?? null);
+    this.refreshPanel();
   }
 
   private bindPointer(): void {
@@ -149,18 +156,38 @@ export class DungeonEditor {
 
   private refreshPanel(): void {
     if (this.restoring) return;
-    const record = this.stage.selectedRecord;
-    this.panel.setSelection(record);
-    this.panel.setOutliner(this.stage.list(), record?.uid ?? null);
+    const world = this.stage.selectedWorld;
+    if (world) {
+      this.panel.setSelection({
+        label: world.name,
+        position: world.position.toArray() as [number, number, number],
+        rotation: [world.rotation.x, world.rotation.y, world.rotation.z],
+        scale: world.scale.toArray() as [number, number, number],
+      }, true);
+    } else {
+      const record = this.stage.selectedRecord;
+      this.panel.setSelection(record ? { ...record, label: record.assetId } : null);
+    }
+    this.panel.setOutliner(this.stage.list(), this.stage.selectedRecord?.uid ?? null);
+  }
+
+  /** Called by the host after a forge: generated objects were rebuilt or had
+   *  their transforms reset, so every override has to be stamped back on. */
+  reapplyOverrides(): void {
+    this.stage.reapplyOverrides();
+    this.refreshPanel();
   }
 
   private document(): SceneDocument {
-    return buildDocument(
-      this.host.state.seed,
-      this.host.activeMode(),
-      this.host.genParams,
-      this.stage.list(),
-    );
+    return {
+      ...buildDocument(
+        this.host.state.seed,
+        this.host.activeMode(),
+        this.host.genParams,
+        this.stage.list(),
+      ),
+      overrides: this.stage.worldOverrides(),
+    };
   }
 
   private save(): void {
@@ -200,6 +227,7 @@ export class DungeonEditor {
       if (!asset) { missing += 1; continue; }
       await this.stage.place(asset, origin, record);
     }
+    if (doc.overrides) this.stage.loadOverrides(doc.overrides);
     this.restoring = false;
     this.refreshPanel();
     if (missing > 0) console.warn(`[editor] skipped ${missing} unknown asset(s)`);

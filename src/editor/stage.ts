@@ -5,7 +5,40 @@
 
 import * as THREE from "three/webgpu";
 import type { TransformControls } from "three/addons/controls/TransformControls.js";
-import type { AssetDef, GizmoMode, PlacementRecord } from "./types";
+import type { AssetDef, GizmoMode, PlacementRecord, WorldOverride } from "./types";
+
+/** Generated content the editor refuses to adopt: moving these breaks the
+ *  frame rather than the art. Everything else in the world is fair game. */
+const NOT_SELECTABLE = /^(editor-|.*transform-gizmo|dragon-placement-transform-anchor|gpu-scene-masonry|gpu-masonry-debris)/;
+
+/** A node broad enough to be a bag rather than a thing: the scene, the
+ *  environment group, or anything holding 8+ children. */
+function isContainer(node: THREE.Object3D, scene: THREE.Object3D): boolean {
+  return node === scene || node.name === "environment" || node.children.length >= CONTAINER_FANOUT;
+}
+
+const CONTAINER_FANOUT = 8;
+
+/** Climb from a raycast hit to the entity just BELOW the nearest container,
+ *  so a click lands on "abyssal-cephalopod-oracle" — not on one anonymous
+ *  sub-mesh, and not on the whole landmark bag that holds every monument.
+ *  Exported for tests: this rule decides what the user can grab, and it has
+ *  no business needing a browser to check. */
+export function selectableEntity(
+  hit: THREE.Object3D,
+  scene: THREE.Object3D,
+): THREE.Object3D | null {
+  let node: THREE.Object3D = hit;
+  let named: THREE.Object3D | null = node.name ? node : null;
+  while (node.parent && !isContainer(node.parent, scene)) {
+    node = node.parent;
+    if (node.name) named = node;
+  }
+  const best = node.name ? node : named;
+  if (!best?.name || NOT_SELECTABLE.test(best.name)) return null;
+  if (isContainer(best, scene)) return null;
+  return best;
+}
 
 /** Placed props live under this group. `forge()` clears slot pools and
  *  landmark groups but never touches it, so edits survive a re-forge. */
@@ -34,6 +67,9 @@ export class EditorStage {
   private transform: TransformControls | null = null;
   private transformLoad: Promise<TransformControls> | null = null;
   private selectedUid: string | null = null;
+  /** a generated object currently under the gizmo (not a placement) */
+  private worldSelection: THREE.Object3D | null = null;
+  private overrides = new Map<string, WorldOverride>();
   private mode: GizmoMode = "translate";
   private snap = true;
   /** transform state captured on mouseDown, so one drag is one undo step */
@@ -154,6 +190,16 @@ export class EditorStage {
   }
 
   private syncRecordFromObject(): void {
+    const world = this.worldSelection;
+    if (world) {
+      const override = this.overrides.get(world.name);
+      if (override) {
+        override.position = world.position.toArray() as [number, number, number];
+        override.rotation = [world.rotation.x, world.rotation.y, world.rotation.z];
+        override.scale = world.scale.toArray() as [number, number, number];
+      }
+      return;
+    }
     const uid = this.selectedUid;
     if (!uid) return;
     const entry = this.placed.get(uid);
@@ -202,6 +248,7 @@ export class EditorStage {
 
   async select(uid: string | null): Promise<void> {
     this.selectedUid = uid;
+    this.worldSelection = null; // placements and world objects are exclusive
     const entry = uid ? this.placed.get(uid) : null;
     if (!entry) {
       this.transform?.detach();
@@ -246,21 +293,117 @@ export class EditorStage {
     }
   }
 
-  /** Click-to-select. Returns true when the ray hit a placed prop, so the
-   *  caller can leave orbit/camera handling alone otherwise. */
+  /** Click-to-select. Placed props win; otherwise the ray falls through to
+   *  the generated world so landmarks, water sheets and whole islands can be
+   *  adopted for editing too. Returns true when anything was selected. */
   pickAt(ndc: THREE.Vector2): boolean {
-    if (this.placed.size === 0) return false;
     const raycaster = new THREE.Raycaster();
     raycaster.setFromCamera(ndc, this.camera as THREE.PerspectiveCamera);
-    const hits = raycaster.intersectObject(this.group, true);
-    const hit = hits[0];
-    if (!hit) return false;
-    let node: THREE.Object3D | null = hit.object;
-    while (node && node.userData.editorUid === undefined) node = node.parent;
-    const uid = node?.userData.editorUid as string | undefined;
-    if (!uid) return false;
-    void this.select(uid);
-    return true;
+
+    const ownHit = raycaster.intersectObject(this.group, true)[0];
+    if (ownHit) {
+      let node: THREE.Object3D | null = ownHit.object;
+      while (node && node.userData.editorUid === undefined) node = node.parent;
+      const uid = node?.userData.editorUid as string | undefined;
+      if (uid) {
+        void this.select(uid);
+        return true;
+      }
+    }
+
+    for (const hit of raycaster.intersectObject(this.scene, true)) {
+      const entity = this.selectableAncestor(hit.object);
+      if (!entity) continue;
+      void this.selectWorld(entity);
+      return true;
+    }
+    return false;
+  }
+
+  private selectableAncestor(hit: THREE.Object3D): THREE.Object3D | null {
+    const entity = selectableEntity(hit, this.scene);
+    return entity === this.group ? null : entity;
+  }
+
+  get selectedWorld(): THREE.Object3D | null {
+    return this.worldSelection;
+  }
+
+  worldOverrides(): WorldOverride[] {
+    return [...this.overrides.values()];
+  }
+
+  /** Attach the gizmo to a generated object and start tracking it. */
+  async selectWorld(object: THREE.Object3D): Promise<void> {
+    this.selectedUid = null;
+    this.worldSelection = object;
+    if (!this.overrides.has(object.name)) {
+      this.overrides.set(object.name, {
+        name: object.name,
+        position: object.position.toArray() as [number, number, number],
+        rotation: [object.rotation.x, object.rotation.y, object.rotation.z],
+        scale: object.scale.toArray() as [number, number, number],
+        base: {
+          position: object.position.toArray() as [number, number, number],
+          rotation: [object.rotation.x, object.rotation.y, object.rotation.z],
+          scale: object.scale.toArray() as [number, number, number],
+        },
+      });
+    }
+    const t = await this.ensureTransform();
+    if (this.worldSelection !== object) return;
+    t.attach(object);
+    this.events.onSelect?.(null);
+  }
+
+  /** Restore a generated object to the transform the forge gave it. */
+  resetWorldSelection(): void {
+    const object = this.worldSelection;
+    if (!object) return;
+    const override = this.overrides.get(object.name);
+    if (!override) return;
+    object.position.fromArray(override.base.position);
+    object.rotation.fromArray(override.base.rotation);
+    object.scale.fromArray(override.base.scale);
+    object.updateMatrixWorld(true);
+    this.overrides.delete(object.name);
+    this.worldSelection = null;
+    this.transform?.detach();
+    this.events.onSelect?.(null);
+  }
+
+  /** Re-apply every override after a forge rebuilt or reset the world. */
+  reapplyOverrides(): void {
+    for (const override of this.overrides.values()) {
+      const object = this.scene.getObjectByName(override.name);
+      if (!object) continue;
+      object.position.fromArray(override.position);
+      object.rotation.fromArray(override.rotation);
+      object.scale.fromArray(override.scale);
+      object.updateMatrixWorld(true);
+    }
+    // the gizmo's cached matrix is stale after a rebuild
+    if (this.worldSelection) void this.selectWorld(this.worldSelection);
+  }
+
+  loadOverrides(records: WorldOverride[]): void {
+    this.overrides.clear();
+    for (const record of records) this.overrides.set(record.name, record);
+    this.reapplyOverrides();
+  }
+
+  clearOverrides(): void {
+    for (const override of this.overrides.values()) {
+      const object = this.scene.getObjectByName(override.name);
+      if (!object) continue;
+      object.position.fromArray(override.base.position);
+      object.rotation.fromArray(override.base.rotation);
+      object.scale.fromArray(override.base.scale);
+      object.updateMatrixWorld(true);
+    }
+    this.overrides.clear();
+    this.worldSelection = null;
+    this.transform?.detach();
   }
 
   setGizmoVisible(visible: boolean): void {

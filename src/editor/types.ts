@@ -30,6 +30,23 @@ export interface PlacementRecord {
   scale: [number, number, number];
 }
 
+/** A transform override on an object the GENERATOR made (a landmark, an
+ *  island, a water sheet). Keyed by object name rather than uid: the object
+ *  is rebuilt or reset by every forge, so the override has to be re-applied
+ *  afterwards by looking the name up again. `base` is the transform as
+ *  generated, which makes "reset to generated" exact rather than guessed. */
+export interface WorldOverride {
+  name: string;
+  position: [number, number, number];
+  rotation: [number, number, number];
+  scale: [number, number, number];
+  base: {
+    position: [number, number, number];
+    rotation: [number, number, number];
+    scale: [number, number, number];
+  };
+}
+
 /** Everything an edited dungeon needs to come back exactly as it was. */
 export interface SceneDocument {
   version: 1;
@@ -37,6 +54,7 @@ export interface SceneDocument {
   mode: string;
   params: Record<string, number | string | boolean>;
   placements: PlacementRecord[];
+  overrides?: WorldOverride[];
 }
 
 export type GizmoMode = "translate" | "rotate" | "scale";

@@ -1130,7 +1130,11 @@ renderer.domElement.addEventListener("pointerdown", () => { cine.stop(); });
 // heavy views trade a little sharpness for smoothness, light views win it
 // back. Adjust at most once a second (setPixelRatio reallocates targets).
 let dprNow = Math.min(devicePixelRatio, PR_BASE);
-let frameEma = 16.7;
+let frameVsync = 16.7; // rolling estimate of the display refresh interval
+let frameDropped = 0;
+let frameCounted = 0;
+let overloadStreak = 0;
+let emergencyShifted = false;
 let lastDprAdj = 0;
 let coreReady = false;
 let decorReady = false;
@@ -1148,19 +1152,38 @@ const startupTiming = {
   decorReadyAt: 0,
 };
 function adaptResolution(t: number, rawMs: number): void {
-  frameEma = frameEma * 0.95 + Math.min(rawMs, 50) * 0.05; // clamp forge hitches
+  // Resolution changes are NOT cheap on this renderer: ClusteredLightsNode
+  // derives its cluster grid from the drawing-buffer size, so every
+  // setPixelRatio call changes the lights-node cache key, invalidates every
+  // render object in the scene and forces a full WGSL rebuild — a
+  // multi-second main-thread stall (measured 3.3–3.6s per step, 22s+ when the
+  // old controller walked several steps during boot). A per-second walk-up /
+  // walk-down controller turns that stall into a periodic storm, so the
+  // resolution is PINNED to the mode cap instead, with a single emergency
+  // downshift for genuinely overloaded GPUs (sustained vsync drops for 15s).
+  frameVsync = Math.min(frameVsync * 1.02, Math.max(4, Math.min(rawMs, 25)));
+  frameCounted++;
+  if (rawMs > frameVsync * 1.6) frameDropped++;
   if (t - lastDprAdj < 1) return;
+  lastDprAdj = t;
+  const dropRate = frameDropped / Math.max(1, frameCounted);
+  frameDropped = 0;
+  frameCounted = 0;
+  overloadStreak = dropRate > 0.25 ? overloadStreak + 1 : 0;
   const cap = Math.min(devicePixelRatio, ctx.state.prCap);
   let next = dprNow;
-  // floor 0.85: the controller only walks down while frames are actually
-  // over budget, and under bloom + fog the softness is invisible
-  if (frameEma > 19 && dprNow > 0.85) next = Math.max(0.85, dprNow - 0.125);
-  else if (frameEma < 14 && dprNow < cap) next = Math.min(cap, dprNow + 0.125);
-  else if (dprNow > cap) next = cap;
+  if (!emergencyShifted && overloadStreak >= 15 && dprNow > 1) {
+    emergencyShifted = true; // one-way: never oscillate back into a rebuild
+    next = Math.max(1, cap - 0.35);
+  } else if (dprNow > cap) {
+    next = cap; // mode cap shrank (large chain) — one-time clamp at forge
+  } else if (dprNow < cap && !emergencyShifted) {
+    next = cap; // mode cap grew back on a smaller re-forge
+  }
   if (next !== dprNow) {
     dprNow = next;
     renderer.setPixelRatio(dprNow);
-    lastDprAdj = t;
+    console.log(`[frame] pixelRatio → ${dprNow.toFixed(2)} (full pipeline rebuild)`);
   }
 }
 

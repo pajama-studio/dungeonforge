@@ -611,7 +611,9 @@ export class GpuMasonryScene {
     for (const bucket of this.buckets) {
       bucket.mesh.dispose();
       bucket.geometry.dispose();
-      bucket.mesh.material.dispose();
+      const material = bucket.mesh.material;
+      if (Array.isArray(material)) material.forEach((m) => m.dispose());
+      else material.dispose();
       bucket.matrices.dispose();
       bucket.colors.dispose();
     }

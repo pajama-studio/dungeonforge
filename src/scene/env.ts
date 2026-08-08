@@ -19,18 +19,24 @@ export type Environment = ReturnType<typeof buildEnvironment>;
 
 /** the moon's direction — shared by the sky disc, the shadow light and the
  *  post-pass fog forward scattering (env owns it; nobody re-derives it) */
-export const MOON_DIR = new THREE.Vector3(-46, 48, -22).normalize();
+// Near-overhead rather than vertical: enough rake to expose the aperture edge
+// and architecture silhouettes, while still reading as light from the cavern
+// roof instead of a low exterior moon.
+export const MOON_DIR = new THREE.Vector3(-0.45, 1, -0.25).normalize();
 
 /** the ONE horizon-air color. The sky's below-horizon fog band and the post
  *  pass's aerial haze both converge to it — any mismatch between the two shows
  *  up as a hard seam along the abyss plane's edge / the far silhouette line. */
-export const HORIZON_FOG = 0x0b1928;
+// Eldritch-green grade (chosen from the ref-C concept pass): the horizon air
+// leans teal-green rather than navy, so distance reads as deep-sea murk.
+export const HORIZON_FOG = 0x0d2328;
 
 export function buildEnvironment(
   scene: THREE.Scene,
   seed: number,
   applyCinematicLights?: (specs: CinematicLightSpec[]) => void,
 ): {
+  godrayLight: THREE.DirectionalLight;
   fit: (half: number, centerX?: number, centerZ?: number, top?: number) => void;
   bakeShadows: () => void;
   tick: (camera: THREE.Camera) => void;
@@ -112,7 +118,14 @@ export function buildEnvironment(
   // -- Fog: animated ground fog pooling below the fortress + gentle distance haze.
   const fogColor = color(HORIZON_FOG); // one shared horizon-air colour; no seam
   const fogBase = float(ABYSS * TH - 8);
-  const noise = triNoise3D(positionWorld.mul(0.014), 0.25, time).mul(5.0);
+  // Three offset sines replace the former per-fragment triNoise3D (~36 tri()
+  // evaluations on every scene fragment). The wobble only sways the fog-top
+  // height of the dialed-back material fog — the post-pass volumetric owns the
+  // visible mist detail — so smooth low-frequency motion reads the same.
+  const noise = sin(positionWorld.x.mul(0.021).add(time.mul(0.14)))
+    .add(sin(positionWorld.z.mul(0.017).sub(time.mul(0.1))))
+    .add(sin(positionWorld.x.mul(0.006).add(positionWorld.z.mul(0.008)).add(time.mul(0.05))))
+    .add(3); // [-3,3] → [0,6], matching the old triNoise3D×5 range
   const fogTop = float(2.2).add(noise);
   // material-level ground fog dialed back — the post-pass volumetric raymarch
   // now owns the low mist; this only keeps distant aerial perspective coherent
@@ -130,15 +143,21 @@ export function buildEnvironment(
   // Keep occluded masonry readable enough for the painted value planes to
   // survive. 0.72 crushed bridge undersides and deep courts to near-black;
   // the modest fill lift preserves the night key while exposing bevel work.
-  const hemi = new THREE.HemisphereLight(0x39497e, 0x2e2018, 0.86);
+  // Hue-separated night palette that stays inside one blue family: an icy
+  // cyan moon KEY, a steel-blue counter-RIM barely warmer than the sky, and a
+  // warm earthen ground bounce. The variation comes from cyan↔teal↔amber —
+  // violet pulled the frame apart, so the rim keeps only a whisper of it.
+  const hemi = new THREE.HemisphereLight(0x36586e, 0x412a1a, 0.9);
   group.add(hemi);
 
-  const rim = new THREE.DirectionalLight(0x4f689f, 0.55);
+  const rim = new THREE.DirectionalLight(0x568fa0, 0.56);
   rim.position.set(52, 20, 34); // low, opposite the moon — silhouette kisser
   group.add(rim, rim.target);
 
-  const moon = new THREE.DirectionalLight(0x9db2ef, 1.75);
-  moon.position.set(-46, 48, -22); // raking but high enough to light wall tops
+  // warm ivory moonbeam (per the painted reference): beam-lit stone tops go
+  // gold while unlit masonry stays in the cool teal ambient
+  const moon = new THREE.DirectionalLight(0xd4cfae, 1.75);
+  moon.position.copy(MOON_DIR).multiplyScalar(80);
   moon.castShadow = true;
   moon.shadow.mapSize.set(2048, 2048);
   const sc = moon.shadow.camera;
@@ -148,6 +167,80 @@ export function buildEnvironment(
   moon.shadow.radius = 1; // r=3 blurred small-prop contact shadows into detached "floating" blobs
   moon.shadow.autoUpdate = false; // static scene — bake once per regeneration
   group.add(moon, moon.target);
+
+  // -- Cavern roof aperture. This is the missing physical cause of the
+  // godrays: a single closed, irregular annulus sits above every landmark and
+  // casts into the SAME moon shadow map sampled by the post raymarch. Only the
+  // hole remains lit, so the volume resolves into one authored shaft instead
+  // of a uniform blue wash. The entire roof is one tiny procedural draw.
+  const apertureSegments = 24;
+  const aperturePositions: number[] = [];
+  const apertureColors: number[] = [];
+  const apertureIndices: number[] = [];
+  const apertureInner: number[] = [];
+  const apertureOuter: number[] = [];
+  const apertureBottom: number[] = [];
+  const apertureTop: number[] = [];
+  const apertureColor = new THREE.Color();
+  for (let i = 0; i < apertureSegments; i++) {
+    apertureInner.push(0.88 + hash2(seed, i, 910) * 0.28);
+    apertureOuter.push(6.7 + hash2(seed, i, 911) * 0.7);
+    apertureBottom.push(-0.54 + hash2(seed, i, 912) * 0.16);
+    apertureTop.push(0.42 + hash2(seed, i, 913) * 0.2);
+  }
+  for (let i = 0; i < apertureSegments; i++) {
+    const angle = i / apertureSegments * Math.PI * 2;
+    const c = Math.cos(angle);
+    const s = Math.sin(angle);
+    const values = [
+      [apertureInner[i], apertureBottom[i], 0.13],
+      [apertureOuter[i], apertureBottom[i], 0.055],
+      [apertureInner[i], apertureTop[i], 0.18],
+      [apertureOuter[i], apertureTop[i], 0.075],
+    ];
+    for (const [radius, y, luminance] of values) {
+      aperturePositions.push(c * radius, y, s * radius);
+      apertureColor.setHSL(0.59, 0.3, luminance);
+      apertureColors.push(apertureColor.r, apertureColor.g, apertureColor.b);
+    }
+  }
+  for (let i = 0; i < apertureSegments; i++) {
+    const n = (i + 1) % apertureSegments;
+    const ib = i * 4;
+    const ob = ib + 1;
+    const it = ib + 2;
+    const ot = ib + 3;
+    const nib = n * 4;
+    const nob = nib + 1;
+    const nit = nib + 2;
+    const not = nib + 3;
+    // underside, top, inner reveal and distant outer rim
+    apertureIndices.push(ib, nob, ob, ib, nib, nob);
+    apertureIndices.push(it, ot, not, it, not, nit);
+    apertureIndices.push(ib, it, nit, ib, nit, nib);
+    apertureIndices.push(ob, nob, not, ob, not, ot);
+  }
+  const indexedAperture = new THREE.BufferGeometry();
+  indexedAperture.setAttribute("position", new THREE.Float32BufferAttribute(aperturePositions, 3));
+  indexedAperture.setAttribute("color", new THREE.Float32BufferAttribute(apertureColors, 3));
+  indexedAperture.setIndex(apertureIndices);
+  const apertureGeometry = indexedAperture.toNonIndexed();
+  indexedAperture.dispose();
+  apertureGeometry.computeVertexNormals();
+  apertureGeometry.computeBoundingSphere();
+  const apertureMaterial = new THREE.MeshLambertNodeMaterial({ vertexColors: true, side: THREE.DoubleSide });
+  const cavernAperture = new THREE.Mesh(apertureGeometry, apertureMaterial);
+  cavernAperture.name = "procedural-overhead-cavern-godray-aperture";
+  cavernAperture.castShadow = true;
+  cavernAperture.receiveShadow = false;
+  cavernAperture.frustumCulled = false;
+  cavernAperture.userData.aperture = {
+    segments: apertureSegments,
+    triangles: apertureIndices.length / 3,
+    draws: 1,
+    shadowSource: "shared-static-moon-map",
+  };
+  group.add(cavernAperture);
 
   // One simple instanced low-poly draw supplies both cold dust motes and sparse
   // warm embers. This intentionally uses the already-hot Basic pipeline: the
@@ -453,6 +546,9 @@ export function buildEnvironment(
   scene.add(group);
 
   return {
+    // The post chain samples this light's already-baked shadow depth to build
+    // true occluded shafts; no duplicate light or shadow map is allocated.
+    godrayLight: moon,
     /** refit shadows, canyon ring and haze to the current chain extent/centre.
      *  `top` = world height of the tallest stack: the moon backs off along its
      *  own direction and the shadow volume grows so sky-spires stay inside the
@@ -462,13 +558,42 @@ export function buildEnvironment(
       const r = half + 12 + top * 0.35;
       if (Math.abs(sc.right - r) >= 1) {
         sc.left = -r; sc.right = r; sc.top = r; sc.bottom = -r;
-        sc.far = 150 * k;
         sc.updateProjectionMatrix();
-        moon.position.set(-46 * k + centerX, 48 * k, -22 * k + centerZ);
-        moon.target.position.set(centerX, 0, centerZ);
-        rim.position.set(centerX + 52, 20 * k, centerZ + 34);
-        rim.target.position.set(centerX, 0, centerZ);
       }
+      // Put the geological lid above the tallest generated architecture and
+      // the streamed landmarks. Its hole is shifted upstream along the light
+      // vector so the parallel shaft lands back on the maze centre at y=0.
+      const roofY = top + 260;
+      const openingRadius = THREE.MathUtils.clamp(half * 0.32, 24, 58);
+      // upstream-shift ratios derived from MOON_DIR so the shaft angle is
+      // tuned in one place; per unit of height the shaft drifts by tilt*height
+      const tiltX = MOON_DIR.x / MOON_DIR.y;
+      const tiltZ = MOON_DIR.z / MOON_DIR.y;
+      cavernAperture.position.set(
+        centerX + roofY * tiltX,
+        roofY,
+        centerZ + roofY * tiltZ,
+      );
+      cavernAperture.scale.set(openingRadius, 18, openingRadius);
+      cavernAperture.updateMatrixWorld();
+      cavernAperture.userData.aperture = {
+        ...cavernAperture.userData.aperture,
+        openingRadius,
+        roofY,
+        center: cavernAperture.position.toArray(),
+      };
+      const lightHeight = roofY + 130;
+      moon.position.set(
+        centerX + lightHeight * tiltX,
+        lightHeight,
+        centerZ + lightHeight * tiltZ,
+      );
+      moon.target.position.set(centerX, 0, centerZ);
+      // slanted light travels lightHeight / MOON_DIR.y to reach the target
+      sc.far = Math.max(150 * k, lightHeight / MOON_DIR.y + 70);
+      sc.updateProjectionMatrix();
+      rim.position.set(centerX + 52, 20 * k, centerZ + 34);
+      rim.target.position.set(centerX, 0, centerZ);
       // the mesa/mist/ruin ring was authored around a ~40-unit island — recentre
       // on the chain and push it outward so cliffs never intersect the blocks
       const s = Math.max(1, (half + 26) / 72);

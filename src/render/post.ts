@@ -5,34 +5,80 @@
 
 import * as THREE from "three/webgpu";
 import {
-  pass, screenUV, float, smoothstep, vec3, vec4, Loop, hash, time, exp,
+  pass, screenUV, float, smoothstep, vec3, vec4, Loop, hash, time, exp, sin,
   color, getViewPosition, cameraProjectionMatrixInverse, cameraWorldMatrix,
-  cameraPosition, triNoise3D, mrt, output, normalView,
+  cameraPosition, triNoise3D, mrt, output, normalView, rtt, mix,
 } from "three/tsl";
 import { bloom } from "three/addons/tsl/display/BloomNode.js";
 import { ao } from "three/addons/tsl/display/GTAONode.js";
+import { godrays } from "three/addons/tsl/display/GodraysNode.js";
+import { bilateralBlur } from "three/addons/tsl/display/BilateralBlurNode.js";
+import { depthAwareBlend } from "three/addons/tsl/display/depthAwareBlend.js";
 import { MOON_DIR, HORIZON_FOG } from "../scene/env";
 
 export interface PostChain {
   post: THREE.RenderPipeline;
   /** live bloom strength — close-up modes (the skeleton walk) dial it down */
   setBloom: (s: number) => void;
+  godrays: {
+    enabled: boolean;
+    resolutionScale: number;
+    raymarchSteps: number;
+  };
 }
 
 export function createPost(
   renderer: THREE.WebGPURenderer, scene: THREE.Scene, camera: THREE.Camera,
-  options: { ambientOcclusion?: boolean } = {},
+  options: { ambientOcclusion?: boolean; godrayLight?: THREE.DirectionalLight } = {},
 ): PostChain {
   const postProcessing = new THREE.RenderPipeline(renderer);
   const scenePass = pass(scene, camera);
   if (options.ambientOcclusion) scenePass.setMRT(mrt({ output, normal: normalView }));
   const scenePassColor = scenePass.getTextureNode();
-  const bloomPass = bloom(scenePassColor, 0.9, 0.4, 1.1);
+  // threshold 1.0 (was 1.1): the painted reference wants every candle/ember
+  // to carry a visible halo, not only the hottest flame cores
+  const bloomPass = bloom(scenePassColor, 0.9, 0.4, 1.0);
 
   // volumetric ground fog: a depth-aware raymarch through an animated low-lying
   // density slab — walls occlude it correctly, wisps roll through corridors, and
   // looking toward the moon brightens the fog (cheap forward scattering).
   const depthTex = scenePass.getTextureNode("depth");
+  // WebGPU/TSL port of the three-good-godrays technique: reconstruct the
+  // camera ray from scene depth, clip it to the directional-light shadow
+  // frustum, jittered-raymarch that segment, and sample the existing static
+  // moon shadow map at each step. The low-resolution result is depth-aware
+  // upsampled so shafts stop cleanly at masonry.
+  // Reusing the one baked shadow map avoids both a second shadow render and a
+  // fake translucent cone in the scene.
+  let scenePassLit: THREE.Node<"vec4"> = scenePassColor;
+  let godrayResolutionScale = 0;
+  let godraySteps = 0;
+  if (options.godrayLight) {
+    const rays = godrays(depthTex, camera, options.godrayLight);
+    rays.raymarchSteps.value = 12;
+    rays.density.value = 0.045;
+    rays.maxDensity.value = 0.1;
+    rays.distanceAttenuation.value = 1.5;
+    rays.resolutionScale = 0.34;
+    const rayTexture = rays.getTextureNode();
+    // Minimal separable blur at the already-small ray resolution removes the
+    // checker/dither pattern that otherwise becomes visible on near-black
+    // walls. This follows the reference pipeline without paying for a full-
+    // resolution blur.
+    const softenedRays = bilateralBlur(rayTexture, float(1), 1, 0.1);
+    const softenedTexture = softenedRays.getTextureNode();
+    scenePassLit = depthAwareBlend(scenePassColor, softenedTexture, depthTex, camera, {
+      // pale moon-cyan dust: the shaft must read a different hue than the
+      // indigo air around it, not just a brighter version of the same blue
+      // warm parchment-gold beam (painted reference): the shaft is the warm
+      // counterpoint to the teal air, so it must never share the air's hue
+      blendColor: color(0xd6c493),
+      edgeRadius: 1,
+      edgeStrength: 1.25,
+    });
+    godrayResolutionScale = rays.resolutionScale;
+    godraySteps = rays.raymarchSteps.value;
+  }
   const aoFactor = (() => {
     if (!options.ambientOcclusion) return float(1);
     const normalTex = scenePass.getTextureNode("normal");
@@ -46,6 +92,14 @@ export function createPost(
     aoPass.distanceFallOff.value = 0.88;
     return aoPass.getTextureNode().r.mul(0.35).add(0.65);
   })();
+  // ---- low-resolution atmosphere pass -------------------------------------
+  // The ground-fog raymarch (5 × triNoise3D per pixel) and the analytic haze
+  // integral are by far the heaviest full-screen work in the chain, yet both
+  // produce only soft, low-frequency signals. Evaluate them once at 0.4×
+  // resolution into an auto-resizing RTT and let the final full-screen shader
+  // pay a single bilinear fetch instead of ~180 tri() evaluations per pixel.
+  // Channels: r = fog transmittance, g = haze amount, b = forward-scatter
+  // factor (so the final shader needs no per-pixel ray reconstruction at all).
   const vp = getViewPosition(screenUV, depthTex, cameraProjectionMatrixInverse);
   const wp = cameraWorldMatrix.mul(vec4(vp, 1)).xyz;
   const ro = cameraPosition;
@@ -90,7 +144,6 @@ export function createPost(
     trans.mulAssign(exp(dens.mul(stepLen).negate()));
   });
   const scatter = rd.dot(vec3(MOON_DIR.x, MOON_DIR.y, MOON_DIR.z)).clamp(0, 1).pow(5).mul(0.5).add(1);
-  const fogCol = color(0x1a3247).mul(scatter).mul(0.72);
 
   // aerial perspective: an ANALYTIC exponential height haze over the full depth
   // (iq's closed-form integral — no extra marching). This is the "one air" that
@@ -123,15 +176,47 @@ export function createPost(
   const hazeAmt = float(1).sub(exp(od.negate())).mul(hazeGate)
     .max(wpLow.mul(distF).mul(belowH).mul(0.92))
     .clamp(0, 0.92);
-  const hazeCol = color(HORIZON_FOG).mul(scatter);
+
+  // Render the packed atmosphere signals at reduced resolution. autoResize
+  // keeps the target locked to 0.4× the drawing buffer, so the adaptive
+  // pixel-ratio controller in main.ts scales this pass along with the rest.
+  // Bilinear upsampling is enough: transmittance/haze/scatter are all soft
+  // fields, and the heavy aesthetic haze plus bloom hide the sub-pixel edge.
+  const atmosphere = rtt(vec4(trans, hazeAmt, scatter, float(1)));
+  atmosphere.setResolutionScale(0.4);
+  const atmoTrans = atmosphere.r;
+  const atmoHaze = atmosphere.g;
+  const atmoScatter = atmosphere.b;
+  // teal-leaning abyss fog vs blue horizon haze: the depth gradient then
+  // moves through two hues (teal depths → indigo air) instead of one flat blue
+  // bioluminescent floor fill (user-confirmed from the reference): the abyss
+  // fog now GLOWS teal, so the underworld reads as lit water instead of void
+  const fogCol = color(0x1e6b5f).mul(atmoScatter).mul(0.8);
+  const hazeCol = color(HORIZON_FOG).mul(atmoScatter);
 
   // cinematic finish: gentle vignette pulls the eye to the lit heart of the maze
   const vig = float(1).sub(smoothstep(0.5, 1.02, screenUV.sub(0.5).length().mul(1.35)).mul(0.3));
-  const composed = vec4(scenePassColor.rgb.mul(aoFactor), scenePassColor.a).add(bloomPass);
-  const hazed = composed.mul(float(1).sub(hazeAmt)).add(hazeCol.mul(hazeAmt));
-  postProcessing.outputNode = hazed.mul(trans).add(fogCol.mul(float(1).sub(trans))).mul(vig);
+  const composed = vec4(scenePassLit.rgb.mul(aoFactor), scenePassLit.a).add(bloomPass);
+  const hazed = composed.mul(float(1).sub(atmoHaze)).add(hazeCol.mul(atmoHaze));
+  const fogged = hazed.mul(atmoTrans).add(fogCol.mul(float(1).sub(atmoTrans)));
+  // split-tone grade: shadows lean cold indigo-cyan, highlights (torch pools,
+  // moon shafts, glow crests) lean warm ivory, plus a small vibrance lift.
+  // Multiplicative near-white tints keep blacks black and never clip, and the
+  // whole grade is a handful of MADs — no measurable GPU cost.
+  const luma = fogged.rgb.dot(vec3(0.299, 0.587, 0.114));
+  const toneMixK = smoothstep(0.05, 0.55, luma);
+  // ref-C (eldritch green) grade: shadows pushed green-cyan, highlights warm
+  // ivory-green so torch pools stay amber while the air goes deep-sea teal
+  const graded = fogged.rgb.mul(mix(vec3(0.85, 1.03, 1.06), vec3(1.16, 1.09, 0.83), toneMixK));
+  const vibrant = mix(vec3(luma), graded, 1.16);
+  postProcessing.outputNode = vec4(vibrant.mul(vig), fogged.a);
   return {
     post: postProcessing,
     setBloom: (s: number) => { bloomPass.strength.value = s; },
+    godrays: {
+      enabled: Boolean(options.godrayLight),
+      resolutionScale: godrayResolutionScale,
+      raymarchSteps: godraySteps,
+    },
   };
 }

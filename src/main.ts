@@ -103,10 +103,6 @@ controls.autoRotate = true;
 controls.autoRotateSpeed = 0.35;
 renderer.domElement.addEventListener("pointerdown", () => { controls.autoRotate = false; });
 
-const { post: postProcessing, setBloom } = createPost(renderer, scene, camera, {
-  ambientOcclusion: urlParams.get("ao") === "1",
-});
-
 interface ForgeRunRecord {
   token: number;
   seed: number;
@@ -230,6 +226,10 @@ async function captureForgeSnapshot(): Promise<void> {
 // ---- world context ----------------------------------------------------------
 const lights = new LightPool(scene);
 const env = buildEnvironment(scene, 1, (specs) => lights.setCinematic(specs)); // seed-stable; kept across regens
+const { post: postProcessing, setBloom, godrays: godrayStats } = createPost(renderer, scene, camera, {
+  ambientOcclusion: urlParams.get("ao") === "1",
+  godrayLight: env.godrayLight,
+});
 const stairs = new StairTowers(scene);
 const actors = new DungeonActors(scene, camera, renderer.domElement);
 
@@ -1557,6 +1557,7 @@ void boot().catch((error) => {
   get forgeRun() { return activeForgeRun ? structuredClone(activeForgeRun) : null; },
   get forgeRuns() { return structuredClone(forgeRuns); },
   startupTiming,
+  godrayStats,
   stoneStyle,
   gpuScene,
   destruction,

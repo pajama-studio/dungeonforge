@@ -2,6 +2,7 @@
 // bridged at facing gates, stacked pairs joined through shared stair courts.
 
 import type * as THREE from "three/webgpu";
+import { Vector3 } from "three/webgpu";
 import { FOOTPRINT_KINDS, type Dir, type Layout, type VerticalAnchor } from "../gen/dungeon";
 import {
   buildWorld, buildBridgeLink, buildSupportPiers, horizontalLinkArc, horizontalLinkWalkWidth,
@@ -321,8 +322,30 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   ctx.camera.updateProjectionMatrix();
   const extent = half + top * 0.5; // reframe on height changes too (tall spires)
   if (Math.abs(state.lastExtent - extent) > 1) {
-    ctx.controls.target.set(centerX, 3 * TH + top * 0.18, centerZ);
-    ctx.camera.position.set(centerX + half * 0.75, half * 0.62 + top * 0.4, centerZ + half * 1.1);
+    ctx.controls.target.set(centerX, 3 * TH + top * 0.13, centerZ);
+    const cameraCandidate = new Vector3(
+      centerX + half * 0.64,
+      Math.max(38, half * 0.34 + top * 0.27),
+      centerZ + half * 1.08,
+    );
+    // The art-directed dragon is intentionally colossal and can overlap the
+    // maze. Keep the establishing camera low, but never spawn it inside the
+    // streamed wing/body volume. This is a one-time framing correction only;
+    // OrbitControls remains unrestricted afterward.
+    const dragonSupport = ctx.scene.getObjectByName("streamed-colossal-perched-dragon-slot");
+    if (dragonSupport) {
+      const dragonCenter = dragonSupport.getWorldPosition(new Vector3());
+      const dx = cameraCandidate.x - dragonCenter.x;
+      const dz = cameraCandidate.z - dragonCenter.z;
+      const flatDistance = Math.hypot(dx, dz);
+      const exclusion = Math.max(340, half * 2.65);
+      if (flatDistance < exclusion) {
+        const inv = exclusion / Math.max(0.001, flatDistance);
+        cameraCandidate.x = dragonCenter.x + dx * inv;
+        cameraCandidate.z = dragonCenter.z + dz * inv;
+      }
+    }
+    ctx.camera.position.copy(cameraCandidate);
     ctx.controls.maxDistance = (half + top * 0.5) * 5;
     state.lastExtent = extent;
     // fill rate is the budget: bigger worlds get a lower resolution ceiling

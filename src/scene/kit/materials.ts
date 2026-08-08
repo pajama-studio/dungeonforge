@@ -122,8 +122,8 @@ export function loadHandPaintedStoneTexture(): Promise<void> {
 /** Eight dihedral UV variants plus continuous scale/offset jitter make a
  * single texture read differently on adjacent instances. One texture sample
  * replaces adding an atlas, per-brick material, or extra draw call. */
-function handPaintedStoneFactor(): any {
-  const id = instanceIndex.toFloat();
+function handPaintedStoneFactor(stableId = instanceIndex.toFloat()): any {
+  const id = stableId;
   // Dominant-axis local projection: tops use XZ, X-facing sides use ZY and
   // Z-facing sides use XY. This works on blocks, rubble and columns without a
   // UV attribute and still costs one sample rather than full triplanar three.
@@ -169,7 +169,10 @@ export function makeHandPaintedLandmarkStoneMaterial(): THREE.MeshStandardNodeMa
   const projected = mix(mix(xy, zy, useX), xz, useY).mul(0.34).add(vec2(0.17, 0.43));
   const painted = textureNode(activeHandPaintedStoneTexture, projected);
   handPaintedStoneNodes.push(painted as unknown as { value: THREE.Texture });
-  const stoneColor = painted.rgb.mul(1.52).add(0.24).mul(vec3(0.78, 0.91, 1.06));
+  // Keep hero stone neutral enough for authored lights to establish hierarchy.
+  // The previous strong blue multiplier made the dragon, oracle and fog share
+  // one value/hue family before lighting was even evaluated.
+  const stoneColor = painted.rgb.mul(1.48).add(0.22).mul(vec3(0.88, 0.93, 0.99));
   material.colorNode = stoneColor;
   return material;
 }
@@ -207,7 +210,10 @@ export interface StoneMaterialTransform {
   normal?: (localNormal: any) => any;
 }
 
-export function makeStoneMat(transform?: StoneMaterialTransform): THREE.MeshLambertNodeMaterial {
+export function makeStoneMat(
+  transform?: StoneMaterialTransform,
+  stableInstanceId = instanceIndex.toFloat(),
+): THREE.MeshLambertNodeMaterial {
   // Lambert = diffuse-only lighting: matte stone doesn't need GGX, and it
   // halves the per-light fragment cost across the entire masonry fill.
   const mat = new THREE.MeshLambertNodeMaterial({ vertexColors: true });
@@ -222,7 +228,10 @@ export function makeStoneMat(transform?: StoneMaterialTransform): THREE.MeshLamb
   // draw calls, and the shadow pass shares positionNode so silhouettes match.
   // Tiles/steps/merlons share this material but their vertices never reach
   // blockGeo's corner zone, so they opt out automatically.
-  const idf = instanceIndex.toFloat();
+  // GPU-compacted buckets supply their immutable source id here. Their output
+  // instanceIndex is allocated through atomics and may reorder every cull;
+  // using it as an art seed made chips, cracks and UVs visibly shimmer.
+  const idf = stableInstanceId;
   {
     const cornerW = smoothstep(0.6, 0.97, abs(pl.x).div(hw))
       .mul(smoothstep(0.6, 0.97, abs(pl.y).div(hh)))
@@ -251,7 +260,7 @@ export function makeStoneMat(transform?: StoneMaterialTransform): THREE.MeshLamb
   const dSeam = fy.min(float(1).sub(fy));
   const line = smoothstep(0.11, 0.02, dSeam).mul(sideMask);
   // fake running-bond: an extra vertical seam at a per-instance offset
-  const off = hash(instanceIndex.toFloat().add(0.13)).sub(0.5).mul(1.3);
+  const off = hash(idf.add(0.13)).sub(0.5).mul(1.3);
   const vseam = smoothstep(0.06, 0.015, abs(pl.x.sub(off)))
     .add(smoothstep(0.06, 0.015, abs(pl.z.sub(off.mul(-0.7)))))
     .mul(sideMask);
@@ -339,8 +348,15 @@ export function makeStoneMat(transform?: StoneMaterialTransform): THREE.MeshLamb
   // The generated target used a restrained ochre dry-brush on worn arrises.
   // A single tunable vector accent captures that cue without a texture fetch.
   const warmEdge = vec3(0.11, 0.045, -0.018).mul(wear).mul(stoneStyle.warmEdge);
-  mat.colorNode = vec3(albedo).mul(handPaintedStoneFactor()).add(warmEdge);
+  mat.colorNode = vec3(albedo).mul(handPaintedStoneFactor(idf)).add(warmEdge);
   return mat;
+}
+
+export function makeStoneLoMat(stableInstanceId = instanceIndex.toFloat()): THREE.MeshLambertNodeMaterial {
+  const material = new THREE.MeshLambertNodeMaterial({ color: 0xe0ded8, vertexColors: true });
+  material.colorNode = handPaintedStoneFactor(stableInstanceId).mul(0.94);
+  material.name = "distant-masonry-painted";
+  return material;
 }
 
 /** ONE material for every teleport plaza — per-plaza identity rides in two
@@ -440,14 +456,19 @@ export function makeMaterials(): MatKit {
   // Far spans receive their brush/palette variation in CPU-baked instance
   // colors. Keep this shader minimal so first paint does not compile a second
   // procedural stone graph.
-  const stoneLoMat = new THREE.MeshLambertNodeMaterial({ color: 0xe0ded8, vertexColors: true });
-  stoneLoMat.colorNode = handPaintedStoneFactor().mul(0.94);
-  stoneLoMat.name = "distant-masonry-painted";
+  const stoneLoMat = makeStoneLoMat();
   const stoneLoFadeMat = stoneLoMat.clone();
   applyLocalOcclusionWindow(stoneLoFadeMat);
   stoneLoFadeMat.name = "distant-occluding-architecture-fade";
   const stairMat = new THREE.MeshLambertNodeMaterial({ color: 0x8a7a62, vertexColors: true });
-  stairMat.colorNode = handPaintedStoneFactor().mul(vec3(0.86, 0.9, 0.97));
+  // Stair towers are regular Meshes, so unlike the instanced masonry they do
+  // not receive a per-instance tint. The former near-white multiplier also
+  // replaced their material color, producing chalk-white debug-looking
+  // spirals. Bake the face value back in and keep the same cool slate family.
+  const stairFace = vec3(attribute("color", "vec3") as never);
+  stairMat.colorNode = handPaintedStoneFactor()
+    .mul(stairFace)
+    .mul(vec3(0.34, 0.405, 0.52));
   const stairFadeMat = stairMat.clone();
   applyLocalOcclusionWindow(stairFadeMat);
   stairFadeMat.name = "occluding-stair-fade";

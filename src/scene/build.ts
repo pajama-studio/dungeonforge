@@ -26,6 +26,7 @@ export interface LightSpec { x: number; y: number; z: number; color: number; bas
  * present before the first pipeline compile and never changes at runtime. */
 export interface CinematicLightSpec extends LightSpec {
   kind: "spot" | "point";
+  role?: "oracle-key" | "dragon-rim" | "dragon-focus";
   targetX?: number;
   targetY?: number;
   targetZ?: number;
@@ -407,10 +408,13 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   const blockTops = list(N * N);
   const blocksLow = list(N * N);
   const merlons = list(N * 4);
+  const architecturalBays = list(N * 3);
+  const towerRoofs = list(Math.max(4, l.towers.length));
   const tiles = list(N * N);
   const tilesLow = list(N * N / 2);
   const redTiles = list(128);
   const stoneColor = new THREE.Color();
+  const narrativeRole = l.params.narrativeRole;
 
   const cellCount = N * N;
   const templeBuilding = new Uint8Array(cellCount);
@@ -652,9 +656,13 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
         // battlement teeth ONLY where the wall meets the outside or the ravine —
         // interior maze walls keep clean tops (center studs read as lego bricks)
         let voidDir = -1;
+        const exteriorDirs: Dir[] = [];
         for (let d = 0; d < 4; d++) {
           const nx = x + DX[d], ny = y + DY[d];
-          if (nx < 0 || ny < 0 || nx >= N || ny >= N || kind[gi(nx, ny)] === VOID) { voidDir = d; break; }
+          if (nx < 0 || ny < 0 || nx >= N || ny >= N || kind[gi(nx, ny)] === VOID) {
+            if (voidDir < 0) voidDir = d;
+            exteriorDirs.push(d as Dir);
+          }
         }
         if (voidDir >= 0 && !tower && !l.doorMask[c] && !l.ruinMask[c]) {
           const alongX = DY[voidDir] !== 0; // rim runs perpendicular to the void
@@ -663,6 +671,41 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
             merlons.pushY(
               worldCoord[x] + (alongX ? off : 0), wallTop[c] * TH + 0.16, worldCoord[y] + (alongX ? 0 : off),
               0, 0.8, 0.92, 0.8, stoneColor,
+            );
+          }
+        }
+        // Architectural façade skin. The maze/collision cells stay exactly as
+        // generated, but visible exterior runs gain shared cornices, pointed
+        // arches and seam buttresses. Repeated bays overlap at their edges, so
+        // the eye reads one continuous building elevation instead of one box
+        // per cell. Ruins intentionally leave occasional broken bays.
+        if (!tower && !l.doorMask[c]) {
+          const roleDensity = narrativeRole === "overgrowth" ? 0.62
+            : narrativeRole === "forge" ? 0.72
+              : narrativeRole === "threshold" ? 0.84 : 0.94;
+          for (const d of exteriorDirs) {
+            const faceHeight = (wallTop[c] - ref) * TH;
+            if (faceHeight < 4.1) continue;
+            const admitted = !l.ruinMask[c]
+              ? hash3(seed, c, d, 361) < roleDensity
+              : hash3(seed, c, d, 362) < roleDensity * 0.28;
+            if (!admitted) continue;
+            const faceScaleY = THREE.MathUtils.clamp(faceHeight / 5.7, 0.78, 1.48);
+            const faceScaleX = 0.94 + hash3(seed, c, d, 363) * 0.045;
+            const faceDepth = 0.86 + hash3(seed, c, d, 364) * 0.14;
+            const topY = wallTop[c] * TH - 0.04;
+            const halfFace = wallHalf(x, y, d);
+            setHsl(
+              stoneColor,
+              narrativeRole === "forge" ? 0.075 : 0.59 + (hash3(seed, c, d, 365) - 0.5) * 0.025,
+              narrativeRole === "forge" ? 0.29 : 0.24,
+              0.31 + hash3(seed, c, d, 366) * 0.09,
+            );
+            architecturalBays.pushY(
+              worldCoord[x] + DX[d] * (halfFace + 0.08),
+              topY - 5.02 * faceScaleY,
+              worldCoord[y] + DY[d] * (halfFace + 0.08),
+              dirRotY(d), faceScaleX, faceScaleY, faceDepth, stoneColor,
             );
           }
         }
@@ -709,6 +752,18 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
         setHsl(stoneColor, 0.59, 0.27, 0.34);
         blocks.pushY(worldCoord[t.x] + mx * t.scale, t.top * TH + 1.0, worldCoord[t.y] + mz * t.scale, 0, 0.22, 2.4, 0.22, stoneColor);
       }
+    } else if (hash3(seed, t.x, t.y, 371) < 0.76) {
+      // Steep roofs create a second skyline family beside battlement towers.
+      // One shared instanced mesh keeps the added architectural read cheap.
+      const roofHue = narrativeRole === "forge" ? 0.065 : 0.61;
+      setHsl(stoneColor, roofHue, 0.28, 0.24 + hash3(seed, t.x, t.y, 372) * 0.08);
+      const roofXZ = CELL * t.scale * (0.76 + hash3(seed, t.x, t.y, 373) * 0.08);
+      const roofY = 3.2 + t.scale * 0.95 + hash3(seed, t.x, t.y, 374) * 0.8;
+      towerRoofs.pushY(
+        worldCoord[t.x], t.top * TH + 0.34, worldCoord[t.y],
+        hash3(seed, t.x, t.y, 375) * Math.PI / 3,
+        roofXZ, roofY, roofXZ, stoneColor,
+      );
     }
   }
 
@@ -1484,6 +1539,8 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   pool.meshes.get("blockTopsFade")!.count = 0;
   pool.meshes.get("blockTopsLoFade")!.count = 0;
   putInstanced(pool, "merlons", R.merlonGeo, R.stoneMat, merlons);
+  putInstanced(pool, "architecturalBays", R.architecturalBayGeo, R.stoneMat, architecturalBays, false);
+  putInstanced(pool, "towerRoofs", R.towerRoofGeo, R.stoneMat, towerRoofs, false);
   putInstanced(pool, "tiles", R.tileGeo, R.stoneMat, tiles, true);
   putInstanced(pool, "tilesLo", R.tileGeoLo, R.stoneLoMat, tilesLow, true);
   putInstancedTwin(pool, "tilesMidLo", "tiles", R.tileGeoLo, R.stoneLoMat, true);
@@ -1608,7 +1665,7 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
     }
     let li = 0;
     for (const c2 of chosen) {
-      lights.push({ x: c2.x, y: c2.y + 0.2, z: c2.z, color: 0xff9a45, base: 50, dist: 19, ph: hash2(seed, li++, 61) * Math.PI * 2 });
+      lights.push({ x: c2.x, y: c2.y + 0.2, z: c2.z, color: 0xff9340, base: 66, dist: 20, ph: hash2(seed, li++, 61) * Math.PI * 2 });
     }
     if (l.door) {
       lights.push({ x: worldCoord[l.door.x], y: l.door.tier * TH + 1.6, z: worldCoord[l.door.y] + 1.6, color: 0x3e7bff, base: 26, dist: 16, ph: 1.1 });

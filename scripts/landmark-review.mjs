@@ -34,9 +34,10 @@ const call = (method, params = {}) => new Promise((resolve, reject) => {
 
 await call("Runtime.enable");
 await call("Page.enable");
+await call("Page.bringToFront");
 await call("Emulation.setDeviceMetricsOverride", { width: 900, height: 900, deviceScaleFactor: 1, mobile: false });
 await call("Page.navigate", { url: `http://127.0.0.1:4173/?seed=${seed}&gen=typescript&islands=8&review=landmarks` });
-await new Promise((resolve) => setTimeout(resolve, 6500));
+await new Promise((resolve) => setTimeout(resolve, 14500));
 
 const defaultNames = [
   "tripo-v3.1-colossal-oathbound-wardens",
@@ -48,7 +49,7 @@ const defaultNames = [
 const names = (opts.get("--names") ?? defaultNames.join(",")).split(",").filter(Boolean);
 const views = {
   front: [0, 0.06, 1],
-  threeQuarter: [0.72, 0.16, 1],
+  threeQuarter: [0.86, 0.24, 0.51],
   side: [1, 0.08, 0.08],
   high: [0.2, 0.62, 1],
 };
@@ -61,7 +62,7 @@ for (const name of names) {
       const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
       const THREE = await import('/node_modules/.vite/deps/three_webgpu.js');
       const deadline = performance.now() + 60000;
-      while ((!window.__df || !window.__df.decorReady) && performance.now() < deadline) await sleep(100);
+      while ((!window.__df || !window.__df.coreReady) && performance.now() < deadline) await sleep(100);
       const { ctx } = window.__df;
       ctx.renderer.setAnimationLoop(null);
       window.__df.controls.autoRotate = false;
@@ -118,11 +119,19 @@ for (const name of names) {
         const { ctx, postProcessing } = window.__df;
         const review = window.__landmarkReview;
         const THREE = review.THREE;
-        const dir = new THREE.Vector3(${direction.join(",")}).normalize().applyQuaternion(review.instanceQ);
+        const isInside = (object, ancestor) => {
+          for (let node = object; node; node = node.parent) if (node === ancestor) return true;
+          return false;
+        };
+        ctx.scene.traverse((object) => {
+          if ((object.isMesh || object.isLine || object.isSprite) && !isInside(object, review.target)) object.visible = false;
+        });
+        const dir = new THREE.Vector3(${direction.join(",")}).normalize();
         const maxDim = Math.max(review.size.x, review.size.y, review.size.z);
         const distance = maxDim / (2 * Math.tan(THREE.MathUtils.degToRad(ctx.camera.fov) / 2)) * 1.28;
         ctx.camera.position.copy(review.center).addScaledVector(dir, distance);
         ctx.camera.lookAt(review.center);
+        ctx.camera.far = Math.max(ctx.camera.far, distance + maxDim * 2.5);
         ctx.camera.updateProjectionMatrix();
         postProcessing.render();
         postProcessing.render();

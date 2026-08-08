@@ -40,6 +40,7 @@ const call = (method, params = {}) => new Promise((resolve, reject) => {
 
 await call("Runtime.enable");
 await call("Page.enable");
+await call("Page.bringToFront");
 await call("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
 await call("Page.navigate", {
   url: `http://127.0.0.1:4173/?seed=${seed}&gen=typescript&islands=8&duel=${Date.now()}`,
@@ -57,7 +58,8 @@ const prepared = await call("Runtime.evaluate", {
     const THREE = await import('/node_modules/.vite/deps/three_webgpu.js');
     const oracle = ctx.scene.getObjectByName('abyssal-cephalopod-oracle');
     const dragon = ctx.scene.getObjectByName('tripo-v3.1-colossal-perched-abyss-dragon');
-    const perch = ctx.scene.getObjectByName('colossal-dragon-perch-column');
+    const perch = ctx.scene.getObjectByName('colossal-dragon-slate-spire')
+      ?? ctx.scene.getObjectByName('colossal-dragon-perch-column');
     if (!oracle || !dragon || !perch) throw new Error('duel landmarks not ready');
 
     ctx.renderer.setAnimationLoop(null);
@@ -75,9 +77,11 @@ const prepared = await call("Runtime.evaluate", {
     const center = box.getCenter(new THREE.Vector3());
     const size = box.getSize(new THREE.Vector3());
     const radius = size.length() * 0.5;
-    // Side-stage view: oracle (-Z) and dragon (+Z) occupy opposing sides while
-    // the dungeon remains the illuminated subject between them.
-    const direction = new THREE.Vector3(-1, 0.22, 0.04).normalize();
+    // Look diagonally in from the dragon side. A pure side-stage view lets the
+    // stacked dungeon occlude both landmarks; this +Z-biased angle keeps the
+    // dragon/perch in the near plane, the maze in the middle and the oracle
+    // against the far cliff so their authored stand-off is actually visible.
+    const direction = new THREE.Vector3(0.72, 0.32, 0.62).normalize();
     const distance = radius / Math.sin(THREE.MathUtils.degToRad(ctx.camera.fov * 0.5)) * 1.08;
     const focus = center.clone();
     focus.y = THREE.MathUtils.lerp(box.min.y, box.max.y, 0.48);

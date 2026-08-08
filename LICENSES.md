@@ -15,11 +15,12 @@ All original code in this repository is released under the **MIT License** (see 
 | Asset | Author | License | Source |
 |---|---|---|---|
 | `public/assets/skeleton.glb` — Skeleton Minion character (KayKit Skeletons Character Pack 1.0) | Kay Lousberg | **CC0 1.0** (public domain) | https://kaylousberg.com · https://github.com/KayKit-Game-Assets/KayKit-Character-Pack-Skeletons-1.0 |
+| `public/assets/abyss/**` — dragon, warden and oracle landmark meshes | Dungeonforge project (AI-assisted generation, then remeshed/optimized locally) | Project asset, distributed with this repository | Generated for Dungeonforge |
 
 KayKit assets are CC0 — free for personal, educational and commercial use with
 no attribution required. We credit **Kay Lousberg (kaylousberg.com)** anyway,
 with thanks, as the pack suggests.
 
 Everything else rendered in this project (stone kit, vegetation, brambles,
-canyon, effects) is generated procedurally by code in this repository — no
-external art assets are used.
+canyon, terrain, particles and effects) is generated procedurally by code in
+this repository.

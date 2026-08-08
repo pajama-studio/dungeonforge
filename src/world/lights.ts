@@ -11,11 +11,12 @@ export class LightPool {
   private specs: LightSpec[] = [];
   private readonly oracleKey: THREE.SpotLight;
   private readonly dragonBounce: THREE.PointLight;
-  /** Two of the global slots are permanently reserved for the landmark rig. */
+  private readonly dragonRim: THREE.PointLight;
+  /** Three of the global slots are permanently reserved for the landmark rig. */
   readonly dynamicSize: number;
 
   constructor(scene: THREE.Scene, readonly size = LIGHT_POOL_SIZE) {
-    this.dynamicSize = Math.max(0, size - 2);
+    this.dynamicSize = Math.max(0, size - 3);
     for (let i = 0; i < this.dynamicSize; i++) {
       const pl = new THREE.PointLight(0xff9a45, 0, 15, 2);
       pl.name = `dungeon-light-${i}`;
@@ -38,6 +39,14 @@ export class LightPool {
     this.dragonBounce.name = "cinematic-dragon-hoard-bounce";
     this.dragonBounce.castShadow = false;
     scene.add(this.dragonBounce);
+
+    // Cold point source behind the dragon separates its silhouette without
+    // making the stone emissive. Reserving one point slot keeps the exact old
+    // shader topology: 15 point lights + one oracle spotlight.
+    this.dragonRim = new THREE.PointLight(0x6f9fe8, 0, 390, 1.8);
+    this.dragonRim.name = "cinematic-dragon-rim";
+    this.dragonRim.castShadow = false;
+    scene.add(this.dragonRim);
   }
 
   assign(specs: LightSpec[]): void {
@@ -58,7 +67,8 @@ export class LightPool {
 
   /** Re-aim the two persistent cinematic slots after every procedural fit. */
   setCinematic(specs: CinematicLightSpec[]): void {
-    const spot = specs.find((spec) => spec.kind === "spot");
+    const spot = specs.find((spec) => spec.role === "oracle-key")
+      ?? specs.find((spec) => spec.kind === "spot" && spec.role !== "dragon-rim");
     if (spot) {
       this.oracleKey.position.set(spot.x, spot.y, spot.z);
       this.oracleKey.target.position.set(
@@ -75,7 +85,8 @@ export class LightPool {
       this.oracleKey.intensity = 0;
     }
 
-    const point = specs.find((spec) => spec.kind === "point");
+    const point = specs.find((spec) => spec.role === "dragon-focus")
+      ?? specs.find((spec) => spec.kind === "point");
     if (point) {
       this.dragonBounce.position.set(point.x, point.y, point.z);
       this.dragonBounce.color.setHex(point.color);
@@ -83,6 +94,16 @@ export class LightPool {
       this.dragonBounce.distance = point.dist;
     } else {
       this.dragonBounce.intensity = 0;
+    }
+
+    const rim = specs.find((spec) => spec.role === "dragon-rim");
+    if (rim) {
+      this.dragonRim.position.set(rim.x, rim.y, rim.z);
+      this.dragonRim.color.setHex(rim.color);
+      this.dragonRim.intensity = rim.base;
+      this.dragonRim.distance = rim.dist;
+    } else {
+      this.dragonRim.intensity = 0;
     }
   }
 

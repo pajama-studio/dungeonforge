@@ -305,6 +305,8 @@ export interface GeoKit {
   circleGeo: THREE.BufferGeometry;   // unit radius; scaled per medallion
   portalGeo: THREE.BufferGeometry;
   beaconGeo: THREE.BufferGeometry;
+  architecturalBayGeo: THREE.BufferGeometry;
+  towerRoofGeo: THREE.BufferGeometry;
 }
 
 export function makeGeometries(): GeoKit {
@@ -351,6 +353,67 @@ export function makeGeometries(): GeoKit {
   const colGeo = new THREE.CylinderGeometry(0.16, 0.2, 1, 8);
   colGeo.translate(0, 0.5, 0);
   shadeFaces(colGeo);
+
+  // One repeated Gothic façade bay replaces the visual grammar of isolated
+  // wall cells with a continuous building elevation. Adjacent instances share
+  // their edge buttresses and cornice, while the central voussoir arch breaks
+  // the square silhouette. It remains one instanced draw per island.
+  const architecturalBayGeo = (() => {
+    const parts: THREE.BufferGeometry[] = [];
+    const matrix = new THREE.Matrix4();
+    const position = new THREE.Vector3();
+    const quaternion = new THREE.Quaternion();
+    const scale = new THREE.Vector3();
+    const euler = new THREE.Euler();
+    const add = (
+      geometry: THREE.BufferGeometry,
+      p: [number, number, number],
+      s: [number, number, number] = [1, 1, 1],
+      r: [number, number, number] = [0, 0, 0],
+    ) => {
+      matrix.compose(position.set(...p), quaternion.setFromEuler(euler.set(...r)), scale.set(...s));
+      geometry.applyMatrix4(matrix);
+      parts.push(geometry);
+    };
+    // Continuous sill and crown make neighboring cells read as one façade.
+    add(new THREE.BoxGeometry(CELL * 1.08, 0.24, 0.38), [0, 0.18, 0.08]);
+    add(new THREE.BoxGeometry(CELL * 1.12, 0.32, 0.5), [0, 4.86, 0.1]);
+    add(new THREE.BoxGeometry(CELL * 1.02, 0.16, 0.32), [0, 3.92, 0.12]);
+    // Half-buttresses overlap at bay seams, producing full tapered piers.
+    for (const side of [-1, 1]) {
+      add(new THREE.CylinderGeometry(0.27, 0.46, 4.55, 5), [side * CELL * 0.5, 2.28, 0.16], [1, 1, 0.72], [0, Math.PI / 5, 0]);
+      add(new THREE.BoxGeometry(0.68, 0.3, 0.64), [side * CELL * 0.5, 4.58, 0.14]);
+    }
+    // Pointed stone surround: paired jambs and nine chunky voussoirs.
+    for (const side of [-1, 1]) {
+      add(new THREE.BoxGeometry(0.3, 2.45, 0.34), [side * 0.88, 1.48, 0.22]);
+      add(new THREE.BoxGeometry(0.5, 0.26, 0.42), [side * 0.88, 0.2, 0.22]);
+    }
+    for (let i = 0; i < 9; i++) {
+      const a = i / 8 * Math.PI;
+      const x = Math.cos(a) * 0.88;
+      const y = 2.7 + Math.sin(a) * 1.02 + Math.abs(Math.cos(a)) * 0.2;
+      add(new THREE.BoxGeometry(0.44, 0.62, 0.4), [x, y, 0.24], [1, 1, 1], [0, 0, a - Math.PI / 2]);
+    }
+    const merged = BufferGeometryUtils.mergeGeometries(parts, false);
+    for (const part of parts) part.dispose();
+    if (!merged) throw new Error("failed to merge architectural façade bay");
+    return shadeFaces(merged);
+  })();
+
+  // A low-poly hexagonal slate roof changes tower silhouettes without adding
+  // per-tower objects. The shallow eave prevents it reading as a raw cone.
+  const towerRoofGeo = (() => {
+    const eave = new THREE.CylinderGeometry(1.08, 1.08, 0.12, 6);
+    eave.translate(0, 0.06, 0);
+    const roof = new THREE.ConeGeometry(1, 1, 6, 1, false);
+    roof.translate(0, 0.62, 0);
+    const merged = BufferGeometryUtils.mergeGeometries([eave, roof], false);
+    eave.dispose();
+    roof.dispose();
+    if (!merged) throw new Error("failed to merge tower roof");
+    return shadeFaces(merged);
+  })();
 
   // hanging root strand: unit length, origin at the rim, thick where it grips
   // the stone and wandering as it trails into the abyss
@@ -512,6 +575,8 @@ export function makeGeometries(): GeoKit {
     beamGeo,
     portalGeo: new THREE.PlaneGeometry(1.8, 2.4),
     beaconGeo: new THREE.OctahedronGeometry(0.45),
+    architecturalBayGeo,
+    towerRoofGeo,
   };
   for (const [name, geometry] of Object.entries(kit)) geometry.name = name;
   return kit;

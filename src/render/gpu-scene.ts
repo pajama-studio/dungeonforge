@@ -10,6 +10,7 @@ import {
   Fn, If, atomicAdd, atomicStore, instanceIndex, max, storage, uniform, uint, vec4,
 } from "three/tsl";
 import { getKit } from "../scene/kit";
+import { makeStoneLoMat, makeStoneMat } from "../scene/kit/materials";
 import {
   gpuSceneSlotPools, setGpuSceneManaged, setSlotLodLevel,
   type SlotPool,
@@ -34,6 +35,8 @@ interface GpuBucket {
   colorNode: any;
   indirectBase: number;
 }
+
+type CompactedMaterialFactory = (stableSourceId: any) => THREE.Material;
 
 interface CompactSlot {
   pool: SlotPool;
@@ -121,10 +124,12 @@ export class GpuMasonryScene {
     const R = getKit();
     this.buckets = [
       this.makeBucket(
-        "gpu-scene-masonry-high", R.blockMiddleGeo, R.stoneMat, 0,
+        "gpu-scene-masonry-high", R.blockMiddleGeo,
+        (stableSourceId) => makeStoneMat(undefined, stableSourceId), 0,
       ),
       this.makeBucket(
-        "gpu-scene-masonry-mid", R.blockGeoLo, R.stoneLoMat, 5,
+        "gpu-scene-masonry-mid", R.blockGeoLo,
+        (stableSourceId) => makeStoneLoMat(stableSourceId), 5,
       ),
     ];
 
@@ -201,7 +206,7 @@ export class GpuMasonryScene {
   private makeBucket(
     name: string,
     sourceGeometry: THREE.BufferGeometry,
-    material: THREE.Material,
+    materialFactory: CompactedMaterialFactory,
     indirectBase: number,
   ): GpuBucket {
     const geometry = sourceGeometry.clone();
@@ -216,6 +221,13 @@ export class GpuMasonryScene {
     // vec4 gives storage arrays a natural 16-byte stride; the render path reads
     // xyz through Three's standard instanceColor varying.
     const colors = new THREE.StorageInstancedBufferAttribute(CAPACITY, 4);
+    // The compute pass stores immutable sourceIndex in color.w. Read the same
+    // storage attribute directly in the render graph: `instanceColor`'s public
+    // varying is vec3 and intentionally discards w, while attribute() only
+    // searches geometry and therefore cannot address InstancedMesh buffers.
+    const stableSourceId = storage(colors, "vec4", CAPACITY)
+      .toReadOnly().element(instanceIndex).w;
+    const material = materialFactory(stableSourceId);
     const mesh = new THREE.InstancedMesh(geometry, material, CAPACITY);
     mesh.name = name;
     mesh.instanceMatrix = matrices;
@@ -599,6 +611,7 @@ export class GpuMasonryScene {
     for (const bucket of this.buckets) {
       bucket.mesh.dispose();
       bucket.geometry.dispose();
+      bucket.mesh.material.dispose();
       bucket.matrices.dispose();
       bucket.colors.dispose();
     }

@@ -24,6 +24,8 @@ export class Player {
   private walkAction: THREE.AnimationAction | null = null;
   private attackAction: THREE.AnimationAction | null = null;
   private torchFlameAnchor: THREE.Object3D | null = null;
+  private torch: THREE.Object3D | null = null;
+  private readonly torchUpright = new THREE.Quaternion();
   private gait: "idle" | "walk" | "run" = "idle";
   private attacking = false;
   private heading = 0;
@@ -141,10 +143,10 @@ export class Player {
     if (!leftHand) return;
     const torch = new THREE.Group();
     torch.name = "left-hand-dungeon-torch";
-    // KayKit's left hand slot points its local +X upward in the authored idle
-    // pose. Rotate our +Y-authored torch into that grip so it is carried
-    // upright instead of projecting horizontally through the wrist.
-    torch.rotation.z = -Math.PI / 2;
+    // No authored twist: the hand-slot bone rolls ~40° through the walk cycle,
+    // so ANY fixed rotation leaves the torch canted at some point in the gait.
+    // keepTorchUpright() re-solves the local rotation each frame instead, the
+    // way a person keeps a torch vertical while their arm swings.
     const wood = new THREE.MeshLambertNodeMaterial({ color: 0x3a2116 });
     const iron = new THREE.MeshLambertNodeMaterial({ color: 0x2b2c31 });
     const outerFire = new THREE.MeshBasicNodeMaterial({ color: 0xff6a20 });
@@ -166,6 +168,16 @@ export class Player {
     this.torchFlameAnchor.position.y = 0.84;
     torch.add(handle, basket, flame, core, this.torchFlameAnchor);
     leftHand.add(torch);
+    this.torch = torch;
+  }
+
+  /** Cancel the hand bone's world rotation so the shaft stays vertical and
+   *  the flame always rides above the grip. One quaternion invert per frame. */
+  private keepTorchUpright(): void {
+    const torch = this.torch;
+    if (!torch?.parent) return;
+    torch.parent.getWorldQuaternion(this.torchUpright).invert();
+    torch.quaternion.copy(this.torchUpright);
   }
 
   place(x: number, z: number, ground: GroundSampler): void {
@@ -180,6 +192,7 @@ export class Player {
     if (this.climbing) {
       // the ladder owns vertical motion; just keep the animation alive
       this.mixer?.update(dt);
+      this.keepTorchUpright();
       return;
     }
     if (this.falling) {
@@ -187,6 +200,7 @@ export class Player {
       this.vy -= 30 * dt;
       p.y += this.vy * dt;
       this.mixer?.update(dt);
+      this.keepTorchUpright();
       return;
     }
     const mag = Math.hypot(input.f, input.s);
@@ -230,6 +244,7 @@ export class Player {
       }
     }
     this.mixer?.update(dt);
+    this.keepTorchUpright();
   }
 
   /** Play the authored melee clip without allocating a new action. Movement
@@ -257,6 +272,7 @@ export class Player {
     }
     this.setGait(gait);
     this.mixer?.update(dt);
+    this.keepTorchUpright();
   }
 
   private actionFor(g: "idle" | "walk" | "run"): THREE.AnimationAction | null {

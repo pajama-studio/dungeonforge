@@ -55,19 +55,18 @@ function makeEyeFireMat(
  *  radial falloff is rippled by slow noise, so the floor reads as glowing
  *  water lapping the statue base and pooling under the maze (painted ref). */
 function makeAbyssPoolMat(): THREE.MeshBasicNodeMaterial {
-  // NORMAL blending, near-opaque inside: an additive sheet let pillar bases
-  // show through and everything standing in the water read as floating. A
-  // solid dark water body with emissive blooms gives a real waterline where
-  // geometry pierces the surface.
+  // Pure additive glow ACCENT layered on the basin water body. There must be
+  // exactly ONE dark normal-blended sheet (the basin): a second one overlaps
+  // it, flips transparent sort order with camera motion and flickers as a
+  // big dark blob. This layer only ever adds light, so ordering is safe.
   const mat = new THREE.MeshBasicNodeMaterial({
-    transparent: true, depthWrite: false,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
   });
   const fall = smoothstep(1.0, 0.06, length(uv().sub(0.5)).mul(2));
   const ripple = triNoise3D(vec3(uv().mul(3.2), 0.7), 0.18, time).mul(0.42).add(0.72);
   // peaks reach past the bloom threshold, so the water genuinely GLOWS
-  mat.colorNode = color(0x1fd4b4).mul(fall.pow(1.8)).mul(ripple).mul(3.0)
-    .add(color(0x03211d));
-  mat.opacityNode = fall.mul(0.94);
+  mat.colorNode = color(0x1fd4b4).mul(fall.pow(1.8)).mul(ripple).mul(3.0);
+  mat.opacityNode = fall.mul(0.9);
   return mat;
 }
 
@@ -1752,10 +1751,16 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
   const abyssDabs = new THREE.InstancedMesh(abyssDabGeo, makeEyeGlowMat(), 16);
   abyssDabs.name = "bioluminescent-algae-dabs";
   abyssDabs.frustumCulled = false; // one tiny draw; scattered by fit below
-  for (const glowMesh of [abyssPool, abyssBasinPool, abyssShoreRing, abyssDabs]) {
+  // explicit draw order: the one dark water body first, then the additive
+  // accents — distance sorting between coplanar transparent sheets flips
+  // with camera motion and reads as flicker
+  const glowLayers: Array<[THREE.Object3D, number]> = [
+    [abyssBasinPool, 1], [abyssPool, 2], [abyssShoreRing, 3], [abyssDabs, 4],
+  ];
+  for (const [glowMesh, order] of glowLayers) {
     glowMesh.castShadow = false;
     glowMesh.receiveShadow = false;
-    glowMesh.renderOrder = 1; // over the abyss plane, under the fog raymarch
+    glowMesh.renderOrder = order;
     root.add(glowMesh);
   }
 
@@ -2020,14 +2025,16 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
     // sheet reaching under the maze, a hot shoreline band where water meets
     // the statue, and scattered algae dabs breaking the perfect circles
     const floorY = oracle.position.y;
+    // glow accent floats just above the basin surface near the statue
     abyssPool.position.copy(oracle.position)
       .addScaledVector(oracleForward, oracleScale * 5)
-      .add(new THREE.Vector3(0, 1.6, 0));
+      .add(new THREE.Vector3(0, 1.3, 0));
     abyssPool.scale.setScalar(oracleScale * 26);
-    // sit the basin sheet in the bedrock DIPS: high ground pierces it as
-    // shores and ruin pillars puncture a real waterline instead of hovering
+    // the single dark water body sits slightly ABOVE the flat abyss plane so
+    // plane-seated ruins (graves, arches) get their feet wet instead of
+    // hovering, while bedrock relief still pierces it as shores
     abyssBasinPool.position.set(
-      oracle.position.x * 0.3, floorY - 2, oracle.position.z * 0.3);
+      oracle.position.x * 0.3, floorY + 0.6, oracle.position.z * 0.3);
     abyssBasinPool.scale.setScalar(Math.max(oracleScale * 40, half * 1.25));
     abyssShoreRing.position.copy(oracle.position)
       .addScaledVector(oracleForward, oracleScale * 4)

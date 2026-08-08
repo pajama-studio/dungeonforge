@@ -90,13 +90,13 @@ export function createPost(
     trans.mulAssign(exp(dens.mul(stepLen).negate()));
   });
   const scatter = rd.dot(vec3(MOON_DIR.x, MOON_DIR.y, MOON_DIR.z)).clamp(0, 1).pow(5).mul(0.5).add(1);
-  const fogCol = color(0x27476b).mul(scatter).mul(0.85);
+  const fogCol = color(0x1a3247).mul(scatter).mul(0.72);
 
   // aerial perspective: an ANALYTIC exponential height haze over the full depth
   // (iq's closed-form integral — no extra marching). This is the "one air" that
   // ties the diorama together: far blocks sink into the same moonlit blue
   // instead of standing clean against the abyss, and the horizon grades softly.
-  const HAZE_A = 0.0042; // density at y = 0
+  const HAZE_A = 0.0032; // density at y = 0
   const HAZE_B = 0.028; // height falloff
   const dFar = distGeo.min(320);
   const dy = rd.y.sign().mul(rd.y.abs().max(0.02)); // guard the horizon singularity
@@ -119,13 +119,14 @@ export function createPost(
   const wpLow = smoothstep(5, 26, wp.y).oneMinus();
   const distF = smoothstep(120, 230, distGeo);
   const belowH = smoothstep(-0.03, 0.2, rd.y).oneMinus();
-  const hazeAmt = float(1).sub(exp(od.negate()))
-    .max(wpLow.mul(distF).mul(belowH).mul(0.95))
-    .clamp(0, 0.95);
+  const hazeGate = smoothstep(28, 165, distGeo);
+  const hazeAmt = float(1).sub(exp(od.negate())).mul(hazeGate)
+    .max(wpLow.mul(distF).mul(belowH).mul(0.92))
+    .clamp(0, 0.92);
   const hazeCol = color(HORIZON_FOG).mul(scatter);
 
   // cinematic finish: gentle vignette pulls the eye to the lit heart of the maze
-  const vig = float(1).sub(smoothstep(0.5, 1.02, screenUV.sub(0.5).length().mul(1.35)).mul(0.45));
+  const vig = float(1).sub(smoothstep(0.5, 1.02, screenUV.sub(0.5).length().mul(1.35)).mul(0.3));
   const composed = vec4(scenePassColor.rgb.mul(aoFactor), scenePassColor.a).add(bloomPass);
   const hazed = composed.mul(float(1).sub(hazeAmt)).add(hazeCol.mul(hazeAmt));
   postProcessing.outputNode = hazed.mul(trans).add(fogCol.mul(float(1).sub(trans))).mul(vig);

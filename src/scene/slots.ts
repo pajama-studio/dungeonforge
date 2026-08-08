@@ -264,11 +264,31 @@ export function revealDecor(maxObjects = Infinity): boolean {
         const m = p.meshes.get(k);
         if (m && ((m.userData as { n?: number }).n ?? 0) > 0) decorRevealQueue.push(m);
       }
-      for (const o of p.perBuild) decorRevealQueue.push(o);
+      // Unique per-build meshes are distance-detail, not startup content.
+      // Submitting one cold portal/rope/medallion from every far island caused
+      // the observed train of ~1 s WebGPU stalls after first paint. LOD warmup
+      // owns them when their island actually approaches the camera.
     }
   }
-  const end = Math.min(decorRevealQueue.length, decorRevealCursor + Math.max(1, maxObjects));
-  while (decorRevealCursor < end) decorRevealQueue[decorRevealCursor++].visible = true;
+  let submitted = 0;
+  const renderBudget = Math.max(1, maxObjects);
+  while (decorRevealCursor < decorRevealQueue.length) {
+    const object = decorRevealQueue[decorRevealCursor];
+    const architectural = ARCHITECTURAL_SHELL_KEYS.includes(object.name as typeof ARCHITECTURAL_SHELL_KEYS[number]);
+    // Far-LOD detail meshes keep count=0, so revealing their bookkeeping does
+    // not submit a render object and is free. Only the always-visible façade
+    // shells consume the per-frame realization budget.
+    if (architectural && submitted >= renderBudget) break;
+    decorRevealCursor++;
+    if (architectural && (object as THREE.InstancedMesh).isInstancedMesh) {
+      const mesh = object as THREE.InstancedMesh;
+      mesh.count = ((mesh.userData as { n?: number }).n ?? 0);
+      mesh.visible = mesh.count > 0;
+      submitted++;
+    } else {
+      object.visible = true;
+    }
+  }
   if (decorRevealCursor < decorRevealQueue.length) return false;
   decorRevealQueue = null;
   decorRevealCursor = 0;
@@ -379,7 +399,10 @@ export function stageActualDetailWarmup(layer = 29): () => void {
 
 // decorative layers held back during the two-wave first paint (wave 1 shows
 // the core look; these appear once their pipelines are warm)
-const DECOR_EXTRA = ["banners", "redTiles", "flamesB", "flamesR", "flamesP"];
+const DECOR_EXTRA = [
+  "banners", "redTiles", "flamesB", "flamesR", "flamesP",
+  "architecturalBays", "towerRoofs",
+];
 let decorSuppressed = false;
 export function setDecorSuppressed(on: boolean): void {
   decorSuppressed = on;
@@ -395,6 +418,7 @@ const DETAIL_KEYS = [
   "bramblesB", "wisps", "links", "brackets", "cheeks", "wallGlows", "embers", "roots",
   "flamesW", "flamesB", "flamesR", "flamesP",
 ];
+const ARCHITECTURAL_SHELL_KEYS = ["architecturalBays", "towerRoofs"] as const;
 
 const occludingSlots = new Set<number>();
 
@@ -438,6 +462,10 @@ function applyArchitectureVisibility(p: SlotPool): void {
   setCount(p, "colsLo", !faded && !high);
   setCount(p, "colsFade", faded && high);
   setCount(p, "colsLoFade", faded && !high);
+  // Façade bays and steep roofs carry the building silhouette at every LOD.
+  // When their slot occludes the player they disappear with the architecture
+  // instead of remaining as opaque decorative overlays.
+  for (const key of ARCHITECTURAL_SHELL_KEYS) setCount(p, key, !faded && !decorSuppressed);
   // Link galleries/causeways live in companion slots but obey the connected
   // island's LOD. Like island masonry, their twins share instance buffers.
   setCount(p, "linkStones", !faded && high);
@@ -473,6 +501,7 @@ export function setSlotLodLevel(slot: number, level: LodLevel): void {
   if (!p) return;
   p.lodLevel = level;
   p.detailVisible = level === 2;
+  for (const object of p.perBuild) object.visible = level === 2;
   for (const k of DETAIL_KEYS) {
     const m = p.meshes.get(k);
     if (m) {
@@ -506,7 +535,7 @@ export function setSlotLodLevel(slot: number, level: LodLevel): void {
 // objects in the threshold-crossing frame (95–126ms measured). Warm exactly
 // one real object per frame below the abyss, then switch the whole tier only
 // after every target object has been submitted once.
-const warmedLodObjects = new WeakSet<THREE.InstancedMesh>();
+const warmedLodObjects = new WeakSet<THREE.Object3D>();
 const MID_LOD_WARM_KEYS = [
   "blocksMidLo", "blockMidsLo", "blockTopsLo", "tilesMidLo",
 ] as const;
@@ -519,7 +548,7 @@ function lodWarmKeys(level: LodLevel): readonly string[] {
   return level === 2 ? HIGH_LOD_WARM_KEYS : level === 1 ? MID_LOD_WARM_KEYS : [];
 }
 
-function pendingWarmMesh(slots: readonly number[], level: LodLevel): THREE.InstancedMesh | null {
+function pendingWarmObject(slots: readonly number[], level: LodLevel): THREE.Object3D | null {
   for (const slot of slots) {
     const p = slotPools.get(slot);
     if (!p || !p.group.visible) continue;
@@ -533,43 +562,76 @@ function pendingWarmMesh(slots: readonly number[], level: LodLevel): THREE.Insta
       }
       return mesh;
     }
+    // Portals, medallions, smoke banks, beacons and landmark beams are unique
+    // render objects. Keeping them out of the startup reveal fixed first paint,
+    // but promoting all of them cold in one near-LOD frame merely moved the
+    // hitch to camera travel. Warm one concrete object at a time alongside the
+    // pooled meshes, because WebGPU caches bindings per render object.
+    if (level === 2) {
+      for (const object of p.perBuild) {
+        if (warmedLodObjects.has(object)) continue;
+        if (object.visible) {
+          warmedLodObjects.add(object);
+          continue;
+        }
+        return object;
+      }
+    }
   }
   return null;
 }
 
 export function areSlotsLodWarm(slots: readonly number[], level: LodLevel): boolean {
-  return pendingWarmMesh(slots, level) === null;
+  return pendingWarmObject(slots, level) === null;
 }
 
-/** Stages one instance of one cold target mesh for the next real post frame.
+/** Stages one cold target object for the next real post frame.
  * Call the returned restore function immediately after render submission. */
 export function stageSlotLodWarmup(slots: readonly number[], level: LodLevel): (() => void) | null {
-  const mesh = pendingWarmMesh(slots, level);
-  if (!mesh) return null;
-  const matrix = mesh.instanceMatrix;
-  const array = matrix.array as Float32Array;
-  const savedMatrix = array.slice(0, 16);
-  const savedVisible = mesh.visible;
-  const savedCount = mesh.count;
-  const savedCulled = mesh.frustumCulled;
-  // Identity with a very deep translation: it survives object culling and
-  // reaches the render backend without producing a visible fragment.
-  array.fill(0, 0, 16);
-  array[0] = 1; array[5] = 1; array[10] = 1; array[15] = 1;
-  array[13] = -2000;
-  matrix.addUpdateRange(0, 16);
-  matrix.needsUpdate = true;
-  mesh.count = 1;
-  mesh.visible = true;
-  mesh.frustumCulled = false;
-  return () => {
-    array.set(savedMatrix, 0);
+  const object = pendingWarmObject(slots, level);
+  if (!object) return null;
+  const savedVisible = object.visible;
+  const savedCulled = object.frustumCulled;
+  const instanced = (object as THREE.InstancedMesh).isInstancedMesh
+    ? object as THREE.InstancedMesh
+    : null;
+  if (instanced) {
+    const matrix = instanced.instanceMatrix;
+    const array = matrix.array as Float32Array;
+    const savedMatrix = array.slice(0, 16);
+    const savedCount = instanced.count;
+    // Identity with a very deep translation: it survives object culling and
+    // reaches the render backend without producing a visible fragment.
+    array.fill(0, 0, 16);
+    array[0] = 1; array[5] = 1; array[10] = 1; array[15] = 1;
+    array[13] = -2000;
     matrix.addUpdateRange(0, 16);
     matrix.needsUpdate = true;
-    mesh.visible = savedVisible;
-    mesh.count = savedCount;
-    mesh.frustumCulled = savedCulled;
-    warmedLodObjects.add(mesh);
+    instanced.count = 1;
+    instanced.visible = true;
+    instanced.frustumCulled = false;
+    return () => {
+      array.set(savedMatrix, 0);
+      matrix.addUpdateRange(0, 16);
+      matrix.needsUpdate = true;
+      instanced.visible = savedVisible;
+      instanced.count = savedCount;
+      instanced.frustumCulled = savedCulled;
+      warmedLodObjects.add(instanced);
+    };
+  }
+
+  const savedPosition = object.position.clone();
+  object.position.y = -2000;
+  object.visible = true;
+  object.frustumCulled = false;
+  object.updateMatrix();
+  return () => {
+    object.position.copy(savedPosition);
+    object.visible = savedVisible;
+    object.frustumCulled = savedCulled;
+    object.updateMatrix();
+    warmedLodObjects.add(object);
   };
 }
 

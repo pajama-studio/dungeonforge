@@ -5,10 +5,10 @@ import * as THREE from "three/webgpu";
 import {
   color, mix, positionWorld, positionWorldDirection, time,
   fog, densityFogFactor, triNoise3D, float, floor as tslFloor, hash, smoothstep, vec3, sin,
-  uv, length, uniform,
+  uv, length, uniform, vec2, fract, atan,
 } from "three/tsl";
 import * as BufferGeometryUtils from "three/addons/utils/BufferGeometryUtils.js";
-import { hash2 } from "../gen/rng";
+import { hash2, valueNoise2 } from "../gen/rng";
 import { ABYSS } from "../gen/dungeon";
 import { TH } from "../config";
 import { buildAbyssLandmarks } from "./abyss-landmarks";
@@ -24,7 +24,7 @@ export const MOON_DIR = new THREE.Vector3(-46, 48, -22).normalize();
 /** the ONE horizon-air color. The sky's below-horizon fog band and the post
  *  pass's aerial haze both converge to it — any mismatch between the two shows
  *  up as a hard seam along the abyss plane's edge / the far silhouette line. */
-export const HORIZON_FOG = 0x102841;
+export const HORIZON_FOG = 0x0b1928;
 
 export function buildEnvironment(
   scene: THREE.Scene,
@@ -44,11 +44,32 @@ export function buildEnvironment(
   {
     const dir = positionWorldDirection;
     const dirY = dir.y.clamp(-0.35, 1);
-    const base = mix(color(0x1a2340), color(0x05070f), dirY.add(0.35).div(1.35).pow(0.55));
-    const cell = tslFloor(dir.mul(170));
-    const starH = hash(cell.x.mul(7.91).add(cell.y.mul(37.7)).add(cell.z.mul(113.3)));
-    const twinkle = sin(hash(starH.mul(97.3)).mul(6.2832).add(time.mul(0.9))).mul(0.3).add(0.7);
-    const starsRaw = smoothstep(0.9962, 0.9995, starH).mul(twinkle).mul(dir.y.clamp(0, 1).pow(0.4)).mul(1.4);
+    const base = mix(color(0x17233d), color(0x030711), dirY.add(0.35).div(1.35).pow(0.62));
+    // Build actual round stars inside a longitude/height grid. The old
+    // floor(direction*170) painted entire Cartesian cells and exposed rows /
+    // cubic sampling seams. Two independent layers give a dense sub-pixel
+    // field plus a handful of readable navigation stars.
+    const skyUv = vec2(atan(dir.z, dir.x).div(6.283185).add(0.5), dir.y.mul(0.5).add(0.5));
+    const microGrid = skyUv.mul(vec2(420, 190));
+    const microCell = tslFloor(microGrid);
+    const microId = microCell.x.mul(17.17).add(microCell.y.mul(91.73));
+    const microOffset = vec2(hash(microId.add(3.1)), hash(microId.add(19.7))).sub(0.5).mul(0.64);
+    const microDistance = length(fract(microGrid).sub(0.5).sub(microOffset));
+    const microSpawn = smoothstep(0.982, 0.999, hash(microId.add(41.3)));
+    const microStars = smoothstep(0.095, 0.018, microDistance).mul(microSpawn).mul(0.72);
+
+    const heroGrid = skyUv.mul(vec2(132, 62));
+    const heroCell = tslFloor(heroGrid);
+    const heroId = heroCell.x.mul(53.41).add(heroCell.y.mul(137.9));
+    const heroOffset = vec2(hash(heroId.add(7.7)), hash(heroId.add(29.2))).sub(0.5).mul(0.58);
+    const heroDistance = length(fract(heroGrid).sub(0.5).sub(heroOffset));
+    const heroSpawn = smoothstep(0.992, 0.9997, hash(heroId.add(63.8)));
+    const heroCore = smoothstep(0.09, 0.018, heroDistance).mul(heroSpawn);
+    const heroHalo = smoothstep(0.19, 0.055, heroDistance).mul(heroSpawn).mul(0.18);
+    const twinkle = sin(hash(heroId.mul(0.73)).mul(6.2832).add(time.mul(0.65))).mul(0.17).add(0.83);
+    const starAltitude = smoothstep(0.01, 0.18, dir.y);
+    const microRaw = microStars.mul(starAltitude);
+    const heroRaw = heroCore.mul(twinkle).add(heroHalo).mul(starAltitude);
     // milky way: a faint patchy band along the great circle whose pole is bandN —
     // gives the upper sky some structure without competing with the moon
     const bandN = vec3(0.62, 0.33, -0.71);
@@ -61,7 +82,10 @@ export function buildEnvironment(
     const storm = smoothstep(0.18, 0.43, patch)
       .mul(smoothstep(0.04, 0.92, dirY).oneMinus())
       .mul(dir.y.add(0.08).clamp(0, 1));
-    const stars = starsRaw.mul(float(1).sub(storm.mul(0.86)));
+    const starVisibility = float(1).sub(storm.mul(0.9));
+    const microVisible = microRaw.mul(starVisibility);
+    const heroVisible = heroRaw.mul(starVisibility);
+    const heroTemperature = mix(color(0x9abce8), color(0xffdfb0), hash(heroId.add(88.2)));
     const stormColor = mix(color(0x08111f), color(0x314b6b), patch).mul(storm.mul(0.42));
     const md = dir.dot(vec3(MOON_DIR.x, MOON_DIR.y, MOON_DIR.z)).clamp(0, 1);
     const disc = smoothstep(0.99955, 0.99985, md).mul(2.6);
@@ -69,7 +93,8 @@ export function buildEnvironment(
     const broadHalo = md.pow(28).mul(0.14).mul(float(1).sub(storm.mul(0.55)));
     const skyRaw = base.mul(float(1).sub(storm.mul(0.2)))
       .add(stormColor)
-      .add(vec3(stars))
+      .add(color(0xb9d2f2).mul(microVisible))
+      .add(heroTemperature.mul(heroVisible).mul(2.1))
       .add(color(0x8fa3d8).mul(milky))
       .add(color(0xdfe8ff).mul(disc.add(halo).add(broadHalo)));
     // horizon fog band: below the true horizon the sky settles into the same
@@ -91,7 +116,7 @@ export function buildEnvironment(
   const fogTop = float(2.2).add(noise);
   // material-level ground fog dialed back — the post-pass volumetric raymarch
   // now owns the low mist; this only keeps distant aerial perspective coherent
-  const ground = fogTop.sub(positionWorld.y).div(fogTop.sub(fogBase)).saturate().mul(0.55);
+  const ground = fogTop.sub(positionWorld.y).div(fogTop.sub(fogBase)).saturate().mul(0.42);
   const hazeU = uniform(0.008); // adapts to view extent — multi-block chains need thinner air
   const haze = densityFogFactor(hazeU);
   const combined = ground.oneMinus().mul(haze.oneMinus()).oneMinus();
@@ -123,6 +148,41 @@ export function buildEnvironment(
   moon.shadow.radius = 1; // r=3 blurred small-prop contact shadows into detached "floating" blobs
   moon.shadow.autoUpdate = false; // static scene — bake once per regeneration
   group.add(moon, moon.target);
+
+  // One simple instanced low-poly draw supplies both cold dust motes and sparse
+  // warm embers. This intentionally uses the already-hot Basic pipeline: the
+  // wider SpriteNodeMaterial path added a ~20s cold WebGPU compile on this Mac.
+  const particleCount = 420;
+  const particlePositions = new Float32Array(particleCount * 3);
+  const particleKinds = new Uint8Array(particleCount);
+  for (let i = 0; i < particleCount; i++) {
+    const ember = i >= 348;
+    const radius = Math.sqrt(hash2(seed, i, 801)) * (ember ? 0.62 : 1.08);
+    const angle = hash2(seed, i, 802) * Math.PI * 2;
+    particlePositions[i * 3] = Math.cos(angle) * radius;
+    particlePositions[i * 3 + 1] = ember
+      ? 0.12 + hash2(seed, i, 803) * 0.22
+      : 0.08 + hash2(seed, i, 803) * 0.78;
+    particlePositions[i * 3 + 2] = Math.sin(angle) * radius;
+    particleKinds[i] = ember ? 1 : 0;
+  }
+  const particleGeometry = new THREE.IcosahedronGeometry(1, 0);
+  const particleColor = new Float32Array(particleGeometry.getAttribute("position").count * 3).fill(1);
+  particleGeometry.setAttribute("color", new THREE.Float32BufferAttribute(particleColor, 3));
+  const particleMaterial = new THREE.MeshBasicNodeMaterial({ vertexColors: true });
+  const atmosphereParticles = new THREE.InstancedMesh(particleGeometry, particleMaterial, particleCount);
+  atmosphereParticles.name = "gpu-instanced-abyss-dust-and-embers";
+  atmosphereParticles.frustumCulled = false;
+  atmosphereParticles.userData.atmosphereParticles = true;
+  const particleMatrix = new THREE.Matrix4();
+  const particlePosition = new THREE.Vector3();
+  const particleQuaternion = new THREE.Quaternion();
+  const particleScale = new THREE.Vector3();
+  const dustColor = new THREE.Color(0x27384a);
+  const emberColor = new THREE.Color(0xff7430);
+  for (let i = 0; i < particleCount; i++) atmosphereParticles.setColorAt(i, particleKinds[i] ? emberColor : dustColor);
+  if (atmosphereParticles.instanceColor) atmosphereParticles.instanceColor.needsUpdate = true;
+  group.add(atmosphereParticles);
 
   // -- Canyon walls: terraced rock mesas ringing the fortress. Each mesa is a
   //    stack of shrinking, slightly rotated strata with per-stratum vertex
@@ -322,20 +382,72 @@ export function buildEnvironment(
     ringGroup.add(cliffs);
   }
 
-  // -- Abyss floor far below (catches fog color, hides the void). Lives in
-  //    ringGroup so fit() recentres/rescales it with the chain — a fixed plane
-  //    at the origin showed its edge as a hard diagonal under big chains.
+  // -- Abyss bedrock far below. Broad low-frequency terraces establish the
+  //    geological masses, a short eased ramp connects each plateau, and a
+  //    restrained fBM pass weathers the otherwise mathematical steps.
+  //    Lives in ringGroup so fit() recentres/rescales it with the chain.
   {
-    // Unlit and already horizon-coloured: directional moonlight must not tint
-    // one side of the sky/plane join differently from the background.
-    const mat = new THREE.MeshBasicNodeMaterial({ color: HORIZON_FOG });
+    const terraceSteps = 7;
+    const terraceRamp = 0.2;
+    const terraced = (height: number) => {
+      const scaled = THREE.MathUtils.clamp(height, 0, 0.999999) * terraceSteps;
+      const level = Math.floor(scaled);
+      const local = scaled - level;
+      const ramp = THREE.MathUtils.clamp((local - (1 - terraceRamp)) / terraceRamp, 0, 1);
+      const easedRamp = ramp * ramp * (3 - 2 * ramp);
+      return (level + easedRamp) / terraceSteps;
+    };
     // 900: the far edge must sit past the fog-band convergence distance even
     // under big chains (ringGroup scales it further) — a visible edge reads
-    // as a hard diagonal across the horizon
-    const plane = new THREE.Mesh(new THREE.PlaneGeometry(900, 900), mat);
-    plane.rotation.x = -Math.PI / 2;
-    plane.position.y = ABYSS * TH - 12;
-    ringGroup.add(plane);
+    // as a hard diagonal across the horizon. 72² cells are enough for the
+    // slow terraces and remain one cheap, static 10,368-triangle draw.
+    const bedrockGeometry = new THREE.PlaneGeometry(900, 900, 72, 72);
+    bedrockGeometry.rotateX(-Math.PI / 2);
+    const bedrockPosition = bedrockGeometry.getAttribute("position");
+    const bedrockColors = new Float32Array(bedrockPosition.count * 3);
+    const low = new THREE.Color(0x07111c);
+    const high = new THREE.Color(0x172b3c);
+    const tint = new THREE.Color();
+    let minRelief = Infinity;
+    let maxRelief = -Infinity;
+    for (let i = 0; i < bedrockPosition.count; i++) {
+      const x = bedrockPosition.getX(i);
+      const z = bedrockPosition.getZ(i);
+      const macro = valueNoise2(seed ^ 0x6f4a12d9, x / 155, z / 155);
+      const plateau = (terraced(macro) - 0.5) * 18;
+      const weather = (valueNoise2(seed ^ 0x2c1b3a57, x / 31, z / 31) - 0.5) * 3.6;
+      const micro = (valueNoise2(seed ^ 0x71e5b90d, x / 13, z / 13) - 0.5) * 0.85;
+      const relief = plateau + weather + micro;
+      bedrockPosition.setY(i, relief);
+      minRelief = Math.min(minRelief, relief);
+      maxRelief = Math.max(maxRelief, relief);
+      const value = THREE.MathUtils.clamp((relief + 10) / 22, 0, 1);
+      tint.copy(low).lerp(high, 0.18 + value * 0.62);
+      bedrockColors[i * 3] = tint.r;
+      bedrockColors[i * 3 + 1] = tint.g;
+      bedrockColors[i * 3 + 2] = tint.b;
+    }
+    bedrockPosition.needsUpdate = true;
+    bedrockGeometry.setAttribute("color", new THREE.BufferAttribute(bedrockColors, 3));
+    bedrockGeometry.computeVertexNormals();
+    bedrockGeometry.computeBoundingBox();
+    bedrockGeometry.computeBoundingSphere();
+    // Reuse the cliff Lambert+vertex-color pipeline: no new shader topology.
+    const bedrockMaterial = new THREE.MeshLambertNodeMaterial({ vertexColors: true });
+    const bedrock = new THREE.Mesh(bedrockGeometry, bedrockMaterial);
+    bedrock.name = "terraced-weathered-abyss-bedrock";
+    bedrock.position.y = ABYSS * TH - 14;
+    bedrock.receiveShadow = false;
+    bedrock.userData.terrain = {
+      navigation: false,
+      collision: false,
+      terraces: terraceSteps,
+      rampFraction: terraceRamp,
+      relief: [minRelief, maxRelief],
+      triangles: 72 * 72 * 2,
+      noise: "low-frequency-terraces-plus-weathered-fbm",
+    };
+    ringGroup.add(bedrock);
   }
 
   scene.add(group);
@@ -362,6 +474,29 @@ export function buildEnvironment(
       const s = Math.max(1, (half + 26) / 72);
       ringGroup.position.set(centerX, 0, centerZ);
       ringGroup.scale.set(s, 1, s);
+      atmosphereParticles.position.set(centerX, 0, centerZ);
+      const particleRadius = Math.max(68, half * 1.28);
+      const particleHeight = Math.max(84, top + 54);
+      for (let i = 0; i < particleCount; i++) {
+        const ember = particleKinds[i] === 1;
+        const size = ember
+          ? 0.09 + hash2(seed, i, 806) * 0.09
+          : 0.045 + hash2(seed, i, 806) * 0.055;
+        particlePosition.set(
+          particlePositions[i * 3] * particleRadius,
+          ABYSS * TH - 9 + particlePositions[i * 3 + 1] * particleHeight,
+          particlePositions[i * 3 + 2] * particleRadius,
+        );
+        particleQuaternion.setFromEuler(new THREE.Euler(
+          hash2(seed, i, 807) * Math.PI,
+          hash2(seed, i, 808) * Math.PI,
+          hash2(seed, i, 809) * Math.PI,
+        ));
+        particleScale.setScalar(size);
+        atmosphereParticles.setMatrixAt(i, particleMatrix.compose(particlePosition, particleQuaternion, particleScale));
+      }
+      atmosphereParticles.instanceMatrix.needsUpdate = true;
+      atmosphereParticles.computeBoundingSphere();
       cemetery.invalidate();
       landmarkGroup.position.set(centerX, 0, centerZ);
       (landmarkGroup.userData as { fit?: (half: number, top: number) => void }).fit?.(half, top);
@@ -381,6 +516,7 @@ export function buildEnvironment(
     },
     tick(camera: THREE.Camera) {
       cemetery.tick(camera);
+      atmosphereParticles.rotation.y = performance.now() * 0.000003;
     },
     dispose() {
       (landmarkGroup.userData as { dispose?: () => void }).dispose?.();

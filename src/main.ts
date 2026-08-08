@@ -11,6 +11,7 @@
 
 import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import type { TransformControls } from "three/addons/controls/TransformControls.js";
 import { ClusteredLighting } from "three/addons/lighting/ClusteredLighting.js";
 import { DEFAULT_PARAMS, type Params } from "./gen/dungeon";
 import { GenPool } from "./gen/pool";
@@ -417,6 +418,227 @@ const btnNav = document.getElementById("btnNav") as HTMLButtonElement;
 const btnWalk = document.getElementById("btnWalk") as HTMLButtonElement;
 const btnBreak = document.getElementById("btnBreak") as HTMLButtonElement;
 const btnPlay = document.getElementById("btnPlay") as HTMLButtonElement;
+const btnDragonGizmo = document.getElementById("btnDragonGizmo") as HTMLButtonElement;
+const dragonGizmoPanel = document.getElementById("dragonGizmoPanel")!;
+const dragonGizmoReadout = document.getElementById("dragonGizmoReadout")!;
+const btnDragonGizmoReset = document.getElementById("btnDragonGizmoReset") as HTMLButtonElement;
+
+// Placement editor for the dragon-side landmark. TransformControls cannot be
+// attached directly to dragonLandmark because that group intentionally keeps
+// its origin at the dungeon centre; an invisible support-point anchor gives
+// the user a useful gizmo at the dragon's feet while the group receives the
+// resulting offset. The generated placement stays intact underneath.
+const DRAGON_PLACEMENT_KEY = "dungeonforge.dragon-landmark-offset.v4";
+let dragonTransform: TransformControls | null = null;
+let dragonTransformLoad: Promise<TransformControls> | null = null;
+const dragonTransformAnchor = new THREE.Object3D();
+dragonTransformAnchor.name = "dragon-placement-transform-anchor";
+scene.add(dragonTransformAnchor);
+
+let dragonGizmoActive = false;
+let dragonGizmoDragging = false;
+let dragonOrbitWasEnabled = true;
+const dragonDragAnchorStart = new THREE.Vector3();
+const dragonDragLandmarkStart = new THREE.Vector3();
+const dragonDragParentStart = new THREE.Vector3();
+const dragonDragParentNow = new THREE.Vector3();
+const dragonBouncePosition = new THREE.Vector3();
+let cachedDragonLandmark: THREE.Group | null | undefined;
+let cachedDragonSupportSlot: THREE.Group | null | undefined;
+let cachedDragonBounce: THREE.PointLight | null | undefined;
+let cachedDragonRim: THREE.PointLight | null | undefined;
+
+function dragonLandmark(): THREE.Group | null {
+  cachedDragonLandmark ??= scene.getObjectByName("dragon-slate-spire-landmark") as THREE.Group | undefined;
+  return cachedDragonLandmark ?? null;
+}
+
+function dragonSupportSlot(): THREE.Group | null {
+  cachedDragonSupportSlot ??= scene.getObjectByName("streamed-colossal-perched-dragon-slot") as THREE.Group | undefined;
+  return cachedDragonSupportSlot ?? null;
+}
+
+function updateDragonGizmoReadout(): void {
+  const p = dragonLandmark()?.position;
+  dragonGizmoReadout.textContent = p
+    ? `Dragon + rock · X ${p.x.toFixed(1)} · Y ${p.y.toFixed(1)} · Z ${p.z.toFixed(1)}`
+    : "Dragon landmark unavailable";
+}
+
+function syncDragonGizmoAnchor(): void {
+  const slot = dragonSupportSlot();
+  if (!slot || dragonGizmoDragging) return;
+  slot.updateWorldMatrix(true, false);
+  slot.getWorldPosition(dragonTransformAnchor.position);
+  dragonTransformAnchor.updateMatrixWorld();
+}
+
+function saveDragonPlacement(): void {
+  const landmark = dragonLandmark();
+  if (!landmark) return;
+  localStorage.setItem(DRAGON_PLACEMENT_KEY, JSON.stringify(landmark.position.toArray()));
+  landmark.userData.editorOffset = landmark.position.toArray();
+  console.info(`[dragon placement] offset ${landmark.position.toArray().map((n) => n.toFixed(2)).join(", ")}`);
+}
+
+function setDragonPlacementOffset(offset: THREE.Vector3, persist = true): void {
+  const landmark = dragonLandmark();
+  if (!landmark) return;
+  landmark.position.copy(offset);
+  landmark.userData.editorOffset = landmark.position.toArray();
+  landmark.updateWorldMatrix(true, true);
+  syncDragonGizmoAnchor();
+  updateDragonGizmoReadout();
+  if (persist) saveDragonPlacement();
+}
+
+function generatedDragonPlacement(): THREE.Vector3 {
+  const value = dragonLandmark()?.userData.generatedPlacement as unknown;
+  return Array.isArray(value) && value.length === 3 && value.every(Number.isFinite)
+    ? new THREE.Vector3(value[0], value[1], value[2])
+    : new THREE.Vector3();
+}
+
+function restoreDragonPlacement(): void {
+  const raw = localStorage.getItem(DRAGON_PLACEMENT_KEY);
+  if (!raw) return;
+  try {
+    const value = JSON.parse(raw) as unknown;
+    if (!Array.isArray(value) || value.length !== 3 || !value.every(Number.isFinite)) return;
+    setDragonPlacementOffset(new THREE.Vector3(value[0], value[1], value[2]), false);
+  } catch {
+    localStorage.removeItem(DRAGON_PLACEMENT_KEY);
+  }
+}
+
+async function ensureDragonTransform(): Promise<TransformControls> {
+  if (dragonTransform) return dragonTransform;
+  dragonTransformLoad ??= import("three/addons/controls/TransformControls.js").then(({ TransformControls }) => {
+    const transform = new TransformControls(camera, renderer.domElement);
+    transform.setMode("translate");
+    transform.setSpace("world");
+    transform.setSize(0.82);
+    transform.setTranslationSnap(0.5);
+    transform.setColors(0xd65b58, 0x74c57a, 0x638fd6, 0xffd783);
+    const helper = transform.getHelper();
+    helper.name = "dragon-placement-transform-gizmo";
+    scene.add(helper);
+    transform.addEventListener("mouseDown", onDragonTransformMouseDown);
+    transform.addEventListener("objectChange", onDragonTransformObjectChange);
+    transform.addEventListener("mouseUp", onDragonTransformMouseUp);
+    dragonTransform = transform;
+    return transform;
+  });
+  return dragonTransformLoad;
+}
+
+async function setDragonGizmoActive(active: boolean): Promise<void> {
+  if (active === dragonGizmoActive) return;
+  const landmark = dragonLandmark();
+  if (active && !landmark) return;
+  dragonGizmoActive = active;
+  if (active) {
+    if (walking) stopWalk();
+    if (rogueMode) stopRogueRun();
+    cine.stop();
+    controls.autoRotate = false;
+    syncDragonGizmoAnchor();
+    const transform = await ensureDragonTransform();
+    if (!dragonGizmoActive) return;
+    transform.attach(dragonTransformAnchor);
+  } else {
+    dragonTransform?.detach();
+  }
+  btnDragonGizmo.classList.toggle("active", active);
+  dragonGizmoPanel.classList.toggle("show", active);
+  dragonGizmoPanel.setAttribute("aria-hidden", String(!active));
+  document.body.classList.toggle("dragon-gizmo", active);
+  document.getElementById("tip")!.textContent = active
+    ? "drag the colored axes · 0.5-unit snap · Reset restores generated placement"
+    : "drag to orbit · scroll to zoom · Esc stops";
+  updateDragonGizmoReadout();
+}
+
+/** Keep the editor handle attached to the procedurally refitted support point,
+ * and move the already allocated hoard bounce with the edited landmark. This
+ * is constant-time and allocates nothing in the frame loop. */
+function tickDragonPlacementGizmo(): void {
+  if (dragonGizmoActive && !dragonGizmoDragging) syncDragonGizmoAnchor();
+  const landmark = dragonLandmark();
+  const root = landmark?.parent;
+  if (!landmark || !root) return;
+  cachedDragonBounce ??= scene.getObjectByName("cinematic-dragon-hoard-bounce") as THREE.PointLight | undefined;
+  const specs = root.userData.cinematicLights as Array<{
+    kind: string; role?: string; x: number; y: number; z: number;
+    targetX?: number; targetY?: number; targetZ?: number;
+  }> | undefined;
+  const spec = specs?.find((light) => light.role === "dragon-focus")
+    ?? specs?.find((light) => light.kind === "point");
+  const fittedPlacement = root.userData.dragonLightPlacement as number[] | undefined;
+  if (!cachedDragonBounce || !spec) return;
+  dragonBouncePosition.set(
+    spec.x + landmark.position.x - (fittedPlacement?.[0] ?? 0),
+    spec.y + landmark.position.y - (fittedPlacement?.[1] ?? 0),
+    spec.z + landmark.position.z - (fittedPlacement?.[2] ?? 0),
+  );
+  root.localToWorld(dragonBouncePosition);
+  cachedDragonBounce.position.copy(dragonBouncePosition);
+
+  cachedDragonRim ??= scene.getObjectByName("cinematic-dragon-rim") as THREE.PointLight | undefined;
+  const rim = specs?.find((light) => light.role === "dragon-rim");
+  if (!cachedDragonRim || !rim) return;
+  dragonBouncePosition.set(
+    rim.x + landmark.position.x - (fittedPlacement?.[0] ?? 0),
+    rim.y + landmark.position.y - (fittedPlacement?.[1] ?? 0),
+    rim.z + landmark.position.z - (fittedPlacement?.[2] ?? 0),
+  );
+  root.localToWorld(dragonBouncePosition);
+  cachedDragonRim.position.copy(dragonBouncePosition);
+}
+
+function onDragonTransformMouseDown(): void {
+  const landmark = dragonLandmark();
+  if (!landmark) return;
+  dragonGizmoDragging = true;
+  dragonOrbitWasEnabled = controls.enabled;
+  controls.enabled = false;
+  dragonDragAnchorStart.copy(dragonTransformAnchor.position);
+  dragonDragLandmarkStart.copy(landmark.position);
+  const parent = landmark.parent;
+  dragonDragParentStart.copy(dragonDragAnchorStart);
+  parent?.worldToLocal(dragonDragParentStart);
+}
+
+function onDragonTransformObjectChange(): void {
+  const landmark = dragonLandmark();
+  if (!landmark || !dragonGizmoDragging) return;
+  dragonDragParentNow.copy(dragonTransformAnchor.position);
+  landmark.parent?.worldToLocal(dragonDragParentNow);
+  landmark.position.copy(dragonDragLandmarkStart)
+    .add(dragonDragParentNow.sub(dragonDragParentStart));
+  landmark.userData.editorOffset = landmark.position.toArray();
+  landmark.updateWorldMatrix(true, true);
+  updateDragonGizmoReadout();
+}
+
+function onDragonTransformMouseUp(): void {
+  dragonGizmoDragging = false;
+  controls.enabled = dragonOrbitWasEnabled;
+  saveDragonPlacement();
+  syncDragonGizmoAnchor();
+}
+
+btnDragonGizmo.addEventListener("click", (event) => {
+  event.stopPropagation();
+  void setDragonGizmoActive(!dragonGizmoActive);
+});
+btnDragonGizmoReset.addEventListener("click", (event) => {
+  event.stopPropagation();
+  localStorage.removeItem(DRAGON_PLACEMENT_KEY);
+  setDragonPlacementOffset(generatedDragonPlacement(), false);
+});
+restoreDragonPlacement();
+
 btnCine.addEventListener("click", (e) => {
   e.stopPropagation();
   if (cine.active) cine.stop();
@@ -871,6 +1093,12 @@ function grantChestReward(reward: RelicReward): void {
 }
 
 addEventListener("keydown", (e: KeyboardEvent) => {
+  const editingText = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
+  if (e.key.toLowerCase() === "g" && !editingText && !e.repeat) {
+    void setDragonGizmoActive(!dragonGizmoActive);
+    e.preventDefault();
+  }
+  if (e.key === "Escape" && dragonGizmoActive) void setDragonGizmoActive(false);
   if (e.key === "Escape" && walking) stopWalk();
   if (e.key === "Escape" && rogueMode) stopRogueRun();
   if (e.key.toLowerCase() === "x" && !(e.target instanceof HTMLInputElement)) btnBreak.click();
@@ -915,6 +1143,7 @@ const startupTiming = {
   forgeReadyAt: 0,
   coreReadyAt: 0,
   firstVisibleAt: 0,
+  postReadyAt: 0,
   stoneTextureReadyAt: 0,
   decorReadyAt: 0,
 };
@@ -969,9 +1198,11 @@ async function boot(): Promise<void> {
   }
   if (forgeErr !== null || ctx.worlds.length === 0) throw forgeErr ?? new Error("Dungeon forge produced no world");
 
-  // Wave 1 submits the real low-LOD post frame directly. It intentionally uses
-  // the partial scene captured above; later slots reuse the same pipelines.
-  postProcessing.render();
+  // Wave 1 is a direct scene render. On a cold WebGPU cache the full
+  // bloom+volumetric pipeline took 7.6 s to build while CPU forge needed only
+  // ~0.7 s. The direct pass presents real playable geometry first; cinematic
+  // post is activated after that frame is safely on screen.
+  renderer.render(scene, camera);
   const queue = (renderer.backend as unknown as {
     device?: { queue?: { onSubmittedWorkDone?: () => Promise<void> } };
   }).device?.queue;
@@ -981,6 +1212,7 @@ async function boot(): Promise<void> {
   startupTiming.firstVisibleAt = performance.now();
   loadingEl.style.opacity = "0";
   loadingEl.style.visibility = "hidden";
+  loadingEl.style.display = "none";
   // The shared 76 KB brush texture is deliberately post-first-visible. Its
   // placeholder already compiled with the masonry shader, so swapping pixels
   // later neither blocks startup nor creates a new render pipeline.
@@ -993,6 +1225,9 @@ async function boot(): Promise<void> {
   // Keep the partial world alive and animated while layout/build work yields
   // between islands. This callback is replaced atomically by the full game
   // loop below as soon as forging is complete.
+  let cinematicPostEnabled = false;
+  let cinematicPostRequested = false;
+  const cinematicPostDeadline = performance.now() + 6500;
   let earlyLastT = performance.now() / 1000;
   renderer.setAnimationLoop(() => {
     const t = performance.now() / 1000;
@@ -1002,7 +1237,7 @@ async function boot(): Promise<void> {
     for (const world of ctx.worlds) world.tick(t);
     ctx.actors.tick(t, dt);
     ctx.lights.tick(t, 0.3);
-    postProcessing.render();
+    renderer.render(scene, camera);
   });
 
   await forging;
@@ -1157,9 +1392,10 @@ async function boot(): Promise<void> {
     ctx.actors.tick(t, dt);
     destruction.tick(dt);
     if (decorRevealPending) {
-      // One cold render object per frame is the hard safety invariant. The old
-      // five-object tail completed sooner on paper but repeatedly froze the
-      // already-playable scene for 0.3–1.3 seconds.
+      // Most pooled details are zero-count at far LOD, but architectural bays
+      // intentionally survive every distance tier. Reveal one concrete object
+      // per direct-rendered frame so their NodeMaterial setup cannot collapse
+      // the first visible frame or enter the expensive post graph cold.
       decorRevealFrames++;
       const batch = 1;
       if (revealDecor(batch)) {
@@ -1216,6 +1452,7 @@ async function boot(): Promise<void> {
       }
     }
     endless.update(t, controls.target);
+    tickDragonPlacementGizmo();
     route.tick(); // a re-forge invalidates the drawn route
     navOverlay.tick();
     // toggle highlights follow the real state (route/nav can self-hide on
@@ -1235,8 +1472,26 @@ async function boot(): Promise<void> {
     ctx.env.tick(camera);
     gpuScene.tick(camera);
     const r0 = performance.now();
-    postProcessing.render();
+    if (cinematicPostEnabled) {
+      postProcessing.render();
+      if (startupTiming.postReadyAt === 0) startupTiming.postReadyAt = performance.now();
+    } else {
+      renderer.render(scene, camera);
+    }
     lodWarmRestore?.();
+    // Never move a cold concrete render object through the full bloom/AO
+    // graph. Direct WebGPU submission realizes it far more cheaply. Once the
+    // nearest requested tier has no staged object left, switch the already
+    // visible scene to the cinematic pipeline on the following frame.
+    if (!cinematicPostEnabled && cinematicPostRequested && decorReady && !lodWarmRestore) {
+      const dragonStream = scene.getObjectByName("streamed-colossal-perched-dragon-slot");
+      const dragonState = dragonStream?.userData.streamState as string | undefined;
+      const heroReady = !dragonStream || dragonState === "fading" || dragonState === "ready" || dragonState === "failed";
+      // Keep the responsive direct path alive until the rigged hero shell has
+      // decoded and solved IK. Otherwise a cold post frame can monopolise the
+      // main thread long enough to starve the loader callback itself.
+      if (heroReady || performance.now() >= cinematicPostDeadline) cinematicPostEnabled = true;
+    }
     const rDur = performance.now() - r0;
     if (rDur > 100) console.log(`[frame] render() blocked ${rDur.toFixed(0)}ms`);
     if (!revealed && ctx.worlds.length > 0 && coreReady) {
@@ -1245,6 +1500,10 @@ async function boot(): Promise<void> {
       loadingEl.style.visibility = "hidden";
     }
   });
+  // Give the browser a full second of responsive direct-rendered frames before
+  // the cold cinematic graph compiles. The visible dungeon remains on canvas
+  // during that one-time driver job instead of an opaque loading screen.
+  window.setTimeout(() => { cinematicPostRequested = true; }, 1100);
   // Let the first frame and short CSS fade settle, then stream visual detail.
   setTimeout(beginProgressiveDecor, 350);
 }
@@ -1278,6 +1537,19 @@ void boot().catch((error) => {
   stoneStyle,
   gpuScene,
   destruction,
+  dragonPlacement: {
+    get controls() { return dragonTransform; },
+    anchor: dragonTransformAnchor,
+    setActive: setDragonGizmoActive,
+    reset() {
+      localStorage.removeItem(DRAGON_PLACEMENT_KEY);
+      setDragonPlacementOffset(generatedDragonPlacement(), false);
+    },
+    setOffset(x: number, y: number, z: number) {
+      setDragonPlacementOffset(new THREE.Vector3(x, y, z));
+    },
+    getOffset() { return dragonLandmark()?.position.clone() ?? new THREE.Vector3(); },
+  },
   rogue,
   get rogueMode() { return rogueMode; },
   get rogueExit() { return rogueExit.clone(); },

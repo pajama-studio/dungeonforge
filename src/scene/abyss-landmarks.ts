@@ -8,6 +8,7 @@ import * as THREE from "three/webgpu";
 import * as BufferGeometryUtils from "three/addons/utils/BufferGeometryUtils.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
+import { CCDIKSolver } from "three/addons/animation/CCDIKSolver.js";
 import { color } from "three/tsl";
 import { hash2 } from "../gen/rng";
 import { ABYSS } from "../gen/dungeon";
@@ -425,84 +426,293 @@ function oracleBackingCliffGeometry(): THREE.BufferGeometry {
   return geometry;
 }
 
-/** Colossal freestanding basalt stack for the dragon. Overlapping low-sided
- * strata form one merged mesh: broadly cylindrical at a distance, eroded and
- * asymmetric up close, with a real expanded foot and a wide top perch. */
-function dragonPerchColumnGeometry(): THREE.BufferGeometry {
-  const geometry = mergedParts((add) => {
-    const layers = [
-      // y, height, bottom radius, top radius, x, z, sides, yaw
-      [9, 22, 39, 35, 0, 0, 11, 0.08],
-      [28, 21, 35, 32, -1.8, 1.2, 10, -0.11],
-      [47, 22, 32, 29, 1.4, -1.1, 12, 0.17],
-      [66, 21, 29, 27, -1.2, -0.4, 9, -0.06],
-      [84, 20, 27, 25, 1.0, 1.4, 11, 0.13],
-      [101, 19, 25, 23.5, -0.4, -0.8, 10, -0.15],
-      [116, 14, 26.5, 25.5, 0.6, 0.2, 12, 0.05],
-    ] as const;
-    for (const [y, height, bottom, top, x, z, sides, yaw] of layers) {
-      add(new THREE.CylinderGeometry(top, bottom, height, sides, 1, false), [x, y, z], [1, 1, 1], [0, yaw, 0]);
-    }
-    // Long asymmetric fracture ribs interrupt the stacked-cylinder silhouette.
-    // They overlap deeply with the core, reading as one eroded basalt mass.
-    for (let i = 0; i < 10; i++) {
-      const a = i / 10 * Math.PI * 2 + (i % 3) * 0.17;
-      const y = 17 + (i * 19 % 83);
-      const radius = 27 + (i % 4) * 2.4;
-      add(
-        new THREE.IcosahedronGeometry(1, 1),
-        [Math.cos(a) * radius, y, Math.sin(a) * radius],
-        [6 + (i % 3) * 1.6, 11 + (i % 4) * 3.2, 5 + ((i + 1) % 3) * 1.5],
-        [(i % 3 - 1) * 0.16, a, (i % 2 ? 1 : -1) * (0.12 + (i % 3) * 0.04)],
-      );
-    }
-    // Broken stratum shelves catch raking light at three different heights.
-    for (let shelf = 0; shelf < 3; shelf++) {
-      const y = 36 + shelf * 31;
-      for (let i = 0; i < 5; i++) {
-        const a = i / 5 * Math.PI * 2 + shelf * 0.61;
-        add(
-          new THREE.IcosahedronGeometry(1, 1),
-          [Math.cos(a) * (29 - shelf * 1.5), y + (i % 2), Math.sin(a) * (29 - shelf * 1.5)],
-          [8 + (i % 2) * 2, 2.3 + (i % 3) * 0.6, 5.5 + ((i + shelf) % 2) * 2],
-          [0.1 * i, a, (i % 2 ? 1 : -1) * 0.08],
+/** A grounded fan of monumental slate blades. The dominant blade climbs from
+ * a broad buried root to a broken dragon shelf while shorter, parallel blades
+ * preserve the deep triangular gaps visible in the supplied concept. */
+export interface DragonPerchStrataProfile {
+  height: number;
+  baseRadius: number;
+  midRadius: number;
+  platformRadiusX: number;
+  platformRadiusZ: number;
+  lean: number;
+  layers: number;
+  sides: number;
+  roughness: number;
+  seed: number;
+}
+
+export const DRAGON_PERCH_STRATA: DragonPerchStrataProfile = {
+  height: 128,
+  baseRadius: 54,
+  midRadius: 26,
+  platformRadiusX: 45,
+  platformRadiusZ: 41,
+  lean: 155,
+  layers: 7,
+  sides: 8,
+  roughness: 0.14,
+  seed: 463,
+};
+
+// Art-directed in the live TransformControls review. This remains an additive
+// landmark-group placement, so the generated support/IK frame and every maze-
+// size-dependent fit continue to work unchanged underneath it.
+export const DRAGON_LANDMARK_DEFAULT_OFFSET = [-110.4, 58.2, -210.4] as const;
+const DRAGON_RENDER_SCALE = 24.6 * 0.7;
+
+const DRAGON_LEG_CONTACTS = [
+  { name: "fore_left", forward: 0.65, lateral: 1.28 },
+  { name: "fore_right", forward: 0.65, lateral: -1.28 },
+  { name: "hind_left", forward: -1.55, lateral: 1.58 },
+  { name: "hind_right", forward: -1.55, lateral: -1.58 },
+] as const;
+
+interface DragonPerchFrame {
+  point: THREE.Vector3;
+  tangent: THREE.Vector3;
+  up: THREE.Vector3;
+  surfaceRadius: number;
+}
+
+function dragonPerchFrameAt(profile: DragonPerchStrataProfile): DragonPerchFrame {
+  return {
+    point: new THREE.Vector3(0, profile.height, -profile.lean),
+    // The authored dragon faces local -Z while standing on a nearly level
+    // capstone. Any dramatic rake belongs to the strata below its feet.
+    tangent: new THREE.Vector3(0, -0.035, -1).normalize(),
+    up: new THREE.Vector3(0, 1, -0.035).normalize(),
+    surfaceRadius: 0,
+  };
+}
+
+interface SlateBladeSection {
+  x: number;
+  y: number;
+  z: number;
+  width: number;
+  thickness: number;
+}
+
+/** Closed four-sided loft used for every slate blade. Width runs across local
+ * X; thickness follows the normal of the shared Y/Z geological dip. Keeping
+ * the solids closed avoids the missing end caps that plagued the old perch. */
+function dragonSlateBladeGeometry(sections: SlateBladeSection[]): THREE.BufferGeometry {
+  const positions: number[] = [];
+  const indices: number[] = [];
+  for (let i = 0; i < sections.length; i++) {
+    const section = sections[i];
+    const prev = sections[Math.max(0, i - 1)];
+    const next = sections[Math.min(sections.length - 1, i + 1)];
+    const dy = next.y - prev.y;
+    const dz = next.z - prev.z;
+    const inv = 1 / Math.max(1e-5, Math.hypot(dy, dz));
+    const ny = -dz * inv;
+    const nz = dy * inv;
+    const halfWidth = section.width * 0.5;
+    const halfThickness = section.thickness * 0.5;
+    for (const side of [-1, 1]) {
+      for (const face of [-1, 1]) {
+        positions.push(
+          section.x + side * halfWidth,
+          section.y + face * ny * halfThickness,
+          section.z + face * nz * halfThickness,
         );
       }
     }
-    // Broad foundation claws make the pillar visibly meet the abyss bedrock.
-    for (let i = 0; i < 13; i++) {
-      const a = i / 13 * Math.PI * 2;
-      const radius = 33 + (i % 3) * 5;
-      add(
-        new THREE.IcosahedronGeometry(1, 1),
-        [Math.cos(a) * radius, 4 + (i % 2) * 2, Math.sin(a) * radius],
-        [12 + (i % 4) * 2, 8 + (i % 3) * 3, 9 + (i % 2) * 3],
-        [i * 0.17, a, (i % 3 - 1) * 0.13],
-      );
+  }
+  const ring = 4;
+  for (let i = 0; i < sections.length - 1; i++) {
+    const a = i * ring;
+    const b = (i + 1) * ring;
+    // Four consistently wound faces connect the rectangular section rings.
+    indices.push(a, b, a + 1, a + 1, b, b + 1);
+    indices.push(a + 2, a + 3, b + 2, a + 3, b + 3, b + 2);
+    indices.push(a, a + 2, b, a + 2, b + 2, b);
+    indices.push(a + 1, b + 1, a + 3, a + 3, b + 1, b + 3);
+  }
+  const last = (sections.length - 1) * ring;
+  indices.push(0, 1, 2, 1, 3, 2);
+  indices.push(last, last + 2, last + 1, last + 1, last + 2, last + 3);
+  const indexed = new THREE.BufferGeometry();
+  indexed.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  indexed.setIndex(indices);
+  const geometry = indexed.toNonIndexed();
+  indexed.dispose();
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+/** Closed irregular wedge with a deliberately near-level top. It overlaps the
+ * dominant blade by more than its own thickness, so it reads as one fractured
+ * geological tip rather than a floating platform or a circular pedestal. */
+function dragonSlateShelfGeometry(profile: DragonPerchStrataProfile): THREE.BufferGeometry {
+  const footprint: Array<[number, number]> = [
+    [-45, -141], [-34, -201], [-8, -216], [29, -210],
+    [47, -190], [43, -151], [18, -132], [-28, -134],
+  ];
+  const positions: number[] = [];
+  const indices: number[] = [];
+  const top = profile.height;
+  for (let i = 0; i < footprint.length; i++) {
+    const [x, z] = footprint[i];
+    positions.push(x, top + Math.sin(i * 2.31) * 0.34, z);
+  }
+  for (let i = 0; i < footprint.length; i++) {
+    const [x, z] = footprint[i];
+    positions.push(x * 0.84, top - 13 - (i % 3) * 1.8, z + 7);
+  }
+  const topCenter = positions.length / 3;
+  positions.push(1, top, -173);
+  const bottomCenter = positions.length / 3;
+  positions.push(-1, top - 15, -168);
+  const count = footprint.length;
+  for (let i = 0; i < count; i++) {
+    const next = (i + 1) % count;
+    indices.push(topCenter, i, next);
+    indices.push(bottomCenter, count + next, count + i);
+    indices.push(i, count + i, next, next, count + i, count + next);
+  }
+  const indexed = new THREE.BufferGeometry();
+  indexed.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  indexed.setIndex(indices);
+  const geometry = indexed.toNonIndexed();
+  indexed.dispose();
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+function offsetSlateSections(
+  source: SlateBladeSection[],
+  xOffset: number,
+  surfaceLift: number,
+  width: number,
+  thickness: number,
+): SlateBladeSection[] {
+  return source.slice(1, -1).map((section, index, middle) => {
+    const u = (index + 1) / (middle.length + 1);
+    return {
+      x: section.x + xOffset * Math.sin(u * Math.PI),
+      y: section.y + surfaceLift * (0.86 + 0.14 * Math.sin(u * Math.PI)),
+      z: section.z + surfaceLift * 0.46,
+      width: width * Math.sin(u * Math.PI) + 0.45,
+      thickness: thickness * Math.sin(u * Math.PI) + 0.35,
+    };
+  });
+}
+
+function slateLaminaSections(
+  source: SlateBladeSection[],
+  start: number,
+  end: number,
+  xOffset: number,
+  surfaceLift: number,
+  widthScale: number,
+  thickness: number,
+): SlateBladeSection[] {
+  const slice = source.slice(start, end + 1);
+  return slice.map((section, index) => {
+    const edgeTaper = index === 0 || index === slice.length - 1 ? 0.62 : 1;
+    const stagger = Math.sin((index + start) * 2.17) * 1.7;
+    return {
+      x: section.x + xOffset + Math.sin(index * 1.83) * 1.2,
+      y: section.y + surfaceLift + stagger * 0.28,
+      z: section.z + surfaceLift * 0.46 + stagger,
+      width: section.width * widthScale * edgeTaper,
+      thickness: thickness * (0.82 + Math.sin(index * 2.41 + start) * 0.12),
+    };
+  });
+}
+
+/** One merged draw containing closed diagonal wedge solids. The outline is
+ * governed by a 34-degree dip and a 5:1 main-blade length/thickness ratio;
+ * subordinate blades share the dip but stop at clearly stepped lengths. */
+function dragonPerchColumnGeometry(profile: DragonPerchStrataProfile): THREE.BufferGeometry {
+  const dominant: SlateBladeSection[] = [
+    { x: 0, y: -3, z: 20, width: 96, thickness: 41 },
+    { x: -2, y: 18, z: -8, width: 82, thickness: 35 },
+    { x: 2, y: 42, z: -39, width: 70, thickness: 30 },
+    { x: -1, y: 67, z: -76, width: 60, thickness: 26 },
+    { x: 3, y: 91, z: -114, width: 50, thickness: 22 },
+    { x: 0, y: 112, z: -151, width: 42, thickness: 18 },
+    { x: 1, y: 124, z: -180, width: 33, thickness: 13 },
+    { x: -1, y: 134, z: -207, width: 1.8, thickness: 1.5 },
+  ];
+  const blade = (
+    x: number,
+    endY: number,
+    endZ: number,
+    rootWidth: number,
+    thickness: number,
+    kink: number,
+  ): SlateBladeSection[] => [
+    { x, y: -4, z: 22 + Math.abs(x) * 0.035, width: rootWidth, thickness: thickness * 1.42 },
+    { x: x - kink * 0.35, y: endY * 0.24, z: THREE.MathUtils.lerp(16, endZ, 0.22), width: rootWidth * 0.82, thickness },
+    { x: x + kink, y: endY * 0.54, z: THREE.MathUtils.lerp(16, endZ, 0.52), width: rootWidth * 0.58, thickness: thickness * 0.72 },
+    { x: x - kink * 0.25, y: endY * 0.82, z: THREE.MathUtils.lerp(16, endZ, 0.81), width: rootWidth * 0.31, thickness: thickness * 0.42 },
+    { x: x + kink * 0.15, y: endY, z: endZ, width: 1.4, thickness: 1.2 },
+  ];
+  const geometry = mergedParts((add) => {
+    add(dragonSlateBladeGeometry(dominant), [0, 0, 0]);
+    // Two near-main carrier beds supply the bulky stacked core visible in the
+    // reference instead of leaving one smooth, knife-thin central plane.
+    add(dragonSlateBladeGeometry(blade(-16, 119, -166, 78, 29, 3)), [0, -4, 8], [1, 1, 1], [0.01, -0.018, -0.018]);
+    add(dragonSlateBladeGeometry(blade(15, 108, -145, 69, 25, -4)), [0, -7, 13], [1, 1, 1], [-0.014, 0.022, 0.02]);
+    add(dragonSlateBladeGeometry(blade(-54, 100, -126, 56, 24, -4)), [0, 0, 0], [1, 1, 1], [0.015, -0.025, -0.018]);
+    add(dragonSlateBladeGeometry(blade(-84, 78, -88, 48, 21, 3)), [0, 0, 0], [1, 1, 1], [-0.02, 0.04, 0.014]);
+    add(dragonSlateBladeGeometry(blade(49, 109, -139, 50, 22, 4)), [0, 0, 0], [1, 1, 1], [-0.012, 0.026, 0.018]);
+    add(dragonSlateBladeGeometry(blade(78, 86, -92, 42, 19, -3)), [0, 0, 0], [1, 1, 1], [0.018, -0.035, -0.012]);
+    add(dragonSlateBladeGeometry(blade(102, 64, -55, 34, 16, 2)), [0, 0, 0], [1, 1, 1], [-0.012, 0.045, 0.02]);
+
+    // Buried counter-slabs broaden the base without creating a cylindrical
+    // stump. All three point along the same thrust-fault family.
+    add(dragonSlateBladeGeometry(blade(-30, 35, 6, 54, 23, -2)), [-5, -7, 22], [1.08, 1, 1.08], [0, 0.08, -0.05]);
+    add(dragonSlateBladeGeometry(blade(28, 31, 14, 49, 21, 3)), [4, -8, 28], [1.12, 0.92, 1.06], [0, -0.06, 0.04]);
+
+    add(dragonSlateShelfGeometry(profile), [0, 0, 0]);
+
+    // Broad overlapping laminae are the middle-distance identity cue from the
+    // concept. Their broken ends form large stepped ledges across the carrier
+    // face; this is what prevents the long blade from reading as a runway.
+    const laminae = [
+      slateLaminaSections(dominant, 0, 4, -3, 7.2, 0.84, 2.8),
+      slateLaminaSections(dominant, 1, 5, 2, 10.1, 0.91, 2.35),
+      slateLaminaSections(dominant, 2, 6, -1, 13.0, 0.78, 1.95),
+      slateLaminaSections(dominant, 1, 4, 5, 15.6, 0.57, 1.55),
+    ];
+    for (let i = 0; i < laminae.length; i++) {
+      add(dragonSlateBladeGeometry(laminae[i]), [0, 0, 0], [1, 1, 1], [0, (i - 1.5) * 0.006, (i % 2 ? 1 : -1) * 0.006]);
     }
-    // Broken lip stones widen the usable top without turning it into a clean
-    // manufactured disc. The centre remains flat enough for four foot anchors.
-    for (let i = 0; i < 9; i++) {
-      const a = i / 9 * Math.PI * 2 + 0.14;
-      add(
-        new THREE.IcosahedronGeometry(1, 1),
-        [Math.cos(a) * 23.5, 122 + (i % 3) * 0.8, Math.sin(a) * 23.5],
-        [6 + (i % 2) * 2, 2.4 + (i % 3) * 0.5, 5 + ((i + 1) % 3)],
-        [i * 0.11, a * 0.7, (i % 2 ? 1 : -1) * 0.08],
-      );
+
+    // Five discontinuous longitudinal ridges make the faces read as slate at
+    // middle distance. They remain closed, extremely low-poly lofts and merge
+    // into the same draw call as the carrier blade.
+    for (let i = 0; i < 4; i++) {
+      const ridge = offsetSlateSections(dominant, -14 + i * 9.5, 17.8 + (i % 2) * 0.8, 2.2 + (i % 3) * 0.65, 1.05);
+      add(dragonSlateBladeGeometry(ridge), [0, 0, 0], [1, 1, 1], [0, (i - 2) * 0.006, 0]);
     }
-    // Four broad, irregular landing pads sit inside the crown. They are not a
-    // clean platform, but guarantee visible rock under every admitted foot.
-    const footPads = [[-18, -15], [18, -15], [-17, 15], [17, 15]] as const;
-    for (let i = 0; i < footPads.length; i++) {
-      const [x, z] = footPads[i];
-      add(
-        new THREE.IcosahedronGeometry(1, 1), [x, 123.0 + (i % 2) * 0.55, z],
-        [8.8, 2.0 + (i % 3) * 0.35, 7.4], [0.06 * i, i * 0.47, (i % 2 ? 1 : -1) * 0.06],
-      );
+
+    // Sparse transverse fracture wedges interrupt the long planes without
+    // turning the landmark into noisy rubble.
+    const fissures = [
+      [-14, 47, -20, 29, 1.1, 5.5, -0.98],
+      [11, 70, -61, 25, 0.9, 4.8, -1.02],
+      [-8, 92, -103, 20, 0.8, 4.2, -0.96],
+      [6, 110, -139, 15, 0.7, 3.5, -1.04],
+    ] as const;
+    for (const [x, y, z, width, height, depth, rake] of fissures) {
+      add(new THREE.BoxGeometry(width, height, depth), [x, y, z], [1, 1, 1], [rake, 0.04 * Math.sign(x || 1), 0.03]);
     }
   });
-  paintFacets(geometry, 0x121d2e, 0x42536b, 463);
+  paintFacets(geometry, 0x111c2d, 0x53677c, profile.seed);
+  geometry.computeBoundingBox();
+  geometry.computeBoundingSphere();
+  geometry.userData.componentIds = [
+    "grounded-root", "dominant-blade", "secondary-blade-left", "secondary-blade-fan",
+    "landing-shelf", "lamination-ridges", "blade-edges", "blade-fissures",
+  ];
+  geometry.userData.fractureGroups = ["root-embed", "dominant-blade", "left-blade", "right-fan", "landing-shelf"];
+  geometry.userData.closedSolids = 23;
   return geometry;
 }
 
@@ -535,13 +745,13 @@ function abyssArcadeBayGeometry(): THREE.BufferGeometry {
   return geometry;
 }
 
-/** Dragon-side narrative kit: the column is treated as an ancient treasure
+/** Dragon-side narrative kit: the slate spire is treated as an ancient treasure
  * barrow rather than a generic monster pedestal.  The vocabulary is the
  * western hoard-guardian tradition (burial mound, oath stones and captured
  * arms), kept deliberately separate from pearl/cloud/water dragon motifs. */
 function dragonHoardGateGeometry(): THREE.BufferGeometry {
   const geometry = mergedParts((add) => {
-    // A rough cairn facade overlaps the cylindrical column foot, so the gate
+    // A rough cairn facade overlaps the buried slate roots, so the gate
     // reads as an excavation in the rock rather than a freestanding prop.
     for (let i = 0; i < 13; i++) {
       const side = i & 1 ? 1 : -1;
@@ -630,7 +840,8 @@ const TRIPO_ORACLE_DESTRUCTION_PROXY = "/assets/abyss/oracle/oracle-destruction-
 const TRIPO_WARDEN_RENDER = "/assets/abyss/warden/warden-render-30k.glb";
 const TRIPO_WARDEN_RANK_RENDER = "/assets/abyss/warden/warden-rank-render-8k.glb";
 const TRIPO_WARDEN_DESTRUCTION_PROXY = "/assets/abyss/warden/warden-destruction-proxy-2500.glb";
-const TRIPO_DRAGON_RENDER = "/assets/abyss/dragon/dragon-render-45k.glb";
+const TRIPO_DRAGON_RENDER = "/assets/abyss/dragon/dragon-render-45k-rigged-runtime.glb";
+const TRIPO_DRAGON_PERCH_RENDER = "/assets/abyss/dragon/dragon-slate-perch-qr1k.glb?v=adaptive100-scale70-contact-6";
 
 // Neural landmark shells are Draco-compressed and streamed only after the
 // first visible frame. Keeping one shared decoder avoids three independent
@@ -638,10 +849,11 @@ const TRIPO_DRAGON_RENDER = "/assets/abyss/dragon/dragon-render-45k.glb";
 const tripoDracoLoader = new DRACOLoader();
 const tripoGltfLoader = new GLTFLoader();
 tripoGltfLoader.setDRACOLoader(tripoDracoLoader);
-// Dragon is re-exported geometry-only and uncompressed. It bypasses the shared
-// Draco worker queue so the three other neural landmarks cannot starve it or
-// compile all hero assets in the same frame.
+// Dragon carries four leg chains plus a restrained neck-look chain.
+// A dedicated loader prevents the other streamed landmarks from starving its
+// decode or coupling their cancellation state.
 const dragonGltfLoader = new GLTFLoader();
+dragonGltfLoader.setDRACOLoader(tripoDracoLoader);
 
 function disposeLoadedGraph(group: THREE.Object3D): void {
   const textures = new Set<THREE.Texture>();
@@ -655,6 +867,172 @@ function disposeLoadedGraph(group: THREE.Object3D): void {
     }
   });
   for (const texture of textures) texture.dispose();
+}
+
+interface PerchSurfaceHit {
+  point: THREE.Vector3;
+  normal: THREE.Vector3;
+  triangle: number;
+}
+
+/** Highest upward-facing triangle under a local X/Z query. The retopologized
+ * perch is only 2,386 triangles, so four exact CPU samples when fit() changes
+ * are cheaper and more reliable than maintaining a second collision mesh. */
+function samplePerchSurfaceXZ(
+  geometry: THREE.BufferGeometry,
+  x: number,
+  z: number,
+): PerchSurfaceHit | null {
+  const position = geometry.getAttribute("position");
+  if (!position) return null;
+  const normal = geometry.getAttribute("normal");
+  const index = geometry.index;
+  const triangleCount = (index ? index.count : position.count) / 3;
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  const c = new THREE.Vector3();
+  const edgeA = new THREE.Vector3();
+  const edgeB = new THREE.Vector3();
+  const faceNormal = new THREE.Vector3();
+  const interpolatedNormal = new THREE.Vector3();
+  let best: PerchSurfaceHit | null = null;
+
+  for (let triangle = 0; triangle < triangleCount; triangle++) {
+    const ia = index ? index.getX(triangle * 3) : triangle * 3;
+    const ib = index ? index.getX(triangle * 3 + 1) : triangle * 3 + 1;
+    const ic = index ? index.getX(triangle * 3 + 2) : triangle * 3 + 2;
+    a.fromBufferAttribute(position, ia);
+    b.fromBufferAttribute(position, ib);
+    c.fromBufferAttribute(position, ic);
+
+    const denominator = (b.z - c.z) * (a.x - c.x) + (c.x - b.x) * (a.z - c.z);
+    if (Math.abs(denominator) < 1e-6) continue;
+    const wa = ((b.z - c.z) * (x - c.x) + (c.x - b.x) * (z - c.z)) / denominator;
+    const wb = ((c.z - a.z) * (x - c.x) + (a.x - c.x) * (z - c.z)) / denominator;
+    const wc = 1 - wa - wb;
+    if (wa < -1e-4 || wb < -1e-4 || wc < -1e-4) continue;
+
+    edgeA.subVectors(b, a);
+    edgeB.subVectors(c, a);
+    faceNormal.crossVectors(edgeA, edgeB).normalize();
+    if (faceNormal.y < 0.08) continue;
+    const y = a.y * wa + b.y * wb + c.y * wc;
+    if (best && y <= best.point.y) continue;
+
+    if (normal) {
+      interpolatedNormal.set(
+        normal.getX(ia) * wa + normal.getX(ib) * wb + normal.getX(ic) * wc,
+        normal.getY(ia) * wa + normal.getY(ib) * wb + normal.getY(ic) * wc,
+        normal.getZ(ia) * wa + normal.getZ(ib) * wb + normal.getZ(ic) * wc,
+      ).normalize();
+      if (interpolatedNormal.y < 0.08) interpolatedNormal.copy(faceNormal);
+    } else {
+      interpolatedNormal.copy(faceNormal);
+    }
+    best = {
+      point: new THREE.Vector3(x, y, z),
+      normal: interpolatedNormal.clone(),
+      triangle,
+    };
+  }
+  return best;
+}
+
+function paintPerchStone(geometry: THREE.BufferGeometry): void {
+  const position = geometry.getAttribute("position");
+  const normal = geometry.getAttribute("normal");
+  if (!position) return;
+  const colors = new Float32Array(position.count * 3);
+  const dark = new THREE.Color(0x111c2d);
+  const light = new THREE.Color(0x53677c);
+  const value = new THREE.Color();
+  for (let i = 0; i < position.count; i++) {
+    const x = position.getX(i);
+    const y = position.getY(i);
+    const z = position.getZ(i);
+    const raw = Math.sin(x * 12.9898 + y * 78.233 + z * 37.719 + DRAGON_PERCH_STRATA.seed * 0.173) * 43758.5453;
+    const grain = raw - Math.floor(raw);
+    const strata = Math.sin(y * 0.19 + x * 0.035 + Math.sin(z * 0.05) * 0.9) * 0.5 + 0.5;
+    const top = normal ? Math.max(0, normal.getY(i)) : 0;
+    value.copy(dark).lerp(light, THREE.MathUtils.clamp(0.12 + grain * 0.28 + strata * 0.24 + top * 0.2, 0, 1));
+    colors[i * 3] = value.r;
+    colors[i * 3 + 1] = value.g;
+    colors[i * 3 + 2] = value.b;
+  }
+  geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+}
+
+/** Replace the zero-I/O procedural first-frame proxy with the watertight
+ * QuadRemesher shell. It reuses the resident hand-painted stone material, so
+ * the swap adds no texture upload or shader/material permutation. */
+function streamTripoDragonPerch(target: THREE.Mesh, onReady: () => void): () => void {
+  let cancelled = false;
+  let timeoutId = 0;
+  let deferFrameId = 0;
+
+  const start = () => {
+    if (cancelled) return;
+    target.userData.streamState = "loading";
+    tripoGltfLoader.load(TRIPO_DRAGON_PERCH_RENDER, (gltf) => {
+      if (cancelled) {
+        disposeLoadedGraph(gltf.scene);
+        return;
+      }
+      gltf.scene.updateMatrixWorld(true);
+      let source: THREE.Mesh | null = null;
+      gltf.scene.traverse((object) => {
+        const mesh = object as THREE.Mesh;
+        if (!source && mesh.isMesh) source = mesh;
+      });
+      if (!source) {
+        target.userData.streamState = "fallback";
+        disposeLoadedGraph(gltf.scene);
+        return;
+      }
+
+      const sourceMesh = source as THREE.Mesh;
+      let geometry = sourceMesh.geometry.clone();
+      geometry.applyMatrix4(sourceMesh.matrixWorld);
+      for (const attribute of Object.keys(geometry.attributes)) {
+        if (attribute !== "position" && attribute !== "normal") geometry.deleteAttribute(attribute);
+      }
+      if (!geometry.getAttribute("normal")) geometry.computeVertexNormals();
+      geometry.computeBoundingBox();
+      geometry.computeBoundingSphere();
+      paintPerchStone(geometry);
+      geometry.userData.source = "tripo-v3.1-quadremesher-1k";
+      geometry.userData.quadFaces = 986;
+      geometry.userData.triangles = triangleCount(geometry);
+
+      const fallbackGeometry = target.geometry;
+      target.geometry = geometry;
+      fallbackGeometry.dispose();
+      target.userData.streamState = "ready";
+      target.userData.renderUrl = TRIPO_DRAGON_PERCH_RENDER;
+      target.userData.renderTriangles = triangleCount(geometry);
+      target.userData.renderVertices = geometry.getAttribute("position").count;
+      target.userData.surfaceSampler = "highest-upward-triangle-xz";
+      disposeLoadedGraph(gltf.scene);
+      onReady();
+    }, undefined, (error) => {
+      target.userData.streamState = "fallback";
+      console.warn("Deferred Tripo dragon perch load failed; retaining procedural fallback", error);
+    });
+  };
+
+  target.userData.streamState = "deferred";
+  target.userData.renderUrl = TRIPO_DRAGON_PERCH_RENDER;
+  deferFrameId = requestAnimationFrame(() => {
+    deferFrameId = requestAnimationFrame(() => {
+      timeoutId = window.setTimeout(start, 120);
+    });
+  });
+
+  return () => {
+    cancelled = true;
+    if (timeoutId) clearTimeout(timeoutId);
+    if (deferFrameId) cancelAnimationFrame(deferFrameId);
+  };
 }
 
 function paintDragonStone(geometry: THREE.BufferGeometry): void {
@@ -678,6 +1056,99 @@ function paintDragonStone(geometry: THREE.BufferGeometry): void {
     colors[i * 3 + 2] = value.b;
   }
   geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+}
+
+interface DragonLegTarget {
+  name: typeof DRAGON_LEG_CONTACTS[number]["name"];
+  point: [number, number, number];
+  normal: [number, number, number];
+  surfacePoint?: [number, number, number];
+  surfaceHit?: boolean;
+  surfaceTriangle?: number;
+}
+
+/** Bind four leg chains to the live rock and the neck to the oracle sightline.
+ * CCD runs only when fit() changes the landmark, not every frame: the perch is
+ * static and the solved skeleton remains one skinned draw call. */
+function configureDragonLegIk(slot: THREE.Group, loaded: THREE.Group): () => void {
+  let skinned: THREE.SkinnedMesh | null = null;
+  loaded.traverse((object) => {
+    if (!skinned && (object as THREE.SkinnedMesh).isSkinnedMesh) skinned = object as THREE.SkinnedMesh;
+  });
+  if (!skinned) {
+    slot.userData.legIkState = "missing-skinned-mesh";
+    return () => {};
+  }
+  const mesh: THREE.SkinnedMesh = skinned;
+  const bones = mesh.skeleton.bones;
+  const indexOf = (name: string): number => bones.findIndex((bone) => bone.name === name);
+  const legIks = DRAGON_LEG_CONTACTS.map(({ name }) => ({
+    target: indexOf(`ik_${name}_target`),
+    effector: indexOf(`${name}_foot`),
+    links: [
+      { index: indexOf(`${name}_lower`) },
+      { index: indexOf(`${name}_upper`) },
+    ],
+    iteration: 24,
+    minAngle: 0.001,
+    maxAngle: 0.72,
+    blendFactor: 1,
+  }));
+  const neckIk = {
+    target: indexOf("ik_neck_target"),
+    effector: indexOf("neck_tip"),
+    links: [
+      { index: indexOf("neck_head") },
+      { index: indexOf("neck_mid") },
+      { index: indexOf("neck_base") },
+    ],
+    iteration: 12,
+    minAngle: 0.0005,
+    maxAngle: 0.12,
+    // A partial solve preserves the authored S-curve instead of turning the
+    // neck into a perfectly straight mechanical pointer.
+    blendFactor: 0.56,
+  };
+  const iks = [...legIks, neckIk];
+  if (iks.some((ik) => ik.target < 0 || ik.effector < 0 || ik.links.some((link) => link.index < 0))) {
+    slot.userData.legIkState = "missing-bones";
+    slot.userData.legIkBones = bones.map((bone) => bone.name);
+    return () => {};
+  }
+  const solver = new CCDIKSolver(mesh, iks);
+  const point = new THREE.Vector3();
+  const sync = () => {
+    const contacts = slot.userData.legIkTargets as DragonLegTarget[] | undefined;
+    if (!contacts || !slot.parent) return;
+    mesh.skeleton.pose();
+    slot.parent.updateWorldMatrix(true, true);
+    loaded.updateWorldMatrix(true, true);
+    for (const contact of contacts) {
+      const target = bones[indexOf(`ik_${contact.name}_target`)];
+      if (!target?.parent) continue;
+      point.fromArray(contact.point);
+      slot.parent.localToWorld(point);
+      target.parent.worldToLocal(point);
+      target.position.copy(point);
+    }
+    const neckTargetPoint = slot.userData.neckIkTarget as [number, number, number] | undefined;
+    const neckTarget = bones[indexOf("ik_neck_target")];
+    if (neckTargetPoint && neckTarget?.parent) {
+      point.fromArray(neckTargetPoint);
+      slot.parent.localToWorld(point);
+      neckTarget.parent.worldToLocal(point);
+      neckTarget.position.copy(point);
+    }
+    loaded.updateWorldMatrix(true, true);
+    solver.update();
+    slot.userData.legIkState = "solved";
+  };
+  slot.userData.syncLegIK = sync;
+  slot.userData.legIkState = "ready";
+  sync();
+  return () => {
+    if (slot.userData.syncLegIK === sync) delete slot.userData.syncLegIK;
+  };
 }
 
 /** Stream the neural render shell only after the browser has produced its
@@ -955,17 +1426,21 @@ function streamTripoWardens(
 
 /** Deferred one-shell dragon. We intentionally keep one stable 45k topology
  * instead of a distance LOD ladder: for a single hero silhouette the saved
- * triangles are not worth the wing/head pop the user already observed on
- * masonry. Draco keeps transfer to ~1.15 MB and the decoder is shared. */
+ * triangles are not worth wing/head pop. The ~320 KB Draco+skin artifact is
+ * retained for deployment experiments, but Three's decoder worker could be
+ * starved for seconds under WebGPU load. The 2.2 MB uncompressed runtime shell
+ * parses immediately and is streamed only after first paint. */
 function streamTripoDragon(slot: THREE.Group): () => void {
   let cancelled = false;
   let timeoutId = 0;
   let deferFrameId = 0;
   let frameId = 0;
   let loaded: THREE.Group | null = null;
+  let disposeLegIk: () => void = () => {};
 
   const start = () => {
     if (cancelled) return;
+    slot.userData.streamState = "loading";
     dragonGltfLoader.load(TRIPO_DRAGON_RENDER, (gltf) => {
       if (cancelled) {
         disposeLoadedGraph(gltf.scene);
@@ -973,16 +1448,25 @@ function streamTripoDragon(slot: THREE.Group): () => void {
       }
       loaded = gltf.scene;
       loaded.name = "tripo-v3.1-colossal-perched-abyss-dragon";
-      // Blender-normalized shell is ten units high. The art-direction target
-      // is a truly colossal environment silhouette: three times the admitted
-      // 8.2× baseline, with feet still anchored through the parent slot.
-      loaded.scale.setScalar(24.6);
-      // Local +X is the verified head/forward axis. Move the body toward the
-      // maze while keeping the slot/column world placement unchanged.
-      loaded.position.x = 64;
+      // Blender-normalized shell is ten units high. Keep the landmark giant,
+      // but at 70% of the former 24.6× treatment so the rock reads as a
+      // deliberate perch instead of disappearing under the wings.
+      loaded.scale.setScalar(DRAGON_RENDER_SCALE);
+      // Local +X is the verified head/forward axis. The parent slot now owns
+      // the exact capstone frame, so only a small anatomical bias is needed;
+      // the former +64 world-unit shove detached the feet from their support.
+      // Bring the torso into the perch's reachable envelope. At the admitted
+      // The widened rock shoulder raises the rear contacts, so the body only
+      // needs a restrained settling offset. This keeps the front knees near
+      // their authored pose instead of splaying them sideways to absorb the
+      // former 44-unit body drop.
+      loaded.position.set(5.6, -25, 0);
       loaded.userData.source = "tripo-v3.1-20260211";
       loaded.userData.renderTriangles = 45_000;
       loaded.userData.lodPolicy = "stable-hero-shell-no-pop";
+      loaded.userData.rigPolicy = "four-leg-contact-plus-neck-look-ccd-ik";
+      loaded.userData.rigBones = 22;
+      loaded.userData.compressionPolicy = "uncompressed-runtime-fast-parse";
       const dragonStone = makeHandPaintedLandmarkStoneMaterial();
       dragonStone.transparent = true;
       dragonStone.opacity = 0;
@@ -1005,6 +1489,7 @@ function streamTripoDragon(slot: THREE.Group): () => void {
       for (const material of sourceMaterials) material.dispose();
       for (const texture of sourceTextures) texture.dispose();
       slot.add(loaded);
+      disposeLegIk = configureDragonLegIk(slot, loaded);
       const fadeStart = performance.now();
       const fade = (now: number) => {
         if (cancelled || !loaded) return;
@@ -1032,7 +1517,10 @@ function streamTripoDragon(slot: THREE.Group): () => void {
   slot.userData.renderUrl = TRIPO_DRAGON_RENDER;
   deferFrameId = requestAnimationFrame(() => {
     deferFrameId = requestAnimationFrame(() => {
-      timeoutId = window.setTimeout(start, 7800);
+      // Load during the direct-render warm window. The shell then realizes its
+      // one skinned draw before bloom/AO takes over instead of introducing a
+      // cold hero render object into the expensive cinematic graph.
+      timeoutId = window.setTimeout(start, 350);
     });
   });
   return () => {
@@ -1040,6 +1528,7 @@ function streamTripoDragon(slot: THREE.Group): () => void {
     if (timeoutId) clearTimeout(timeoutId);
     if (deferFrameId) cancelAnimationFrame(deferFrameId);
     if (frameId) cancelAnimationFrame(frameId);
+    disposeLegIk();
     if (loaded) {
       loaded.removeFromParent();
       disposeLoadedGraph(loaded);
@@ -1098,15 +1587,38 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
   root.add(oracleWall, oracle);
   const cancelOracleStream = streamTripoOracle(oracle, null);
 
-  const dragonPerchGeo = dragonPerchColumnGeometry();
+  const dragonLandmark = new THREE.Group();
+  dragonLandmark.name = "dragon-slate-spire-landmark";
+  dragonLandmark.position.fromArray(DRAGON_LANDMARK_DEFAULT_OFFSET);
+  dragonLandmark.userData.generatedPlacement = [...DRAGON_LANDMARK_DEFAULT_OFFSET];
+  root.add(dragonLandmark);
+  const dragonPerchGeo = dragonPerchColumnGeometry(DRAGON_PERCH_STRATA);
   const dragonPerch = new THREE.Mesh(dragonPerchGeo, stone);
-  dragonPerch.name = "colossal-dragon-perch-column";
+  dragonPerch.name = "colossal-dragon-slate-spire";
   dragonPerch.castShadow = false;
   dragonPerch.receiveShadow = false;
-  root.add(dragonPerch);
+  dragonPerch.userData.destructible = true;
+  dragonPerch.userData.fractureGroups = dragonPerchGeo.userData.fractureGroups;
+  dragonPerch.userData.componentIds = dragonPerchGeo.userData.componentIds;
+  dragonPerch.userData.collider = {
+    type: "compound-convex-wedges",
+    proxyParts: ["grounded-root", "dominant-blade", "secondary-blade-left", "secondary-blade-fan", "landing-shelf"],
+  };
+  dragonLandmark.userData.sculptRuntime = {
+    targetId: "dragon-slate-spire",
+    root: dragonLandmark.name,
+    visualMesh: dragonPerch.name,
+    sockets: ["dragon-support"],
+    breakable: true,
+    mergedVisualDraws: 1,
+    semanticParts: dragonPerchGeo.userData.componentIds,
+  };
+  dragonLandmark.add(dragonPerch);
+  let refitDragonPerchContact = () => {};
+  const cancelDragonPerchStream = streamTripoDragonPerch(dragonPerch, () => refitDragonPerchContact());
   const dragonSlot = new THREE.Group();
   dragonSlot.name = "streamed-colossal-perched-dragon-slot";
-  root.add(dragonSlot);
+  dragonLandmark.add(dragonSlot);
   const cancelDragonStream = streamTripoDragon(dragonSlot);
 
   const hoardGateGeo = dragonHoardGateGeometry();
@@ -1117,14 +1629,14 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
   hoardGateVoid.name = "dragon-hoard-barrow-cavity";
   hoardGate.castShadow = false;
   hoardGateVoid.renderOrder = 1;
-  root.add(hoardGate, hoardGateVoid);
+  dragonLandmark.add(hoardGate, hoardGateVoid);
 
   const oathStelaGeo = dragonOathStelaGeometry();
   const oathStelae = new THREE.InstancedMesh(oathStelaGeo, stone, 7);
   oathStelae.name = "dragon-hoard-oath-stelae";
   oathStelae.castShadow = false;
   oathStelae.receiveShadow = false;
-  root.add(oathStelae);
+  dragonLandmark.add(oathStelae);
 
   const wardStoneGeo = dragonWardStoneGeometry();
   const wardRuneGeo = dragonWardRuneGeometry();
@@ -1134,7 +1646,7 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
   wardRunes.name = "dragon-hoard-ward-runes";
   wardStones.castShadow = false;
   wardRunes.castShadow = false;
-  root.add(wardStones, wardRunes);
+  dragonLandmark.add(wardStones, wardRunes);
 
   const arcadeGeo = abyssArcadeBayGeometry();
   const arcade = new THREE.InstancedMesh(arcadeGeo, stone, 17);
@@ -1197,7 +1709,11 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
   chains.name = "distant-hanging-chains";
   root.add(chains);
 
+  let lastFitHalf = 42;
+  let lastFitTop = 42;
   const fit = (half: number, top: number) => {
+    lastFitHalf = half;
+    lastFitTop = top;
     // Blender-normalized neural source is 10 units tall. The 8.8–12.2 scale
     // makes each guardian a 88–122 unit monument while preserving one shared
     // draw call for both sides.
@@ -1284,59 +1800,129 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
       .addScaledVector(oracleRight, -oracleScale * 24)
       .add(new THREE.Vector3(0, oracleScale * 10, 0));
 
-    // Counter-landmark at the open (+Z) side: a freestanding cylindrical
-    // basalt stack rooted at the same bedrock plane as the environment. Its
-    // top rises above the maze and exposes four stable dragon-foot anchors.
+    // Counter-landmark at the open (+Z) side: a monumental fan of diagonal
+    // slate blades rises into one broken dragon shelf outside the maze.
     const perchBaseY = ABYSS * TH - 12;
-    // Lower the standing plane by 20% while preserving X/Z placement. The
-    // dragon slot follows perchTopY, so shortening cannot leave it floating.
     const mazeClearance = Math.max(70, Math.min(124, top * 0.24));
     const unloweredPerchHeight = Math.max(118, top + mazeClearance - perchBaseY);
-    const perchHeight = Math.max(94, unloweredPerchHeight * 0.8);
-    const perchScaleY = perchHeight / 124;
+    // Follow the generated skyline, but do not let one unusually high stacked
+    // district turn the support into a foreground wall taller than the frame.
+    const perchHeight = THREE.MathUtils.clamp(unloweredPerchHeight * 0.58, 108, 168);
+    const perchScaleY = perchHeight / DRAGON_PERCH_STRATA.height;
     const perchNarrativeScale = Math.max(0.9, Math.min(1.32, 0.82 + half / 260));
-    // The three-times hero dragon needs a real four-foot platform, not the
-    // former needle pedestal. Widen only the geology; gates/stelae retain a
-    // human-readable narrative scale below.
-    const perchScaleXZ = perchNarrativeScale * 3.15;
+    // Keep the ledge broad enough for four planted feet while remaining one
+    // merged low-poly draw call.
+    const perchScaleXZ = perchNarrativeScale * 1.38;
     dragonPerch.scale.set(perchScaleXZ, perchScaleY, perchScaleXZ);
-    // Fit against the COMPLETE maze bound. The widened geological foot reaches
-    // about 58 local units, so center distance includes its scaled radius plus
-    // an 18-unit safety moat. No seed can push the column back into a block.
-    const perchFootRadius = 58 * perchScaleXZ;
-    dragonPerch.position.set(-half * 0.14, perchBaseY, half + perchFootRadius + 18);
-    dragonPerch.rotation.y = -0.08;
-    const perchTopY = perchBaseY + 124 * perchScaleY;
-    dragonSlot.position.set(dragonPerch.position.x, perchTopY + 0.8, dragonPerch.position.z);
-    // Multi-view verification shows Tripo's dragon faces local +X (the Blender
-    // +X review is its true frontal view). Rotate that axis toward the live
-    // oracle: from the +Z perch this resolves to approximately +90 degrees.
-    const dragonToOracleX = oracle.position.x - dragonPerch.position.x;
-    const dragonToOracleZ = oracle.position.z - dragonPerch.position.z;
-    dragonSlot.rotation.y = Math.atan2(-dragonToOracleZ, dragonToOracleX);
+    const perchFootRadius = DRAGON_PERCH_STRATA.baseRadius * (1 + DRAGON_PERCH_STRATA.roughness) * perchScaleXZ;
+    // Pull the landmark close enough that the distal slate and the dragon's
+    // head overlap the maze silhouette slightly. The broad geological root
+    // remains outside the playable boundary, so this is a visual overhang and
+    // never becomes an unplanned navigation/collision obstacle.
+    const dragonStandOff = THREE.MathUtils.clamp(half * 0.72 + 70, 132, 182);
+    const mazeVisualOverlap = THREE.MathUtils.clamp(half * 0.14, 14, 24);
+    // Turn the geological run across the player's view instead of pointing it
+    // straight down the camera axis. The support point is solved explicitly,
+    // so this silhouette rotation never drags the dragon back over the maze.
+    const platformBoundaryInset = 18 * perchScaleXZ;
+    const localFrame = dragonPerchFrameAt(DRAGON_PERCH_STRATA);
+    const perchYaw = -0.54;
+    dragonPerch.rotation.y = perchYaw;
+    const supportOffset = localFrame.point.clone()
+      .multiply(dragonPerch.scale)
+      .applyAxisAngle(new THREE.Vector3(0, 1, 0), perchYaw);
+    const desiredSupportX = -half * 0.14;
+    const desiredSupportZ = half + perchFootRadius + dragonStandOff
+      - platformBoundaryInset - mazeVisualOverlap;
+    dragonPerch.position.set(
+      desiredSupportX - supportOffset.x,
+      perchBaseY,
+      desiredSupportZ - supportOffset.z,
+    );
+    dragonPerch.updateMatrix();
+
+    // Transform the platform frame into root space. Tangents use the scaled
+    // linear matrix; normals use inverse-transpose.
+    const linear = new THREE.Matrix3().setFromMatrix4(dragonPerch.matrix);
+    const normalMatrix = new THREE.Matrix3().getNormalMatrix(dragonPerch.matrix);
+    const dragonForward = localFrame.tangent.clone().applyMatrix3(linear).normalize();
+    const dragonUp = localFrame.up.clone().applyMatrix3(normalMatrix).normalize();
+    const dragonRight = new THREE.Vector3().crossVectors(dragonForward, dragonUp).normalize();
+    dragonUp.crossVectors(dragonRight, dragonForward).normalize();
+    const supportLocal = localFrame.point.clone().addScaledVector(localFrame.up, localFrame.surfaceRadius);
+    const supportPoint = supportLocal.applyMatrix4(dragonPerch.matrix);
+    dragonSlot.position.copy(supportPoint).addScaledVector(dragonUp, 0.8);
+    dragonSlot.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(dragonForward, dragonUp, dragonRight));
     dragonSlot.scale.setScalar(Math.max(0.88, Math.min(1.12, 0.82 + half / 240)));
-    dragonSlot.userData.faceTarget = oracle.position.toArray();
+    const oracleInDragonLandmark = oracle.position.clone().sub(dragonLandmark.position);
+    dragonSlot.userData.faceTarget = oracleInDragonLandmark.toArray();
     dragonSlot.userData.faceAxis = "local-positive-x";
+    dragonSlot.userData.supportMode = "slate-spear-distal-shelf";
+    const perchTopY = supportPoint.y;
+    const footForward = 18 * perchNarrativeScale;
+    const footSide = 15 * perchNarrativeScale;
+    const footAnchors = [
+      supportPoint.clone().addScaledVector(dragonForward, -footForward).addScaledVector(dragonRight, -footSide),
+      supportPoint.clone().addScaledVector(dragonForward, footForward).addScaledVector(dragonRight, -footSide),
+      supportPoint.clone().addScaledVector(dragonForward, -footForward).addScaledVector(dragonRight, footSide),
+      supportPoint.clone().addScaledVector(dragonForward, footForward).addScaledVector(dragonRight, footSide),
+    ];
+    // Project each anatomical fore/aft contact onto the actual streamed rock.
+    // The old shared plane made a solved ankle look suspended whenever Tripo's
+    // asymmetric strata dipped under one foot.
+    const inversePerchMatrix = dragonPerch.matrix.clone().invert();
+    const legIkTargets: DragonLegTarget[] = DRAGON_LEG_CONTACTS.map((contact) => {
+      const plannedSurfaceRoot = supportPoint.clone()
+        .addScaledVector(dragonForward, contact.forward * DRAGON_RENDER_SCALE * dragonSlot.scale.x)
+        .addScaledVector(dragonRight, -contact.lateral * DRAGON_RENDER_SCALE * dragonSlot.scale.x);
+      const queryLocal = plannedSurfaceRoot.clone().applyMatrix4(inversePerchMatrix);
+      const surfaceHit = samplePerchSurfaceXZ(dragonPerch.geometry, queryLocal.x, queryLocal.z);
+      const surfacePoint = surfaceHit
+        ? surfaceHit.point.clone().applyMatrix4(dragonPerch.matrix)
+        : plannedSurfaceRoot;
+      const surfaceNormal = surfaceHit
+        ? surfaceHit.normal.clone().applyMatrix3(normalMatrix).normalize()
+        : dragonUp.clone();
+      const ankleTarget = surfacePoint.clone()
+        .addScaledVector(surfaceNormal, 0.72 * DRAGON_RENDER_SCALE * dragonSlot.scale.x);
+      return {
+        name: contact.name,
+        point: ankleTarget.toArray() as [number, number, number],
+        normal: surfaceNormal.toArray() as [number, number, number],
+        surfacePoint: surfacePoint.toArray() as [number, number, number],
+        surfaceHit: Boolean(surfaceHit),
+        surfaceTriangle: surfaceHit?.triangle,
+      };
+    });
+    dragonSlot.userData.legIkTargets = legIkTargets;
+    const neckIkTarget = oracleFace.clone().sub(dragonLandmark.position);
+    dragonSlot.userData.neckIkTarget = neckIkTarget.toArray();
+    (dragonSlot.userData.syncLegIK as (() => void) | undefined)?.();
     dragonPerch.userData.perch = {
+      shape: "monumental-diagonal-slate-blade-fan",
+      profile: { ...DRAGON_PERCH_STRATA },
       mazeTopY: top,
       adaptiveClearance: mazeClearance,
+      boundaryStandOff: dragonStandOff,
+      intendedMazeVisualOverlap: mazeVisualOverlap,
+      supportBeyondMaze: supportPoint.z - half,
       unloweredHeight: unloweredPerchHeight,
       finalHeight: perchHeight,
       topY: perchTopY,
-      radius: 23 * perchScaleXZ,
-      facingYaw: Math.PI,
-      headTarget: [0, top * 0.55, half * 0.45],
-      footAnchors: [
-        [-18 * perchScaleXZ, perchTopY, -15 * perchScaleXZ],
-        [18 * perchScaleXZ, perchTopY, -15 * perchScaleXZ],
-        [-17 * perchScaleXZ, perchTopY, 15 * perchScaleXZ],
-        [17 * perchScaleXZ, perchTopY, 15 * perchScaleXZ],
-      ],
+      radius: DRAGON_PERCH_STRATA.platformRadiusX * perchScaleXZ,
+      supportPoint: supportPoint.toArray(),
+      supportTangent: dragonForward.toArray(),
+      supportNormal: dragonUp.toArray(),
+      downwardPitchDegrees: THREE.MathUtils.radToDeg(Math.asin(dragonForward.y)),
+      headTarget: oracleInDragonLandmark.toArray(),
+      neckIkTarget: neckIkTarget.toArray(),
+      footAnchors: footAnchors.map((anchor) => anchor.toArray()),
+      legIkTargets,
     };
 
     // The dragon-side cultural grammar is an ancient hoard barrow. Its gate
-    // faces the maze while a curved sequence of oath/trophy stones receives
-    // the exterior arcade. Everything remains outside nav and collision.
+    // and oath stones stay around the grounded root; no decorative piece is
+    // allowed to float around the overhanging crown.
     const dragonX = dragonPerch.position.x;
     const dragonZ = dragonPerch.position.z;
     const gateScale = 1.28 * perchNarrativeScale;
@@ -1347,17 +1933,25 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
     hoardGate.rotation.y = -0.08;
     hoardGateVoid.rotation.y = hoardGate.rotation.y;
 
-    // The dragon is rock, not a lamp. A dim amber source hidden above the
-    // hoard gate supplies believable low bounce while moonlight owns the rim.
-    const hoardBounce = new THREE.Vector3(
-      dragonX,
-      perchTopY + Math.max(18, perchNarrativeScale * 24),
-      dragonZ - 27 * perchScaleXZ,
-    );
+    // The dragon stays non-emissive. A restrained warm focus grazes the face
+    // and chest, while a broad cold spotlight comes from the maze side to cut
+    // the horns/wings out of the abyss. Both are fixed LightPool slots.
+    const dragonFocus = supportPoint.clone()
+      .add(dragonLandmark.position)
+      .addScaledVector(dragonForward, 72 * perchNarrativeScale)
+      .addScaledVector(dragonUp, 86 * perchNarrativeScale);
+    const hoardBounce = dragonFocus.clone()
+      .addScaledVector(dragonRight, -18 * perchNarrativeScale)
+      .addScaledVector(dragonForward, -18 * perchNarrativeScale);
+    const dragonRimPosition = dragonFocus.clone()
+      .addScaledVector(dragonForward, 168 * perchNarrativeScale)
+      .addScaledVector(dragonRight, 54 * perchNarrativeScale)
+      .addScaledVector(dragonUp, 74 * perchNarrativeScale);
 
     root.userData.cinematicLights = [
       {
         kind: "spot",
+        role: "oracle-key",
         x: oracleLight.x,
         y: oracleLight.y,
         z: oracleLight.z,
@@ -1373,20 +1967,33 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
       },
       {
         kind: "point",
+        role: "dragon-focus",
         x: hoardBounce.x,
         y: hoardBounce.y,
         z: hoardBounce.z,
-        color: 0xa86545,
-        base: 1850,
-        dist: Math.max(160, perchNarrativeScale * 185),
+        color: 0xc86f3f,
+        base: 2850,
+        dist: Math.max(175, perchNarrativeScale * 205),
+        ph: 0,
+      },
+      {
+        kind: "point",
+        role: "dragon-rim",
+        x: dragonRimPosition.x,
+        y: dragonRimPosition.y,
+        z: dragonRimPosition.z,
+        color: 0x6f9fe8,
+        base: 4300,
+        dist: Math.max(340, perchNarrativeScale * 390),
         ph: 0,
       },
     ];
+    root.userData.dragonLightPlacement = dragonLandmark.position.toArray();
 
     for (let i = 0; i < oathStelae.count; i++) {
       const u = i / (oathStelae.count - 1);
       const angle = THREE.MathUtils.lerp(-Math.PI / 2, 0.08, u);
-      const radius = (41 + Math.sin(u * Math.PI) * 4.5) * perchScaleXZ;
+      const radius = (DRAGON_PERCH_STRATA.baseRadius + 6 + Math.sin(u * Math.PI) * 4.5) * perchScaleXZ;
       const stelaScale = (0.92 + hash2(seed, i, 551) * 0.17) * perchNarrativeScale;
       oathStelae.setMatrixAt(i, matrix.compose(
         p.set(dragonX + Math.cos(angle) * radius, perchBaseY + 0.5, dragonZ + Math.sin(angle) * radius),
@@ -1399,10 +2006,10 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
 
     for (let i = 0; i < wardStones.count; i++) {
       const angle = i / wardStones.count * Math.PI * 2 + 0.16;
-      const radius = 24.5 * perchScaleXZ;
+      const radius = (DRAGON_PERCH_STRATA.baseRadius + 2.5) * perchScaleXZ;
       const runeScale = 0.92 * perchNarrativeScale;
       const wardMatrix = matrix.compose(
-        p.set(dragonX + Math.cos(angle) * radius, perchTopY - 2.3, dragonZ + Math.sin(angle) * radius),
+        p.set(dragonX + Math.cos(angle) * radius, perchBaseY + 0.5, dragonZ + Math.sin(angle) * radius),
         q.setFromEuler(new THREE.Euler(0, -angle - Math.PI / 2, 0)),
         s.set(runeScale, runeScale * (0.92 + hash2(seed, i, 556) * 0.1), runeScale),
       );
@@ -1417,14 +2024,17 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
     // A half-ellipse links the asymmetric endpoints exactly: the oracle stays
     // close to the closed wall while the greatly widened dragon column moves
     // farther out. The +X bow remains beyond the complete maze bound.
-    const arcadeCenterZ = (oracle.position.z + dragonPerch.position.z) * 0.5;
-    const arcadeRadiusZ = (dragonPerch.position.z - oracle.position.z) * 0.5;
+    const dragonEndpointX = dragonPerch.position.x + dragonLandmark.position.x;
+    const dragonEndpointZ = dragonPerch.position.z + dragonLandmark.position.z;
+    const arcadeCenterZ = (oracle.position.z + dragonEndpointZ) * 0.5;
+    const arcadeRadiusZ = (dragonEndpointZ - oracle.position.z) * 0.5;
     const arcadeRadiusX = Math.max(half + 76, arcadeRadiusZ * 0.72);
     for (let i = 0; i < arcade.count; i++) {
       const u = i / (arcade.count - 1);
       const angle = -Math.PI / 2 + u * Math.PI;
       const bow = Math.sin(u * Math.PI) * 9 + (hash2(seed, i, 491) - 0.5) * 3;
-      const x = Math.cos(angle) * (arcadeRadiusX + bow);
+      const x = THREE.MathUtils.lerp(oracle.position.x, dragonEndpointX, u)
+        + Math.cos(angle) * (arcadeRadiusX + bow);
       const z = arcadeCenterZ + Math.sin(angle) * arcadeRadiusZ;
       const tangentX = -Math.sin(angle) * arcadeRadiusX;
       const tangentZ = Math.cos(angle) * arcadeRadiusZ;
@@ -1441,10 +2051,12 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
     crags.instanceMatrix.needsUpdate = true;
     crags.computeBoundingSphere();
   };
+  refitDragonPerchContact = () => fit(lastFitHalf, lastFitTop);
   (root.userData as { fit?: (half: number, top: number) => void }).fit = fit;
   (root.userData as { dispose?: () => void }).dispose = () => {
     cancelOracleStream();
     cancelDragonStream();
+    cancelDragonPerchStream();
     wardenStream.dispose();
     wardenRankStream.dispose();
   };
@@ -1465,8 +2077,19 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
     oracleDestructionProxyBytes: 45_356,
     oracleBackingCliffTriangles: triangleCount(oracleWallGeo),
     dragonPerchColumnTriangles: triangleCount(dragonPerchGeo),
+    dragonSlateSpireTriangles: triangleCount(dragonPerchGeo),
+    dragonSlateSpireStreamedTriangles: 1_976,
+    dragonSlateSpireStreamedVertices: 990,
+    dragonSlateSpireStreamedBytes: 36_000,
+    dragonSlateSpireQuadFaces: 986,
+    dragonSlateSpireClosedSolids: dragonPerchGeo.userData.closedSolids,
+    dragonSlateSpireVisualDraws: 1,
     dragonStreamedTriangles: 45_000,
-    dragonStreamedBytes: 1_153_400,
+    dragonStreamedBytes: 2_197_956,
+    dragonDracoArchiveBytes: 326_948,
+    dragonRigBones: 22,
+    dragonIkChains: 5,
+    dragonNeckWeightedVertices: 2_237,
     dragonLodPolicy: "stable-hero-shell-no-pop",
     dragonHoardGateTriangles: triangleCount(hoardGateGeo) + triangleCount(hoardGateVoidGeo),
     dragonOathStelaTrianglesPerInstance: triangleCount(oathStelaGeo),

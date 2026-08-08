@@ -40,13 +40,17 @@ export const PR_LARGE = 1.25;
 /** distance LOD with hysteresis: detail turns ON nearer than LOD_NEAR and only
  *  OFF again past LOD_FAR, so a camera hovering at the boundary never thrashes
  *  geometry swaps */
-export const LOD_NEAR = 95;
-export const LOD_FAR = 112;
+export const LOD_NEAR = 118;
+export const LOD_FAR = 146;
 /** The collapsed multi-course prisms are a FAR tier, not the immediate
  * neighbour of hand-cut masonry. Between these bands a one-instance-per-brick
  * lightweight mesh preserves silhouette, placement and authored tint. */
-export const LOD_MID_NEAR = 138;
-export const LOD_MID_FAR = 160;
+// Keep the one-brick middle tier until its silhouette is genuinely sub-pixel.
+// The old 138/160 collapse was visible during a normal scroll-in even though
+// it saved little GPU time at that range; the wider 42-unit hysteresis also
+// prevents zoom inertia from crossing both tiers in adjacent frames.
+export const LOD_MID_NEAR = 218;
+export const LOD_MID_FAR = 260;
 
 /** Square spiral staircase (old-stairwell style): flights wind around a square
  *  core with corner turns. */

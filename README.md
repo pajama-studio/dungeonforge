@@ -4,8 +4,9 @@
 (needs a WebGPU browser — Chrome/Edge, or Safari 26+)
 
 Procedurally generated stone-labyrinth fortress worlds — three.js **WebGPU + TSL**,
-fully deterministic per seed, end-to-end in the browser. No textures, no models
-(one CC0 knight aside): every stone, sigil, flame and bramble is procedural.
+fully deterministic per seed, end-to-end in the browser. The dungeon fabric,
+materials, effects and dressing are procedural; a small streamed landmark set
+supplies the colossal dragon, abyss guardians and player character.
 
 ![Dungeonforge](docs/shot-v6.jpeg)
 
@@ -32,6 +33,12 @@ fully deterministic per seed, end-to-end in the browser. No textures, no models
   warren to a pristine summit temple (decay fades with height); the Reliquary
   hangs a sealed, fully-decayed vault at the bottom tip of a diamond whose
   crown is immaculate. The narrative IS the generation-parameter gradient.
+- **Weathered abyss terrain** — broad low-frequency terraces create readable
+  geological plateaus, short eased ramps connect them, and restrained fBM adds
+  erosion without turning the floor into noisy vertical cliffs (one static draw).
+- **Abyss-scale landmarks** — a rigged dragon on a custom closed rock perch,
+  colossal guardians, cemetery silhouettes and distant architecture stream in
+  after the playable dungeon reaches its first visible frame.
 - **60 fps on a laptop** — instancing, slot-pooled render objects, distance LOD,
   a fixed light pool, and an emissive-threshold bloom chain (see Performance).
 
@@ -53,13 +60,13 @@ Shareable URLs: `?seed=123&islands=8&size=13` pins a build.
 | drag / wheel | orbit / zoom (auto-rotate until first drag) |
 | **⚄ New dungeon** | forge a random seed |
 | seed + **Forge** | forge a specific seed |
-| **⧉ 3×3×3** | the Cube: 27 blocks in a solid lattice, fully bridged + stair shafts |
-| **▲ Ziggurat** | terraces shrink 3×3 → 2×2 → 1 toward a summit sanctum (`?mode=ziggurat`) |
-| **◆ Reliquary** | a suspended diamond 1→2×2→3×3→2×2→1; sealed vault below, sanctum above (`?mode=reliquary`) |
+| **⚔** | enter the roguelike first-person mode |
 | **🎬** | cinematic flythrough (any input exits) |
 | **🧭** | draw the 3D route from spawn to the farthest sanctum |
+| **🕸** | inspect the walkable/nav surface |
 | **💀** | the skeleton walks the whole route — maze, bridges, spiral stairs (Esc stops) |
-| **endless ∞** (panel) | roam-to-generate streaming world |
+| **💥** | GPU-scene destruction mode |
+| **🐉** | dragon + perch placement gizmo |
 
 The route is a breadth-first search over everything walkable: island floor
 grids, rope-bridge crossings and the spiral stair towers. It doubles as the

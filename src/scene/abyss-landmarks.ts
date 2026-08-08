@@ -9,11 +9,99 @@ import * as BufferGeometryUtils from "three/addons/utils/BufferGeometryUtils.js"
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
 import { CCDIKSolver } from "three/addons/animation/CCDIKSolver.js";
-import { color } from "three/tsl";
+import {
+  color, uv, smoothstep, sin, time, mix, float, vec3, positionLocal, length,
+  triNoise3D,
+} from "three/tsl";
 import { hash2 } from "../gen/rng";
 import { ABYSS } from "../gen/dungeon";
 import { TH } from "../config";
 import { makeHandPaintedLandmarkStoneMaterial } from "./kit/materials";
+
+/** Layered ghost-fire for the oracle's eye sockets. The torch flame material
+ *  reads fine at prop scale but falls apart on a hero close-up, so the gaze
+ *  gets its own build: a breathing radial halo, two turbulence octaves that
+ *  tear real licking tongues into the flame edge, and a hot core ramp. All
+ *  layers emit >1 linear values so bloom finishes the effect. */
+function makeEyeFireMat(): THREE.MeshBasicNodeMaterial {
+  const mat = new THREE.MeshBasicNodeMaterial({
+    transparent: true, depthWrite: false, side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+  });
+  const u = uv().x;
+  const v = uv().y;
+  const cx = u.sub(0.5).abs().mul(2);
+  const n1 = triNoise3D(vec3(u.mul(2.2), v.mul(2.7).sub(time.mul(0.6)), 0.37), 0.35, time);
+  const n2 = triNoise3D(vec3(u.mul(4.9).add(3.1), v.mul(5.3).sub(time.mul(1.15)), 1.91), 0.6, time);
+  const turb = n1.mul(0.66).add(n2.mul(0.34));
+  // tongue mask: tall teardrop eroded by scrolling turbulence
+  const shape = smoothstep(1.0, 0.08, v.add(cx.pow(1.4).mul(1.05)).add(turb.mul(0.58).sub(0.28)))
+    .mul(smoothstep(0.0, 0.16, float(1).sub(cx)));
+  const ramp = mix(
+    color(0xeafff6),
+    mix(color(0x5ef2d6), color(0x0b8071), smoothstep(0.25, 0.95, v)),
+    smoothstep(0.04, 0.6, v.add(turb.mul(0.2))),
+  );
+  const sway = sin(time.mul(6.3).add(v.mul(4.2))).mul(v).mul(0.05);
+  mat.positionNode = positionLocal.add(vec3(sway, 0, sway.mul(0.7)));
+  mat.colorNode = ramp.mul(shape).mul(3.4);
+  mat.opacityNode = shape.clamp(0, 1);
+  return mat;
+}
+
+/** Bioluminescent water for the abyss basin: flat additive discs whose
+ *  radial falloff is rippled by slow noise, so the floor reads as glowing
+ *  water lapping the statue base and pooling under the maze (painted ref). */
+function makeAbyssPoolMat(): THREE.MeshBasicNodeMaterial {
+  const mat = new THREE.MeshBasicNodeMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  const fall = smoothstep(1.0, 0.06, length(uv().sub(0.5)).mul(2));
+  const ripple = triNoise3D(vec3(uv().mul(3.2), 0.7), 0.18, time).mul(0.42).add(0.72);
+  mat.colorNode = color(0x1fd4b4).mul(fall.pow(1.8)).mul(ripple).mul(2.3);
+  mat.opacityNode = fall.mul(0.9);
+  return mat;
+}
+
+/** The broad basin sheet under the maze: much dimmer and PATCHY — dark
+ *  water with drifting glowing blooms, not a uniform lit floor. */
+function makeAbyssBasinMat(): THREE.MeshBasicNodeMaterial {
+  const mat = new THREE.MeshBasicNodeMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  const fall = smoothstep(1.0, 0.1, length(uv().sub(0.5)).mul(2));
+  const blooms = triNoise3D(vec3(uv().mul(2.6), 0.4), 0.12, time);
+  const patch = smoothstep(0.28, 0.78, blooms).mul(0.85).add(0.1);
+  mat.colorNode = color(0x13836f).mul(fall).mul(patch).mul(1.2);
+  mat.opacityNode = fall.mul(patch).mul(0.8);
+  return mat;
+}
+
+/** Bright shimmering shoreline band where the glowing water meets the
+ *  statue's tentacle roots — the hottest teal edge in the reference. */
+function makeAbyssShoreMat(): THREE.MeshBasicNodeMaterial {
+  const mat = new THREE.MeshBasicNodeMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  const r = length(uv().sub(0.5)).mul(2);
+  const band = smoothstep(0.74, 0.87, r).mul(smoothstep(1.0, 0.94, r));
+  const shimmer = triNoise3D(vec3(uv().mul(6.2), 1.7), 0.3, time).mul(0.5).add(0.7);
+  mat.colorNode = color(0x3af2cf).mul(band).mul(shimmer).mul(2.6);
+  mat.opacityNode = band.mul(0.9);
+  return mat;
+}
+
+function makeEyeGlowMat(): THREE.MeshBasicNodeMaterial {
+  const mat = new THREE.MeshBasicNodeMaterial({
+    transparent: true, depthWrite: false, side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+  });
+  const fall = smoothstep(1.0, 0.04, length(uv().sub(0.5)).mul(2));
+  const breathe = sin(time.mul(2.1)).mul(0.16).add(0.84);
+  mat.colorNode = color(0x2fe8c8).mul(fall.pow(1.7)).mul(breathe).mul(1.1);
+  mat.opacityNode = fall;
+  return mat;
+}
 
 type AddPart = (
   geometry: THREE.BufferGeometry,
@@ -1155,7 +1243,11 @@ function configureDragonLegIk(slot: THREE.Group, loaded: THREE.Group): () => voi
  * first frame. The code-native oracle remains a zero-I/O fallback and is
  * swapped out with a short material fade; the closed QuadRemesher proxy stays
  * unloaded until destruction/physics asks for it. */
-function streamTripoOracle(slot: THREE.Group, fallback: THREE.Group | null): () => void {
+function streamTripoOracle(
+  slot: THREE.Group,
+  fallback: THREE.Group | null,
+  onLoaded?: (loaded: THREE.Group) => void,
+): () => void {
   let cancelled = false;
   let timeoutId = 0;
   let deferFrameId = 0;
@@ -1221,6 +1313,7 @@ function streamTripoOracle(slot: THREE.Group, fallback: THREE.Group | null): () 
           : prepare(mesh.material);
       });
       slot.add(loaded);
+      onLoaded?.(loaded);
 
       const fadeStart = performance.now();
       const fade = (now: number) => {
@@ -1585,7 +1678,89 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
   oracleWall.castShadow = false;
   oracleWall.receiveShadow = false;
   root.add(oracleWall, oracle);
-  const cancelOracleStream = streamTripoOracle(oracle, null);
+  // Abyssal gaze: teal ghost-fire burning INSIDE the oracle's eye sockets.
+  // The rig (two crossed-quad flame pairs + one teal point light) is created
+  // HERE, before the first compile — a light added later would change the
+  // scene light count and recompile every pipeline. It stays invisible until
+  // the streamed Tripo shell arrives; then a raycast finds the actual socket
+  // surface on the loaded mesh and the rig is attached INTO the model, so it
+  // inherits every later transform. Flame quads output >1 linear values so
+  // bloom halos the gaze exactly like the torch flames.
+  const oracleEyeFlameMat = makeEyeFireMat();
+  const oracleEyeGlowMat = makeEyeGlowMat();
+  const oracleEyePlane = new THREE.PlaneGeometry(0.34, 0.52);
+  oracleEyePlane.translate(0, 0.2, 0); // flame base sits at the anchor point
+  const oracleEyeGlowPlane = new THREE.PlaneGeometry(0.62, 0.62);
+  oracleEyeGlowPlane.translate(0, 0.14, 0);
+  const oracleEyeCoreGeo = new THREE.SphereGeometry(0.085, 12, 10);
+  const oracleEyeCoreMat = new THREE.MeshBasicNodeMaterial();
+  oracleEyeCoreMat.colorNode = color(0xd9fff4).mul(sin(time.mul(2.1)).mul(0.3).add(3.0));
+  const oracleEyes = new THREE.Group();
+  oracleEyes.name = "oracle-abyssal-gaze";
+  oracleEyes.visible = false;
+  for (let side = 0; side < 2; side++) {
+    const socket = new THREE.Group();
+    for (let cross = 0; cross < 2; cross++) {
+      const halo = new THREE.Mesh(oracleEyeGlowPlane, oracleEyeGlowMat);
+      halo.rotation.y = cross * Math.PI / 2;
+      const tongue = new THREE.Mesh(oracleEyePlane, oracleEyeFlameMat);
+      tongue.rotation.y = cross * Math.PI / 2;
+      for (const quad of [halo, tongue]) {
+        quad.castShadow = false;
+        quad.receiveShadow = false;
+      }
+      socket.add(halo, tongue);
+    }
+    const core = new THREE.Mesh(oracleEyeCoreGeo, oracleEyeCoreMat);
+    core.position.y = 0.11;
+    core.castShadow = false;
+    core.receiveShadow = false;
+    socket.add(core);
+    oracleEyes.add(socket);
+  }
+  const oracleGaze = new THREE.PointLight(0x3fe6c6, 0, 95, 2);
+  oracleGaze.name = "oracle-abyssal-gaze-light";
+  oracleGaze.castShadow = false;
+  oracleEyes.add(oracleGaze);
+  root.add(oracleEyes);
+  const abyssPoolGeo = new THREE.CircleGeometry(1, 40);
+  abyssPoolGeo.rotateX(-Math.PI / 2);
+  const abyssPoolMat = makeAbyssPoolMat();
+  const abyssPool = new THREE.Mesh(abyssPoolGeo, abyssPoolMat);
+  abyssPool.name = "oracle-bioluminescent-pool";
+  const abyssBasinPool = new THREE.Mesh(abyssPoolGeo, makeAbyssBasinMat());
+  abyssBasinPool.name = "maze-basin-bioluminescent-pool";
+  const abyssRingGeo = new THREE.RingGeometry(0.74, 1, 48);
+  abyssRingGeo.rotateX(-Math.PI / 2);
+  const abyssShoreRing = new THREE.Mesh(abyssRingGeo, makeAbyssShoreMat());
+  abyssShoreRing.name = "oracle-shoreline-glow-ring";
+  const abyssDabGeo = new THREE.PlaneGeometry(1, 1);
+  abyssDabGeo.rotateX(-Math.PI / 2);
+  const abyssDabs = new THREE.InstancedMesh(abyssDabGeo, makeEyeGlowMat(), 16);
+  abyssDabs.name = "bioluminescent-algae-dabs";
+  abyssDabs.frustumCulled = false; // one tiny draw; scattered by fit below
+  for (const glowMesh of [abyssPool, abyssBasinPool, abyssShoreRing, abyssDabs]) {
+    glowMesh.castShadow = false;
+    glowMesh.receiveShadow = false;
+    glowMesh.renderOrder = 1; // over the abyss plane, under the fog raymarch
+    root.add(glowMesh);
+  }
+  const attachOracleGaze = (loaded: THREE.Group) => {
+    // Socket anchors hand-tuned with the in-page gizmo (2026-08-08), in the
+    // streamed GLB's local frame (10 units tall, faces +X before the parent
+    // -π/2 yaw). The model and its import transform are fixed, so these local
+    // coordinates land in the eye hollows for every seed and every fit.
+    loaded.add(oracleEyes);
+    for (let side = 0; side < 2; side++) {
+      const socket = oracleEyes.children[side];
+      socket.position.set(1.051, 7.586, side === 0 ? -0.542 : 0.542);
+      socket.scale.set(1.25, 0.55, 1.25);
+    }
+    oracleGaze.position.set(1.3, 7.586, 0);
+    oracleGaze.intensity = 320;
+    oracleEyes.visible = true;
+  };
+  const cancelOracleStream = streamTripoOracle(oracle, null, attachOracleGaze);
 
   const dragonLandmark = new THREE.Group();
   dragonLandmark.name = "dragon-slate-spire-landmark";
@@ -1799,6 +1974,35 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
       .addScaledVector(oracleForward, oracleScale * 36)
       .addScaledVector(oracleRight, -oracleScale * 24)
       .add(new THREE.Vector3(0, oracleScale * 10, 0));
+    // glowing water: a tight pool lapping the tentacle roots, a broad basin
+    // sheet reaching under the maze, a hot shoreline band where water meets
+    // the statue, and scattered algae dabs breaking the perfect circles
+    const floorY = oracle.position.y;
+    abyssPool.position.copy(oracle.position)
+      .addScaledVector(oracleForward, oracleScale * 5)
+      .add(new THREE.Vector3(0, 2.6, 0));
+    abyssPool.scale.setScalar(oracleScale * 26);
+    abyssBasinPool.position.set(
+      oracle.position.x * 0.3, floorY + 1.8, oracle.position.z * 0.3);
+    abyssBasinPool.scale.setScalar(Math.max(oracleScale * 40, half * 1.25));
+    abyssShoreRing.position.copy(oracle.position)
+      .addScaledVector(oracleForward, oracleScale * 4)
+      .add(new THREE.Vector3(0, 2.9, 0));
+    abyssShoreRing.scale.setScalar(oracleScale * 15);
+    const dabMatrix = new THREE.Matrix4();
+    for (let i = 0; i < 16; i++) {
+      const angle = hash2(11, i, 931) * Math.PI * 2;
+      const radius = oracleScale * (9 + hash2(11, i, 932) * 13);
+      const size = 2.5 + hash2(11, i, 933) * 4.5;
+      dabMatrix.makeScale(size, 1, size);
+      dabMatrix.setPosition(
+        oracle.position.x + Math.cos(angle) * radius + oracleForward.x * oracleScale * 4,
+        floorY + 2.2,
+        oracle.position.z + Math.sin(angle) * radius + oracleForward.z * oracleScale * 4,
+      );
+      abyssDabs.setMatrixAt(i, dabMatrix);
+    }
+    abyssDabs.instanceMatrix.needsUpdate = true;
 
     // Counter-landmark at the open (+Z) side: a monumental fan of diagonal
     // slate blades rises into one broken dragon shelf outside the maze.
@@ -1958,7 +2162,7 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
         targetX: oracleFace.x,
         targetY: oracleFace.y,
         targetZ: oracleFace.z,
-        color: 0x78a6ca,
+        color: 0x66c2b8,
         base: 7200,
         dist: Math.max(220, oracleScale * 132),
         ph: 0,

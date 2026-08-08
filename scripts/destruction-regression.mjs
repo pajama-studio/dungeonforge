@@ -107,7 +107,7 @@ const evaluated = await call("Runtime.evaluate", {
     if (${closeup}) {
       let source = null;
       window.__df.ctx.scene.traverse((object) => {
-        if (!source && object.isInstancedMesh && object.name === "blocks" && (object.userData?.n ?? 0) > 0) source = object;
+        if (!source && object.isInstancedMesh && object.name === "blockMids" && (object.userData?.n ?? 0) > 0) source = object;
       });
       if (!source) throw new Error("No masonry source available for close-up");
       source.updateWorldMatrix(true, false);
@@ -116,7 +116,9 @@ const evaluated = await call("Runtime.evaluate", {
       const focus = window.__df.camera.position.clone();
       const origin = window.__df.camera.position.clone().setFromMatrixPosition(source.matrixWorld);
       let bestScore = -Infinity;
-      const count = Math.min(source.userData.n, source.count);
+      // GPU Scene deliberately keeps the raycast-authority source at count 0;
+      // userData.n is its logical instance count.
+      const count = source.userData.n;
       for (let i = 0; i < count; i++) {
         source.getMatrixAt(i, local);
         world.multiplyMatrices(source.matrixWorld, local);
@@ -225,6 +227,7 @@ const evaluated = await call("Runtime.evaluate", {
       idleFrames,
       fractureFrames,
       undersized,
+      gpuSceneHiddenInstances: window.__df.gpuScene?.stats.hiddenInstances ?? 0,
     };
   })()`,
   awaitPromise: true,
@@ -246,5 +249,6 @@ if (
   gpuErrors.length || failures.length || !result || result.impacts < wanted ||
   result.undersized.length || (!closeup && result.breaches < 1) || result.unreachable > 0 ||
   result.inheritedColorRatio !== 1 || result.debrisMaterial !== "gpu-debris-authored-stone" ||
-  result.debrisColorCapacity < result.capacity
+  result.debrisColorCapacity < result.capacity ||
+  (closeup && result.gpuSceneHiddenInstances < 1)
 ) process.exitCode = 1;

@@ -22,6 +22,22 @@ export type LodLevel = 0 | 1 | 2;
 
 const slotPools = new Map<number, SlotPool>();
 
+/** Read-only ownership view for GPU Scene rebuilds. SlotPool remains the CPU
+ * authoring/streaming layer; callers must not retain or replace the map. */
+export function gpuSceneSlotPools(): readonly SlotPool[] {
+  return [...slotPools.values()].filter((pool) => pool.group.visible);
+}
+
+/** GPU Scene keeps source meshes alive for picking/destruction but replaces
+ * their render submission with global compute-compacted buckets. */
+export function setGpuSceneManaged(mesh: THREE.InstancedMesh, managed: boolean): void {
+  (mesh.userData as { gpuSceneManaged?: boolean }).gpuSceneManaged = managed;
+  if (managed) {
+    mesh.count = 0;
+    mesh.visible = false;
+  }
+}
+
 /** Active high-detail masonry sources. Their low/faded LOD twins share the
  * same matrix buffer, so changing one source instance updates every visual
  * representation without risking divergent instance counts or stale WebGPU
@@ -385,6 +401,11 @@ const occludingSlots = new Set<number>();
 function setCount(p: SlotPool, key: string, on: boolean): void {
   const mesh = p.meshes.get(key);
   if (!mesh) return;
+  if ((mesh.userData as { gpuSceneManaged?: boolean }).gpuSceneManaged) {
+    mesh.count = 0;
+    mesh.visible = false;
+    return;
+  }
   const count = on ? ((mesh.userData as { n?: number }).n ?? 0) : 0;
   mesh.count = count;
   // A zero-count but visible InstancedMesh still enters Three's projection /

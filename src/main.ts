@@ -22,6 +22,7 @@ import {
 import { buildEnvironment } from "./scene/env";
 import { flickerDamp, loadHandPaintedStoneTexture, setOcclusionWindow, stoneStyle } from "./scene/kit/materials";
 import { createPost } from "./render/post";
+import { GpuMasonryScene } from "./render/gpu-scene";
 import { Player } from "./player/player";
 import { LightPool } from "./world/lights";
 import { StairTowers } from "./world/stairs";
@@ -264,12 +265,14 @@ const nav = new NavMesh(ctx);
 const navOverlay = new NavOverlay(ctx, nav);
 const route = new RoutePath(ctx, nav);
 const slotDetail = new Map<number, LodLevel>();
+const gpuScene = new GpuMasonryScene(scene, renderer, urlParams.get("gpuscene") !== "0");
 const destruction = new GpuDestruction(
   scene, camera, renderer, renderer.domElement,
   ctx.walk.sample,
   () => ctx.walk.touch(),
   (slot) => { slotDetail.set(slot, 2); setSlotLodLevel(slot, 2); },
   () => postProcessing.render(),
+  (mesh, instanceId) => gpuScene.hideSourceInstance(mesh, instanceId),
 );
 
 // ---- UI ---------------------------------------------------------------------
@@ -296,6 +299,7 @@ function enterEndless(): void {
   ctx.walk.clear();
   ctx.stairs.clear();
   pruneSlots(new Set());
+  gpuScene.rebuild();
   controls.target.set(0, 3 * TH, 0);
   camera.position.set(50, 42, 70);
   ctx.state.lastExtent = 0;
@@ -306,6 +310,7 @@ function exitEndless(): void {
   endless.reset();
   ctx.state.prCap = PR_BASE;
   pruneSlots(new Set());
+  gpuScene.rebuild();
 }
 
 /** Rebuild the active mode as an observable transaction. The previous canvas
@@ -339,6 +344,8 @@ async function runReforge(): Promise<void> {
         : forge(ctx, ctx.state.seed);
     await task;
     if (ctx.state.token !== expectedToken || activeMode !== modeAtStart) return;
+    gpuScene.rebuild();
+    gpuScene.tick(camera);
     reportForgeStage("gpu-upload", {
       token: expectedToken,
       seed: ctx.state.seed,
@@ -542,6 +549,7 @@ function setOcclusionTarget(next: OccludingArchitecture): void {
 function tickOcclusion(dt: number): void {
   const speed = occlusionBlendTarget > occlusionBlend ? 9 : 5.5;
   occlusionBlend += (occlusionBlendTarget - occlusionBlend) * (1 - Math.exp(-dt * speed));
+  gpuScene.setOccludingSlots(occlusionActive.slots);
   if (player) {
     occlusionPlayerTarget.copy(player.group.position);
     occlusionPlayerTarget.y += 1.25;
@@ -569,6 +577,7 @@ function clearOcclusion(): void {
   setOccludingSlots(occlusionActive.slots);
   ctx.stairs.setOccluded(occlusionActive.stairs);
   setOcclusionWindow(camera.position, camera.position, 0);
+  gpuScene.setOccludingSlots(occlusionActive.slots);
 }
 
 /** Cheap analytic line-of-sight returning the architecture to fade. The
@@ -797,6 +806,7 @@ async function startRogueRun(): Promise<void> {
   if (activeMode !== "chain" || ctx.state.seed !== restartSeed || ctx.walk.islands.length === 0) {
     setModeActive("chain");
     await forge(ctx, restartSeed);
+    gpuScene.rebuild();
   }
   ctx.actors.resetLoot();
   const enemyCount = ctx.actors.beginFloor(1);
@@ -845,6 +855,7 @@ async function descendRogue(): Promise<void> {
   if (player) player.group.position.y = -600;
   const nextFloor = rogue.state.floor + 1;
   await forge(ctx, rogue.floorSeed(nextFloor));
+  gpuScene.rebuild();
   const enemies = ctx.actors.beginFloor(nextFloor);
   rogue.descend(enemies);
   placeRoguePlayer();
@@ -996,6 +1007,7 @@ async function boot(): Promise<void> {
 
   await forging;
   if (forgeErr !== null || ctx.worlds.length === 0) throw forgeErr ?? new Error("Dungeon forge produced no world");
+  gpuScene.rebuild();
   reportForgeStage("ready", {
     token: ctx.state.token,
     seed: ctx.state.seed,
@@ -1221,6 +1233,7 @@ async function boot(): Promise<void> {
     flickerDamp.value = damp;
     ctx.lights.tick(t, damp);
     ctx.env.tick(camera);
+    gpuScene.tick(camera);
     const r0 = performance.now();
     postProcessing.render();
     lodWarmRestore?.();
@@ -1263,6 +1276,7 @@ void boot().catch((error) => {
   get forgeRuns() { return structuredClone(forgeRuns); },
   startupTiming,
   stoneStyle,
+  gpuScene,
   destruction,
   rogue,
   get rogueMode() { return rogueMode; },
@@ -1274,8 +1288,12 @@ void boot().catch((error) => {
       setSlotDetail(1000 + island.slot, visible);
       setSlotDetail(3000 + island.slot, visible);
     }
+    gpuScene.tick(camera);
   },
-  setSlotDetail,
+  setSlotDetail(slot: number, visible: boolean) {
+    setSlotDetail(slot, visible);
+    gpuScene.tick(camera);
+  },
   areSlotsLodWarm,
   stageSlotLodWarmup,
   startWalk,

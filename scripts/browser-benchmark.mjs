@@ -17,6 +17,7 @@ const middleFull = opts.get("--middle-full") === "true";
 const fixedSeed = opts.get("--seed");
 const clustered = opts.get("--clustered");
 const ambientOcclusion = opts.get("--ao");
+const gpuScene = opts.get("--gpu-scene");
 const urlNeedle = opts.get("--url") ?? "127.0.0.1:4173";
 
 const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
@@ -66,6 +67,8 @@ if (fixedSeed !== undefined) {
   else if (clustered === "false") fixedUrl.searchParams.set("clustered", "0");
   if (ambientOcclusion === "true") fixedUrl.searchParams.set("ao", "1");
   else if (ambientOcclusion === "false") fixedUrl.searchParams.delete("ao");
+  if (gpuScene === "true") fixedUrl.searchParams.set("gpuscene", "1");
+  else if (gpuScene === "false") fixedUrl.searchParams.set("gpuscene", "0");
   await call("Page.navigate", { url: fixedUrl.href });
 } else {
   await call("Page.reload", { ignoreCache: true });
@@ -110,7 +113,23 @@ const expression = `(async () => {
     });
   }
   window.__df.controls.autoRotate = false;
+  // Cinematic mode moves OrbitControls.target during the four-second pipeline
+  // settle. Derive one deterministic target from authored island anchors so
+  // GPU on/off runs render the exact same view and pixel workload.
+  const islands = ctx.walk.islands;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  let minZ = Infinity, maxZ = -Infinity;
+  for (const island of islands) {
+    minX = Math.min(minX, island.ox); maxX = Math.max(maxX, island.ox);
+    minY = Math.min(minY, island.oy); maxY = Math.max(maxY, island.oy);
+    minZ = Math.min(minZ, island.oz); maxZ = Math.max(maxZ, island.oz);
+  }
   const target = window.__df.controls.target;
+  if (islands.length > 0) target.set(
+    (minX + maxX) * 0.5,
+    (minY + maxY) * 0.5 + 7,
+    (minZ + maxZ) * 0.5
+  );
   const viewDist = Math.max(70, ctx.state.lastExtent * 1.3);
   window.__df.camera.position.set(
     target.x + viewDist * 0.62,
@@ -122,6 +141,7 @@ const expression = `(async () => {
   const waitGpu = queue && queue.onSubmittedWorkDone ? () => queue.onSubmittedWorkDone() : () => Promise.resolve();
   const draw = async () => {
     ${destruction ? "window.__df.destruction?.tick(1 / 60);" : ""}
+    window.__df.gpuScene?.tick(window.__df.camera);
     postProcessing.render();
     await waitGpu();
   };
@@ -132,15 +152,22 @@ const expression = `(async () => {
     for (let drawIndex = 0; drawIndex < ${drawsPerLoop}; drawIndex++) await draw();
     samples.push({ loop, frameMs: (performance.now() - t0) / ${drawsPerLoop} });
   }
+  const gpuSceneValidation = window.__df.gpuScene?.stats.enabled
+    ? await window.__df.gpuScene.readbackValidation()
+    : null;
   let instances = 0, visibleRenderObjects = 0, submittedRenderObjects = 0, triangles = 0;
   const geometryMap = new Map();
   ctx.scene.traverse((o) => {
     if (!o.visible || !o.isMesh) return;
     visibleRenderObjects++;
-    if (o.isInstancedMesh) instances += o.count;
+    const gpuSceneCount = o.name === "gpu-scene-masonry-high"
+      ? gpuSceneValidation?.high
+      : o.name === "gpu-scene-masonry-mid" ? gpuSceneValidation?.middle : undefined;
+    const instanceCount = gpuSceneCount ?? (o.isInstancedMesh ? o.count : 1);
+    if (o.isInstancedMesh) instances += instanceCount;
     const pos = o.geometry && o.geometry.getAttribute && o.geometry.getAttribute("position");
     if (!pos) return;
-    const drawInstances = o.isInstancedMesh ? o.count : 1;
+    const drawInstances = instanceCount;
     if (drawInstances <= 0) return;
     submittedRenderObjects++;
     const trisEach = (o.geometry.index ? o.geometry.index.count : pos.count) / 3;
@@ -161,6 +188,8 @@ const expression = `(async () => {
     gpuWait: Boolean(queue && queue.onSubmittedWorkDone), pixelRatio: ctx.renderer.getPixelRatio(),
     destructionCompute: ${destruction},
     destructionStats: window.__df.destruction ? { ...window.__df.destruction.stats } : null,
+    gpuSceneStats: window.__df.gpuScene ? { ...window.__df.gpuScene.stats } : null,
+    gpuSceneValidation,
     pageUrl: location.href,
   };
 })()`;

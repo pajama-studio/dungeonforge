@@ -106,6 +106,7 @@ export class GpuDestruction {
     private readonly onTopologyChanged: () => void,
     private readonly onMasonryHit: (slot: number) => void,
     private readonly renderWarmFrame: () => void,
+    private readonly onSourceInstanceHidden: (mesh: THREE.InstancedMesh, instanceId: number) => void,
   ) {
     const makeState = () => {
       const data = new Float32Array(DEBRIS_CAPACITY * 4);
@@ -420,6 +421,7 @@ export class GpuDestruction {
     if (slot !== undefined) this.onMasonryHit(slot);
     mesh.setMatrixAt(instanceId, _hidden);
     mesh.instanceMatrix.needsUpdate = true; // shared by high/low/faded twins
+    this.onSourceInstanceHidden(mesh, instanceId);
     const structure = (mesh.userData as { masonry?: MasonryStructureData }).masonry;
 
     // Quantize in ISLAND-LOCAL height, then transform back to world. Using a

@@ -15,10 +15,11 @@
 // bridges at agreed gate rows, spiral stair shafts through the layer overlaps.
 
 import { buildWorld, buildBridgeLink, buildSupportPiers, type LightSpec } from "../scene/build";
+import { FOOTPRINT_KINDS, type VerticalAnchor } from "../gen/dungeon";
 import { pruneSlots } from "../scene/slots";
 import { CELL, ISLAND_GAP, PR_LARGE, TH, linkArc } from "../config";
 import type { Ctx } from "./context";
-import { gateWorld, findShaftAnyhow, Pacer } from "./helpers";
+import { gateWorld, verticalStairDock, Pacer } from "./helpers";
 
 export type Monument = "ziggurat" | "reliquary";
 
@@ -33,7 +34,13 @@ export async function forgeMonument(ctx: Ctx, kind: Monument): Promise<void> {
   const tok = ++state.token;
   const size = Math.min(13, Math.max(9, Math.round(genParams.size))) | 1;
   const N = 2 * size + 1;
-  const pitch = N * CELL + ISLAND_GAP;
+  // Keep the half-pitch terrace offsets on the dungeon cell lattice. This is
+  // visually the same gap (~15u), but now a lower and upper generated anchor
+  // can resolve to one exact world x/z instead of two almost-matching cells.
+  let gapCells = Math.ceil(ISLAND_GAP / CELL);
+  if ((N + gapCells) % 2 !== 0) gapCells++;
+  const pitchCells = N + gapCells;
+  const pitch = pitchCells * CELL;
   const ch = (a: number, b: number, c: number, salt: number) =>
     (Math.imul(seed ^ Math.imul(a + 9, 73856093) ^ Math.imul(b + 9, 19349663) ^ Math.imul(c + 9, 83492791), 0x9e3779b1 ^ salt) >>> 0);
 
@@ -48,16 +55,20 @@ export async function forgeMonument(ctx: Ctx, kind: Monument): Promise<void> {
       cells.push({ mi: i - off, mj: j - off, mk: k });
     }
   });
+  ctx.reportForgeStage?.("generating", {
+    token: tok, seed, mode: kind, detail: "solving monument layouts", completed: 0, total: cells.length,
+  });
 
   // the story lives in the per-layer generation parameters
   const storyFor = (c: MCell) => {
     const t = L === 1 ? 1 : c.mk / (L - 1);
     const jit = ((ch(c.mi * 2, c.mj * 2, c.mk, 0x88) % 100) / 100 - 0.5) * 0.15;
     const rot = ch(c.mi * 2, c.mj * 2, c.mk, 0xaa) % 4;
+    const footprint = FOOTPRINT_KINDS[(ch(c.mi * 2, c.mj * 2, 0, 0xc1) + c.mk) % FOOTPRINT_KINDS.length];
     if (kind === "ziggurat") {
       const apex = c.mk === L - 1;
       return {
-        rot,
+        rot, footprint,
         // ONLY the crown carries a true temple; some base blocks keep small shrines
         templeOn: apex || ch(c.mi * 2, c.mj * 2, c.mk, 0x92) % 100 < 35,
         decay: Math.min(1, Math.max(0.08, 0.82 - 0.68 * t + jit)),
@@ -68,7 +79,7 @@ export async function forgeMonument(ctx: Ctx, kind: Monument): Promise<void> {
     }
     const lowTip = c.mk === 0, highTip = c.mk === L - 1;
     return {
-      rot,
+      rot, footprint,
       templeOn: highTip || (!lowTip && ch(c.mi * 2, c.mj * 2, c.mk, 0x92) % 100 < 40),
       decay: lowTip ? 1 : highTip ? 0.06 : Math.min(1, Math.max(0.15, 0.75 - 0.55 * t + jit)),
       mound: highTip ? Math.max(3.5, genParams.mound * 1.2) : 0,
@@ -83,21 +94,67 @@ export async function forgeMonument(ctx: Ctx, kind: Monument): Promise<void> {
   const at = (mi: number, mj: number, mk: number) =>
     cells.findIndex((c) => c.mi === mi && c.mj === mj && c.mk === mk);
 
-  const layouts = await Promise.all(cells.map((c) => {
+  const belowFor = (i: number): number[] => {
+    const c = cells[i], below: number[] = [];
+    for (const [si, sj] of [[-0.5, -0.5], [0.5, -0.5], [-0.5, 0.5], [0.5, 0.5], [0, 0]] as const) {
+      const j = at(c.mi + si, c.mj + sj, c.mk - 1);
+      if (j >= 0) below.push(j);
+    }
+    return below;
+  };
+  const verticalByCell: VerticalAnchor[][] = cells.map(() => []);
+  const verticalParent = new Int16Array(cells.length).fill(-1);
+  const center = (N - 1) / 2;
+  const centerCellX = (i: number) => Math.round(cells[i].mi * pitchCells);
+  const centerCellZ = (i: number) => Math.round(cells[i].mj * pitchCells);
+  for (let i = 0; i < cells.length; i++) {
+    if (cells[i].mk === 0) continue;
+    const below = belowFor(i);
+    if (below.length === 0) continue;
+    const p = below[ch(Math.round(cells[i].mi * 2), Math.round(cells[i].mj * 2), cells[i].mk, 0x5c) % below.length];
+    verticalParent[i] = p;
+    const pcx = centerCellX(p), pcz = centerCellZ(p);
+    const ccx = centerCellX(i), ccz = centerCellZ(i);
+    const x0 = Math.max(pcx - center + 2, ccx - center + 2);
+    const x1 = Math.min(pcx + center - 2, ccx + center - 2);
+    const z0 = Math.max(pcz - center + 2, ccz - center + 2);
+    const z1 = Math.min(pcz + center - 2, ccz + center - 2);
+    let wx = Math.round((x0 + x1) / 2), wz = Math.round((z0 + z1) / 2), best = -Infinity;
+    const prior = [
+      ...verticalByCell[p].map((a) => ({ x: pcx + a.x - center, z: pcz + a.y - center })),
+      ...verticalByCell[i].map((a) => ({ x: ccx + a.x - center, z: ccz + a.y - center })),
+    ];
+    for (let z = Math.ceil(z0); z <= Math.floor(z1); z++) for (let x = Math.ceil(x0); x <= Math.floor(x1); x++) {
+      const sep = prior.length === 0 ? N : Math.min(...prior.map((a) =>
+        Math.max(Math.abs(a.x - x), Math.abs(a.z - z))));
+      const score = sep + (ch(x, z, i, 0x5d) % 1000) / 100000;
+      if (score > best) { best = score; wx = x; wz = z; }
+    }
+    const id = 30_000 + i;
+    const dockDir = (ch(wx, wz, i, 0x5e) % 4) as 0 | 1 | 2 | 3;
+    verticalByCell[p].push({ id, x: wx - pcx + center, y: wz - pcz + center, dockDir });
+    verticalByCell[i].push({ id, x: wx - ccx + center, y: wz - ccz + center, dockDir });
+  }
+
+  const layouts = await Promise.all(cells.map((c, cellIndex) => {
     const gs: number[] = [], gr: number[] = [];
     if (at(c.mi + 1, c.mj, c.mk) >= 0) { gs.push(0); gr.push(edgeRow(c.mi, c.mj, c.mk, 0)); }
     if (at(c.mi - 1, c.mj, c.mk) >= 0) { gs.push(1); gr.push(edgeRow(c.mi - 1, c.mj, c.mk, 0)); }
     if (at(c.mi, c.mj + 1, c.mk) >= 0) { gs.push(2); gr.push(edgeRow(c.mi, c.mj, c.mk, 1)); }
     if (at(c.mi, c.mj - 1, c.mk) >= 0) { gs.push(3); gr.push(edgeRow(c.mi, c.mj - 1, c.mk, 1)); }
     return ctx.gen.generate(ch(c.mi * 2, c.mj * 2, c.mk, 0x77) || 1, genParams, {
-      gateSides: gs, gateRows: gr, size, ...storyFor(c),
+      gateSides: gs, gateRows: gr, size, verticalAnchors: verticalByCell[cellIndex], ...storyFor(c),
     });
   }));
   if (tok !== state.token) return;
+  ctx.reportForgeStage?.("assembling", {
+    token: tok, seed, mode: kind, detail: "placing terraces, bridges and supports", completed: 0, total: cells.length,
+  });
 
   ctx.worlds.length = 0;
   ctx.walk.clear();
   ctx.stairs.clear();
+  ctx.actors.clear();
   const activeSlots = new Set<number>();
   const allLightsByCell: LightSpec[][] = [];
 
@@ -112,8 +169,12 @@ export async function forgeMonument(ctx: Ctx, kind: Monument): Promise<void> {
     ctx.worlds.push(w);
     allLightsByCell.push(w.lights.map((ls) => ({ ...ls, x: ls.x + ox, y: ls.y + oy, z: ls.z + oz })));
     ctx.walk.addIsland(l, ox, oy, oz, i);
+    ctx.actors.addIsland(l, { ox, oy, oz }, i);
     await pacer.tick();
     if (tok !== state.token) return;
+    ctx.reportForgeStage?.("assembling", {
+      token: tok, seed, mode: kind, detail: "placing terraces, bridges and supports", completed: i + 1, total: cells.length,
+    });
     if ((i & 7) === 7) {
       ctx.env.bakeShadows();
       await pacer.tick();
@@ -137,23 +198,20 @@ export async function forgeMonument(ctx: Ctx, kind: Monument): Promise<void> {
       await pacer.tick();
       if (tok !== state.token) return;
     }
-    // spiral stair shaft down through the layer-overlap: each block above the
-    // base tries its (up to four) supporting neighbors until a shaft fits.
+    // Spiral stair shaft down through the generator-selected shared court.
     // Every supporting neighbor also gets masonry piers under its quadrant of
     // the overlap — upper terraces must read as CARRIED, not floating.
     if (c.mk > 0) {
-      const below: number[] = [];
-      for (const [si, sj] of [[-0.5, -0.5], [0.5, -0.5], [-0.5, 0.5], [0.5, 0.5], [0, 0]] as const) {
-        const j = at(c.mi + si, c.mj + sj, c.mk - 1);
-        if (j >= 0) below.push(j);
-      }
+      const below = belowFor(i);
       let stairDone = false;
       for (const j of below) {
-        if (!stairDone) {
-          const shaft = findShaftAnyhow(ctx.walk.islands[j], ctx.walk.islands[i]);
-          if (shaft) { ctx.stairs.build(shaft.x, shaft.z, shaft.y0, shaft.y1); stairDone = true; }
+        if (!stairDone && j === verticalParent[i]) {
+          const dock = verticalStairDock(ctx.walk.islands[j], ctx.walk.islands[i], 30_000 + i);
+          if (dock) { ctx.stairs.build(dock.x, dock.z, dock.y0, dock.y1, dock); stairDone = true; }
         }
-        ctx.worlds.push(buildSupportPiers(ctx.walk.islands[j], ctx.walk.islands[i], edgeSlot, ctx.scene));
+        const piers = buildSupportPiers(ctx.walk.islands[j], ctx.walk.islands[i], edgeSlot, ctx.scene);
+        ctx.worlds.push(piers);
+        for (const blocker of piers.blockers) ctx.walk.addBlocker(blocker);
         activeSlots.add(edgeSlot++);
         await pacer.tick();
         if (tok !== state.token) return;
@@ -187,6 +245,9 @@ export async function forgeMonument(ctx: Ctx, kind: Monument): Promise<void> {
   ctx.hud.name.textContent = kind === "ziggurat" ? "the Ziggurat" : "the Reliquary";
   const floors = layouts.reduce((s2, l) => s2 + l.stats.floor, 0);
   ctx.hud.seed.textContent = `seed ${seed} · ${kind} · ${cells.length} blocks · ${floors} floor`;
+  ctx.reportForgeStage?.("assembling", {
+    token: tok, seed, mode: kind, detail: "scene graph complete", completed: cells.length, total: cells.length,
+  });
   const url = new URL(location.href);
   url.searchParams.set("seed", String(seed));
   url.searchParams.set("mode", kind);

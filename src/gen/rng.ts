@@ -14,11 +14,15 @@ export function mulberry32(seed: number): () => number {
 
 export class Rng {
   private next: () => number;
+  draws = 0;
   constructor(seed: number) { this.next = mulberry32(seed); }
-  float(a: number, b: number): number { return a + (b - a) * this.next(); }
-  int(a: number, b: number): number { return a + Math.floor(this.next() * (b - a + 1)); }
-  pick<T>(arr: readonly T[]): T { return arr[Math.floor(this.next() * arr.length)]; }
-  chance(p: number): boolean { return this.next() < p; }
+  private pull(): number { this.draws++; return this.next(); }
+  float(a: number, b: number): number { return a + (b - a) * this.pull(); }
+  int(a: number, b: number): number { return a + Math.floor(this.pull() * (b - a + 1)); }
+  pick<T>(arr: readonly T[]): T { return arr[Math.floor(this.pull() * arr.length)]; }
+  chance(p: number): boolean { return this.pull() < p; }
+  /** Advance a replacement backend to the same downstream RNG state. */
+  discard(count: number): void { while (this.draws < count) this.pull(); }
 }
 
 /** Stateless 2D integer hash → [0,1). Used for spatial jitter so results don't

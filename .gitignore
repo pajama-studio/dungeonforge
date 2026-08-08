@@ -1,3 +1,8 @@
 node_modules/
 dist/
+rust/**/target/
+artifacts/
+.tripo/
+.img2threejs/
+scripts/__pycache__/
 .DS_Store

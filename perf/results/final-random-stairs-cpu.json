@@ -1,0 +1,823 @@
+{
+  "schema": 1,
+  "label": "final-random-stairs",
+  "runtime": {
+    "node": "v22.22.2",
+    "platform": "darwin",
+    "arch": "arm64"
+  },
+  "workload": {
+    "rounds": 100,
+    "warmup": 12,
+    "casesPerLoop": 12
+  },
+  "summary": {
+    "generationMedianMs": 14.296958499999619,
+    "generationP95Ms": 23.566725649999984,
+    "buildMedianMs": 55.121188000000075,
+    "buildP95Ms": 80.89862980000007,
+    "combinedMedianMs": 69.4808750000002
+  },
+  "samples": [
+    {
+      "loop": 1,
+      "generationMs": 14.333333999999923,
+      "buildMs": 75.29566599999998,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 2,
+      "generationMs": 14.819707999999991,
+      "buildMs": 73.73220899999978,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 3,
+      "generationMs": 37.672250000000076,
+      "buildMs": 52.279207999999926,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 4,
+      "generationMs": 12.754417000000103,
+      "buildMs": 49.275666999999885,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 5,
+      "generationMs": 10.498375000000124,
+      "buildMs": 58.76295900000014,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 6,
+      "generationMs": 14.427499999999782,
+      "buildMs": 55.82574999999997,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 7,
+      "generationMs": 12.24599999999964,
+      "buildMs": 55.10479200000009,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 8,
+      "generationMs": 13.255290999999943,
+      "buildMs": 54.78908300000012,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 9,
+      "generationMs": 14.00274999999965,
+      "buildMs": 55.673375000000306,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 10,
+      "generationMs": 16.336667000000034,
+      "buildMs": 50.45558299999993,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 11,
+      "generationMs": 14.797667000000274,
+      "buildMs": 50.32916699999987,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 12,
+      "generationMs": 17.118375000000015,
+      "buildMs": 69.43979200000012,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 13,
+      "generationMs": 12.993583999999828,
+      "buildMs": 59.9096669999999,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 14,
+      "generationMs": 14.24204200000031,
+      "buildMs": 69.72629199999983,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 15,
+      "generationMs": 17.938833999999588,
+      "buildMs": 71.25775000000021,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 16,
+      "generationMs": 13.945332999999664,
+      "buildMs": 57.44741600000043,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 17,
+      "generationMs": 20.127207999999882,
+      "buildMs": 61.50562499999978,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 18,
+      "generationMs": 15.454666000000088,
+      "buildMs": 76.81566599999996,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 19,
+      "generationMs": 36.148957999999766,
+      "buildMs": 63.37820899999997,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 20,
+      "generationMs": 12.90741700000035,
+      "buildMs": 66.6067920000005,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 21,
+      "generationMs": 11.924582999999984,
+      "buildMs": 47.46337500000027,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 22,
+      "generationMs": 21.143541999999798,
+      "buildMs": 49.86204100000032,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 23,
+      "generationMs": 13.877415999999357,
+      "buildMs": 44.2026249999999,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 24,
+      "generationMs": 23.49433399999998,
+      "buildMs": 43.05212500000016,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 25,
+      "generationMs": 14.147124999999505,
+      "buildMs": 55.182292000000416,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 26,
+      "generationMs": 12.430583999999726,
+      "buildMs": 47.26154099999985,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 27,
+      "generationMs": 13.41491700000006,
+      "buildMs": 65.99624999999924,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 28,
+      "generationMs": 13.879582999999911,
+      "buildMs": 49.99462500000027,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 29,
+      "generationMs": 15.7465830000001,
+      "buildMs": 183.42162499999995,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 30,
+      "generationMs": 36.788916999999856,
+      "buildMs": 142.25025000000005,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 31,
+      "generationMs": 34.460832999999184,
+      "buildMs": 151.7588340000002,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 32,
+      "generationMs": 21.484666999999718,
+      "buildMs": 50.22754200000054,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 33,
+      "generationMs": 17.28637499999968,
+      "buildMs": 95.42379100000016,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 34,
+      "generationMs": 21.13420799999949,
+      "buildMs": 80.79145900000003,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 35,
+      "generationMs": 24.942167000000154,
+      "buildMs": 59.98899999999958,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 36,
+      "generationMs": 17.489792000000307,
+      "buildMs": 73.42004199999974,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 37,
+      "generationMs": 13.318749999999454,
+      "buildMs": 62.60729100000026,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 38,
+      "generationMs": 17.488999999999578,
+      "buildMs": 69.4272919999994,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 39,
+      "generationMs": 15.256166000000121,
+      "buildMs": 69.80383300000085,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 40,
+      "generationMs": 17.866665999999896,
+      "buildMs": 63.72070800000074,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 41,
+      "generationMs": 15.625457999999526,
+      "buildMs": 59.94133299999976,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 42,
+      "generationMs": 13.399290999999721,
+      "buildMs": 51.68916700000045,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 43,
+      "generationMs": 18.6792089999999,
+      "buildMs": 51.46391700000004,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 44,
+      "generationMs": 14.897665999999845,
+      "buildMs": 46.38537499999984,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 45,
+      "generationMs": 11.514458999999988,
+      "buildMs": 49.94787499999984,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 46,
+      "generationMs": 9.748332999999548,
+      "buildMs": 50.12554200000068,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 47,
+      "generationMs": 15.617832999999337,
+      "buildMs": 45.81233299999985,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 48,
+      "generationMs": 8.563624999999774,
+      "buildMs": 44.337000000000444,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 49,
+      "generationMs": 17.792999999999665,
+      "buildMs": 50.17450000000008,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 50,
+      "generationMs": 14.426707999999962,
+      "buildMs": 50.487833999999566,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 51,
+      "generationMs": 19.38524999999936,
+      "buildMs": 46.014625000000706,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 52,
+      "generationMs": 18.984458000000814,
+      "buildMs": 51.197291999999834,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 53,
+      "generationMs": 10.653666999999587,
+      "buildMs": 50.672583000000486,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 54,
+      "generationMs": 12.01866599999994,
+      "buildMs": 78.26491700000042,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 55,
+      "generationMs": 20.71650000000045,
+      "buildMs": 56.61854200000016,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 56,
+      "generationMs": 15.460958000000574,
+      "buildMs": 66.38808299999982,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 57,
+      "generationMs": 9.676666999999725,
+      "buildMs": 53.43187500000022,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 58,
+      "generationMs": 14.260582999999315,
+      "buildMs": 54.324499999999716,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 59,
+      "generationMs": 13.39429199999995,
+      "buildMs": 54.15083400000003,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 60,
+      "generationMs": 10.317583999999442,
+      "buildMs": 52.128709000000526,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 61,
+      "generationMs": 11.728916999999456,
+      "buildMs": 52.55158299999948,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 62,
+      "generationMs": 10.459584000000177,
+      "buildMs": 51.14391599999999,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 63,
+      "generationMs": 12.727167000000009,
+      "buildMs": 51.993750000000546,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 64,
+      "generationMs": 11.444790999999896,
+      "buildMs": 55.13758400000006,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 65,
+      "generationMs": 12.656582999999955,
+      "buildMs": 56.97575000000052,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 66,
+      "generationMs": 11.62945899999977,
+      "buildMs": 51.67566600000009,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 67,
+      "generationMs": 11.302625000000262,
+      "buildMs": 43.93312499999956,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 68,
+      "generationMs": 14.080665999999837,
+      "buildMs": 50.68287500000042,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 69,
+      "generationMs": 13.856915999999728,
+      "buildMs": 49.66712499999994,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 70,
+      "generationMs": 11.880708000000595,
+      "buildMs": 51.1537500000004,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 71,
+      "generationMs": 13.304082999999991,
+      "buildMs": 51.1782089999997,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 72,
+      "generationMs": 13.349959000000126,
+      "buildMs": 54.318749999999454,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 73,
+      "generationMs": 9.312249999999949,
+      "buildMs": 53.6988339999989,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 74,
+      "generationMs": 10.934499999999389,
+      "buildMs": 58.355875000001106,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 75,
+      "generationMs": 12.902249999999185,
+      "buildMs": 51.6663750000007,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 76,
+      "generationMs": 10.610749999999825,
+      "buildMs": 49.802041999999346,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 77,
+      "generationMs": 13.406542000000627,
+      "buildMs": 52.31816599999911,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 78,
+      "generationMs": 11.295416000000841,
+      "buildMs": 49.50600000000122,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 79,
+      "generationMs": 14.335000000000946,
+      "buildMs": 49.28141700000015,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 80,
+      "generationMs": 11.321708999999828,
+      "buildMs": 49.207124999998996,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 81,
+      "generationMs": 13.86475000000064,
+      "buildMs": 50.33887499999946,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 82,
+      "generationMs": 12.831583000001046,
+      "buildMs": 56.067542000000685,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 83,
+      "generationMs": 17.20575000000099,
+      "buildMs": 49.255958000001556,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 84,
+      "generationMs": 17.01770899999974,
+      "buildMs": 75.8287079999991,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 85,
+      "generationMs": 14.855208999999377,
+      "buildMs": 59.33154099999956,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 86,
+      "generationMs": 12.314083999999639,
+      "buildMs": 61.71400000000176,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 87,
+      "generationMs": 10.793999999999869,
+      "buildMs": 62.664582999999766,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 88,
+      "generationMs": 22.54425000000083,
+      "buildMs": 64.21345800000017,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 89,
+      "generationMs": 15.179958000000624,
+      "buildMs": 82.93487500000083,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 90,
+      "generationMs": 15.056958000001032,
+      "buildMs": 61.919707999999446,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 91,
+      "generationMs": 16.590291000000434,
+      "buildMs": 75.06995800000004,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 92,
+      "generationMs": 22.927832999999737,
+      "buildMs": 61.203457999999955,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 93,
+      "generationMs": 17.131459000000177,
+      "buildMs": 65.81354100000135,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 94,
+      "generationMs": 17.31575000000157,
+      "buildMs": 59.869542000000365,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 95,
+      "generationMs": 22.47912499999984,
+      "buildMs": 58.91729200000009,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 96,
+      "generationMs": 15.0049999999992,
+      "buildMs": 56.290624999999636,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 97,
+      "generationMs": 12.223958000000493,
+      "buildMs": 57.01525000000038,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 98,
+      "generationMs": 18.81233400000019,
+      "buildMs": 51.136749999999665,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 99,
+      "generationMs": 14.56829099999959,
+      "buildMs": 55.51479199999994,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    },
+    {
+      "loop": 100,
+      "generationMs": 15.919582999998966,
+      "buildMs": 50.640582999998514,
+      "checksum": 1563904676,
+      "instances": 39822,
+      "renderObjects": 118
+    }
+  ]
+}

@@ -11,6 +11,20 @@ import type { Environment } from "../scene/env";
 import type { LightPool } from "./lights";
 import type { WalkMap } from "./walkmap";
 import type { StairTowers } from "./stairs";
+import type { DungeonActors } from "./actors";
+
+export type ForgeStage = "requested" | "generating" | "assembling" | "gpu-upload" | "ready" | "failed";
+
+export interface ForgeStageDetail {
+  /** Monotonic forge token. Reports from superseded runs are ignored. */
+  token: number;
+  seed: number;
+  mode: string;
+  detail?: string;
+  completed?: number;
+  total?: number;
+  error?: string;
+}
 
 export interface Ctx {
   scene: THREE.Scene;
@@ -22,6 +36,10 @@ export interface Ctx {
   lights: LightPool;
   walk: WalkMap;
   stairs: StairTowers;
+  actors: DungeonActors;
+  /** Optional UI/telemetry sink. World builders report semantic stages while
+   *  main.ts owns the final GPU queue completion and ready transition. */
+  reportForgeStage?: (stage: ForgeStage, detail: ForgeStageDetail) => void;
   /** live handles — ticked every frame */
   worlds: WorldHandle[];
   genParams: Params;

@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "label": "reliquary-runtime-audit",
+  "workload": {
+    "rounds": 5,
+    "warmup": 3,
+    "drawsPerLoop": 2,
+    "url": "http://127.0.0.1:4173/?seed=20260806&mode=reliquary&rev=final4"
+  },
+  "summary": {
+    "frameMedianMs": 33.19999998807907,
+    "frameP95Ms": 36.37000000476837,
+    "fpsFromMedian": 30.120481938526027,
+    "instances": 116423,
+    "visibleRenderObjects": 849,
+    "triangles": 10565328,
+    "gpuWait": true
+  },
+  "samples": [
+    {
+      "loop": 1,
+      "frameMs": 33.19999998807907
+    },
+    {
+      "loop": 2,
+      "frameMs": 30.75
+    },
+    {
+      "loop": 3,
+      "frameMs": 31.44999998807907
+    },
+    {
+      "loop": 4,
+      "frameMs": 37
+    },
+    {
+      "loop": 5,
+      "frameMs": 33.85000002384186
+    }
+  ]
+}

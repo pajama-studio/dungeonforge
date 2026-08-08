@@ -1,13 +1,18 @@
-// The chain forge: N linked dungeon blocks grown on a coarse macro grid,
-// bridged at facing gates, stacked pairs joined by spiral stair towers.
+// The chain forge: a constrained 3D spine plus Markov-rewritten branches,
+// bridged at facing gates, stacked pairs joined through shared stair courts.
 
 import type * as THREE from "three/webgpu";
-import type { Layout } from "../gen/dungeon";
-import { buildWorld, buildBridgeLink, buildSupportPiers, type LightSpec } from "../scene/build";
+import { Vector3 } from "three/webgpu";
+import { FOOTPRINT_KINDS, type Dir, type Layout, type VerticalAnchor } from "../gen/dungeon";
+import {
+  buildWorld, buildBridgeLink, buildSupportPiers, horizontalLinkArc, horizontalLinkWalkWidth,
+  type HorizontalLinkStyle, type LightSpec,
+} from "../scene/build";
 import { pruneSlots } from "../scene/slots";
-import { TH, CELL, ISLAND_GAP, PR_BASE, PR_LARGE, linkArc } from "../config";
+import { TH, CELL, DISTRICT_COURT_GAP, DISTRICT_GAP, ISLAND_GAP, PR_BASE, PR_LARGE } from "../config";
 import type { Ctx } from "./context";
-import { gateWorld, findShaftAnyhow, ensureGate, Pacer } from "./helpers";
+import { gateWorld, verticalStairDock, ensureGate, fuseDistrictBoundary, Pacer } from "./helpers";
+import { generateSpatialPlan, planVerticalAnchors } from "../markov/spatial-plan";
 
 export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   if (ctx.state.endless) return; // roaming owns the world in endless mode
@@ -15,44 +20,16 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   const { genParams, state } = ctx;
   const nIsl = Math.max(1, Math.min(24, Math.round(genParams.islands)));
 
-  // -- macro layout: blocks GROW on a coarse grid like WFC tiles — each new
-  //    block attaches to a random placed block on a free side. Gates open
-  //    toward tree neighbors (bridged) plus extra random sides that dangle
-  //    over the abyss (step out and you fall).
+  // -- Macro layout is now a real 3D generative program. A constrained path
+  //    first guarantees start→summit progression; ordered Markov rules then
+  //    grow optional branches from the path's live frontier.
   const tok = ++state.token;
+  ctx.reportForgeStage?.("generating", {
+    token: tok, seed, mode: "chain", detail: "solving spatial plan and maze workers", completed: 0, total: nIsl,
+  });
   const h32 = (a: number, b: number) => (Math.imul(seed ^ a, 0x9e3779b1) ^ Math.imul(b, 0x85ebca6b)) >>> 0;
-  const macro: Array<{ mi: number; mj: number; mk: number; parent: number; dirFromParent: number }> = [
-    { mi: 0, mj: 0, mk: 0, parent: -1, dirFromParent: -1 },
-  ];
-  const occupied = new Set(["0,0,0"]);
-  // dirs 0-3 horizontal; dir 4 stacks a block a LAYER above, joined by stairs
-  const MDX = [1, -1, 0, 0, 0], MDZ = [0, 0, 1, -1, 0], MDK = [0, 0, 0, 0, 1];
-  for (let k = 1; k < nIsl; k++) {
-    let placedOk = false;
-    // default worlds top out the full six layers: if the remaining blocks are
-    // only just enough to finish the spire, force-stack on the current summit
-    const maxMk = macro.reduce((a, m) => Math.max(a, m.mk), 0);
-    const mustSpire = nIsl >= 8 && maxMk < 5 && nIsl - k <= 5 - maxMk;
-    for (let attempt = 0; attempt < 26 && !placedOk; attempt++) {
-      let p: number, d: number;
-      if (mustSpire && attempt < 13) {
-        const tops = macro.map((m, i) => (m.mk === maxMk ? i : -1)).filter((i) => i >= 0);
-        p = tops[h32(k, attempt) % tops.length];
-        d = 4;
-      } else {
-        p = h32(k, attempt) % macro.length;
-        // ~30% of growth goes UP — six layers should be the norm, not a treat
-        d = h32(k, attempt + 100) % 100 < 30 ? 4 : h32(k, attempt + 200) % 4;
-      }
-      const mi = macro[p].mi + MDX[d], mj = macro[p].mj + MDZ[d], mk = macro[p].mk + MDK[d];
-      if (mk > 5) continue; // six layers max — a proper sky-spire, not an endless ladder
-      if (occupied.has(`${mi},${mj},${mk}`)) continue;
-      occupied.add(`${mi},${mj},${mk}`);
-      macro.push({ mi, mj, mk, parent: p, dirFromParent: d });
-      placedOk = true;
-    }
-    if (!placedOk) break;
-  }
+  const spatialPlan = generateSpatialPlan(nIsl, seed);
+  const macro = spatialPlan.cells;
 
   // gate sides per block: toward parent, toward children, plus dangling extras
   const gateSets: Array<Set<number>> = macro.map(() => new Set());
@@ -81,6 +58,14 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   }
 
   const tForge = performance.now();
+  const blockSizes = macro.map((_, i) => i === 0
+    ? Math.max(7, Math.min(23, Math.round(genParams.size)))
+    : [9, 11, 13][h32(i, 50) % 3]);
+  const blockN = blockSizes.map((s) => 2 * s + 1);
+  // Shared court coordinates are collapsed from constraint domains. Selecting
+  // one propagates exclusions through both participating blocks before the
+  // next vertical link is solved.
+  const verticalByBlock: VerticalAnchor[][] = planVerticalAnchors(macro, blockN, seed);
   // per-block VARIATION: satellites differ in size, growth style and age.
   // Layouts are awaited ONE AT A TIME inside the build loop (parents come
   // first in BFS order), so generation and building pipeline instead of
@@ -88,35 +73,58 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   const layoutPromises = macro.map((_, i) => {
     const s = i === 0 ? seed : (h32(i, 1) || 1);
     const gateSides = [...gateSets[i]];
-    if (i === 0) return ctx.gen.generate(seed, genParams, { gateSides, rot: h32(0, 61) % 4 });
     const v = (n: number) => h32(i, n + 40) % 1000 / 1000;
+    const role = macro[i].role;
+    const roleDecay = role === "overgrowth" ? 0.25 : role === "archive" ? -0.18 : role === "sanctum" ? -0.28 : 0;
+    const roleTotems = role === "forge" ? 5 : role === "pilgrim" ? 4 : role === "sanctum" ? 2 : h32(i, 52) % 4;
+    const rolePlazas = role === "pilgrim" || role === "sanctum" ? 2 : role === "threshold" ? 0 : 1;
     return ctx.gen.generate(s, genParams, {
       gateSides,
+      verticalAnchors: verticalByBlock[i],
+      narrativeRole: role,
+      districtId: macro[i].district,
+      storyLandmark: macro[i].landmark,
+      // Adjacent and stacked districts get different generation domains; the
+      // footprint is solved together with gates/courts rather than clipped in
+      // the renderer.
+      footprint: FOOTPRINT_KINDS[(h32(i, 170) + macro[i].mk) % FOOTPRINT_KINDS.length],
       // orientation & structure variety: each satellite faces its own way,
       // ~half go temple-less, a quarter go ravine-less
       rot: h32(i, 61) % 4,
-      templeOn: v(8) < 0.55,
+      // One readable goal portal at the narrative summit. Other districts use
+      // their own scene grammar instead of repeating the same temple stamp.
+      templeOn: macro[i].landmark,
       ravineOn: v(9) < 0.75,
-      size: [9, 11, 13][h32(i, 50) % 3] | 1,
-      plazas: h32(i, 51) % 3 === 0 ? 0 : 1,
-      totems: h32(i, 52) % 4,
-      decay: Math.min(1, Math.max(0.1, genParams.decay + (v(3) - 0.5) * 0.5)),
+      size: blockSizes[i],
+      plazas: rolePlazas,
+      totems: roleTotems,
+      decay: Math.min(1, Math.max(0.08, genParams.decay + roleDecay + (v(3) - 0.5) * 0.35)),
       heightAmp: Math.max(0.5, genParams.heightAmp + (v(4) - 0.5) * 1.6),
       newest: Math.min(1, Math.max(0.2, genParams.newest + (v(5) - 0.5) * 0.5)),
-      mound: i === 0 ? genParams.mound : genParams.mound * 0.4, // one temple rules the skyline
+      mound: macro[i].landmark ? genParams.mound * 1.25 : genParams.mound * 0.25,
     });
+  });
+
+  // Preserve the currently visible dungeon until at least one replacement
+  // layout exists. Shared instance pools switch into assembly only after this
+  // await; main.ts keeps a snapshot visible until GPU submission completes.
+  const firstLayout = await layoutPromises[0];
+  if (tok !== state.token) return;
+  ctx.reportForgeStage?.("assembling", {
+    token: tok, seed, mode: "chain", detail: "placing blocks, links and supports", completed: 0, total: nIsl,
   });
 
   ctx.worlds.length = 0; // slot pools persist; pruneSlots() hides the unused ones
   ctx.walk.clear();
   ctx.stairs.clear();
+  ctx.actors.clear();
   const activeSlots = new Set<number>();
 
   // tree layout: place blocks in BFS order along their parent edges, sliding
   // each child so the two facing gates line up; bridge every parent-child pair
   let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
   let maxOy = 0;
-  const allLights: LightSpec[] = [];
+  const allLightsByIsland: LightSpec[][] = [];
   const positions: Array<{ ox: number; oy: number; oz: number }> = [];
   const layouts: Layout[] = [];
   const handleIdx: number[] = [];
@@ -126,22 +134,42 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   // so no frame ever carries more than ~one unit past the 6ms budget
   const pacer = new Pacer(6);
   for (let i = 0; i < layoutPromises.length; i++) {
-    const l = await layoutPromises[i];
+    const l = i === 0 ? firstLayout : await layoutPromises[i];
     if (tok !== state.token) return; // superseded while generating
     layouts.push(l);
     // the crossing must EXIST before alignment and build: if the generator
     // failed to carve either gate of a parent-child pair, open it now
     if (macro[i].parent >= 0 && macro[i].dirFromParent < 4) {
-      if (ensureGate(layouts[macro[i].parent], macro[i].dirFromParent)) {
+      const pi = macro[i].parent;
+      const linkSide = macro[i].dirFromParent as Dir;
+      const childSide = (linkSide ^ 1) as Dir;
+      let parentChanged = ensureGate(layouts[pi], linkSide);
+      ensureGate(l, childSide);
+      const style = macro[i].joinFromParent;
+      if (style === "causeway" || style === "gallery" || style === "court") {
+        const depth = style === "court" ? 4 : 3;
+        parentChanged = fuseDistrictBoundary(layouts[pi], linkSide, 2, depth) > 0 || parentChanged;
+        fuseDistrictBoundary(l, childSide, 2, depth);
+        // The parent IslandWalk already exists. Its Layout is shared by
+        // reference, but the cached stair-direction map must follow removed
+        // edge stairs after the room apron mutation.
+        const parentWalk = ctx.walk.islands.find((island) => island.slot === pi);
+        if (parentWalk) parentWalk.stairDir = new Map(layouts[pi].stairs.map((stair) => [stair.y * layouts[pi].N + stair.x, stair.dir]));
+      }
+      if (parentChanged) {
         // parent is already built — rebuild its slot with the carved doorway
-        const pi = macro[i].parent;
         const wp = buildWorld(layouts[pi], pi, ctx.scene, belowIdx.has(pi) ? 0 : 1, -1);
         wp.group.position.set(positions[pi].ox, positions[pi].oy, positions[pi].oz);
         ctx.worlds[handleIdx[pi]] = wp;
+        allLightsByIsland[pi] = wp.lights.map((ls) => ({
+          ...ls,
+          x: ls.x + positions[pi].ox,
+          y: ls.y + positions[pi].oy,
+          z: ls.z + positions[pi].oz,
+        }));
         await pacer.tick();
         if (tok !== state.token) return;
       }
-      ensureGate(l, macro[i].dirFromParent ^ 1);
     }
     const half = (l.N * CELL) / 2;
     let ox = 0, oz = 0;
@@ -151,16 +179,19 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
       const d = macro[i].dirFromParent;
       const pp = positions[pIdx];
       if (d === 4) {
-        // a LAYER above its parent — same footprint, joined by a stair tower.
-        // clearance must top the parent's temple/towers (~22 world units)
+        // Center stacking keeps the pre-generated local anchor offsets at one
+        // exact world x/z on both floors, independent of footprint size.
         ox = pp.ox;
         oz = pp.oz;
         oy = pp.oy + 32 + ((h32(i, 141) % 1000) / 1000) * 5;
       } else {
         const pHalf = (layouts[pIdx].N * CELL) / 2;
         const fx = [1, -1, 0, 0][d], fz = [0, 0, 1, -1][d];
-        ox = pp.ox + fx * (pHalf + ISLAND_GAP + half);
-        oz = pp.oz + fz * (pHalf + ISLAND_GAP + half);
+        const seamGap = macro[i].joinFromParent === "court"
+          ? DISTRICT_COURT_GAP
+          : macro[i].district === macro[pIdx].district ? DISTRICT_GAP : ISLAND_GAP;
+        ox = pp.ox + fx * (pHalf + seamGap + half);
+        oz = pp.oz + fz * (pHalf + seamGap + half);
         oy = pp.oy + (((h32(i, 141) >>> 4) % 1000) / 1000 - 0.5) * 8.4;
         // slide on the cross axis so the two gates face each other
         const pg = layouts[pIdx].gates.find((g) => g.dir === d);
@@ -186,34 +217,44 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
     ctx.scene.add(w.group);
     handleIdx.push(ctx.worlds.length);
     ctx.worlds.push(w);
-    for (const ls of w.lights) allLights.push({ ...ls, x: ls.x + ox, y: ls.y + oy, z: ls.z + oz });
+    allLightsByIsland[i] = w.lights.map((ls) => ({ ...ls, x: ls.x + ox, y: ls.y + oy, z: ls.z + oz }));
     const isl = ctx.walk.addIsland(l, ox, oy, oz, i);
     minX = Math.min(minX, ox - half); maxX = Math.max(maxX, ox + half);
     minZ = Math.min(minZ, oz - half); maxZ = Math.max(maxZ, oz + half);
     await pacer.tick(); // the island build is the heaviest single step
     if (tok !== state.token) return;
+    ctx.reportForgeStage?.("assembling", {
+      token: tok, seed, mode: "chain", detail: "placing blocks, links and supports", completed: i + 1, total: nIsl,
+    });
 
-    // spiral stair tower joining a stacked pair — the relaxation ladder
-    // guarantees one wherever the footprints share any walkable overlap
+    // Generator-owned interior stair court joining this stacked pair.
     if (pIdx >= 0 && macro[i].dirFromParent === 4) {
-      const shaft = findShaftAnyhow(ctx.walk.islands[pIdx], isl);
-      if (shaft) ctx.stairs.build(shaft.x, shaft.z, shaft.y0, shaft.y1);
+      const dock = verticalStairDock(
+        { l: layouts[pIdx], ...positions[pIdx] }, { l, ...positions[i] }, i,
+      );
+      if (dock) ctx.stairs.build(dock.x, dock.z, dock.y0, dock.y1, dock);
       // masonry piers so the stacked block is CARRIED, not levitating
-      ctx.worlds.push(buildSupportPiers(
+      const piers = buildSupportPiers(
         { l: layouts[pIdx], ...positions[pIdx] }, { l, ...positions[i] },
         1000 + i, ctx.scene, i * 0.05,
-      ));
+      );
+      ctx.worlds.push(piers);
+      for (const blocker of piers.blockers) ctx.walk.addBlocker(blocker);
       activeSlots.add(1000 + i);
       await pacer.tick();
       if (tok !== state.token) return;
     }
-    if (pIdx >= 0) {
+    if (pIdx >= 0 && macro[i].dirFromParent < 4) {
       const from = gateWorld(layouts[pIdx], positions[pIdx], macro[i].dirFromParent);
       const to = gateWorld(l, positions[i], macro[i].dirFromParent ^ 1);
       if (from && to) {
-        ctx.worlds.push(buildBridgeLink(from, to, 1000 + i, ctx.scene, i * 0.05));
+        const style = macro[i].joinFromParent as HorizontalLinkStyle;
+        ctx.worlds.push(buildBridgeLink(from, to, 1000 + i, ctx.scene, i * 0.05, style));
         activeSlots.add(1000 + i);
-        ctx.walk.addLink(from.clone(), to.clone(), linkArc(from.distanceTo(to)));
+        ctx.walk.addLink(
+          from.clone(), to.clone(),
+          horizontalLinkArc(style, from.distanceTo(to)), horizontalLinkWalkWidth(style),
+        );
         await pacer.tick();
         if (tok !== state.token) return;
       }
@@ -234,17 +275,41 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   for (const [i, b] of belowIdx) {
     if (macro[i].dirFromParent === 4 && macro[i].parent === b) continue;
     if (!positions[i] || !positions[b]) continue;
-    ctx.worlds.push(buildSupportPiers(
+    const piers = buildSupportPiers(
       { l: layouts[b], ...positions[b] }, { l: layouts[i], ...positions[i] },
       3000 + i, ctx.scene, i * 0.05,
-    ));
+    );
+    ctx.worlds.push(piers);
+    for (const blocker of piers.blockers) ctx.walk.addBlocker(blocker);
     activeSlots.add(3000 + i);
     await pacer.tick();
     if (tok !== state.token) return;
   }
 
+  // Populate only after every shared boundary has finished mutating both
+  // layouts. Actors and the portal chest then choose cells from the final
+  // continuous floor graph rather than a pre-fusion block snapshot.
+  for (let i = 0; i < layouts.length; i++) {
+    ctx.actors.addIsland(layouts[i], positions[i], i);
+    if ((i & 3) === 3) await pacer.tick();
+    if (tok !== state.token) return;
+  }
+
   pruneSlots(activeSlots);
-  ctx.lights.assign(allLights);
+  // Round-robin keeps every island represented when the fixed shader light
+  // budget is smaller than the number of submitted flame anchors.
+  const interleavedLights: LightSpec[] = [];
+  for (let li = 0; interleavedLights.length < ctx.lights.size; li++) {
+    let any = false;
+    for (const islandLights of allLightsByIsland) {
+      if (!islandLights[li]) continue;
+      interleavedLights.push(islandLights[li]);
+      any = true;
+      if (interleavedLights.length >= ctx.lights.size) break;
+    }
+    if (!any) break;
+  }
+  ctx.lights.assign(interleavedLights);
   const centerX = (minX + maxX) / 2;
   const centerZ = (minZ + maxZ) / 2;
   const half = Math.max((maxX - minX) / 2, (maxZ - minZ) / 2, (layouts[0].N * CELL) / 2) + 4;
@@ -257,8 +322,30 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   ctx.camera.updateProjectionMatrix();
   const extent = half + top * 0.5; // reframe on height changes too (tall spires)
   if (Math.abs(state.lastExtent - extent) > 1) {
-    ctx.controls.target.set(centerX, 3 * TH + top * 0.18, centerZ);
-    ctx.camera.position.set(centerX + half * 0.75, half * 0.62 + top * 0.4, centerZ + half * 1.1);
+    ctx.controls.target.set(centerX, 3 * TH + top * 0.13, centerZ);
+    const cameraCandidate = new Vector3(
+      centerX + half * 0.64,
+      Math.max(38, half * 0.34 + top * 0.27),
+      centerZ + half * 1.08,
+    );
+    // The art-directed dragon is intentionally colossal and can overlap the
+    // maze. Keep the establishing camera low, but never spawn it inside the
+    // streamed wing/body volume. This is a one-time framing correction only;
+    // OrbitControls remains unrestricted afterward.
+    const dragonSupport = ctx.scene.getObjectByName("streamed-colossal-perched-dragon-slot");
+    if (dragonSupport) {
+      const dragonCenter = dragonSupport.getWorldPosition(new Vector3());
+      const dx = cameraCandidate.x - dragonCenter.x;
+      const dz = cameraCandidate.z - dragonCenter.z;
+      const flatDistance = Math.hypot(dx, dz);
+      const exclusion = Math.max(340, half * 2.65);
+      if (flatDistance < exclusion) {
+        const inv = exclusion / Math.max(0.001, flatDistance);
+        cameraCandidate.x = dragonCenter.x + dx * inv;
+        cameraCandidate.z = dragonCenter.z + dz * inv;
+      }
+    }
+    ctx.camera.position.copy(cameraCandidate);
     ctx.controls.maxDistance = (half + top * 0.5) * 5;
     state.lastExtent = extent;
     // fill rate is the budget: bigger worlds get a lower resolution ceiling
@@ -268,10 +355,22 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   ctx.env.bakeShadows();
   // the forge-rise animation is still settling — re-bake once it lands
   setTimeout(() => { if (tok === state.token) ctx.env.bakeShadows(); }, 1500);
-  ctx.hud.name.textContent = `${nIsl} linked block${nIsl > 1 ? "s" : ""}`;
+  const storyNames: Record<string, string> = {
+    threshold: "Gate", archive: "Archive", ossuary: "Ossuary", forge: "Forge",
+    pilgrim: "Pilgrim Court", overgrowth: "Wild Ruin", sanctum: "Sanctum",
+  };
+  const roleOrder = ["threshold", "archive", "ossuary", "forge", "pilgrim", "overgrowth"];
+  const presentRoles = new Set(macro.map((cell) => cell.role));
+  const story = roleOrder.filter((role) => presentRoles.has(role as typeof macro[number]["role"]))
+    .map((role) => storyNames[role]);
+  story.push(storyNames.sanctum);
+  ctx.hud.name.textContent = `${spatialPlan.stats.districts} districts · ${story.join(" → ")}`;
   const floorSum = layouts.reduce((s2, l) => s2 + l.stats.floor, 0);
   const forgeMs = Math.round(performance.now() - tForge);
-  ctx.hud.seed.textContent = `seed ${seed} · ${nIsl} block${nIsl > 1 ? "s" : ""} · ${floorSum} floor · forged in ${forgeMs}ms`;
+  ctx.hud.seed.textContent = `seed ${seed} · ${spatialPlan.stats.layers} layers · ${spatialPlan.stats.fusedLinks} fused seams · ${spatialPlan.stats.crossBlockCourts} cross-block courts · ${floorSum} floor · forged in ${forgeMs}ms`;
+  ctx.reportForgeStage?.("assembling", {
+    token: tok, seed, mode: "chain", detail: "scene graph complete", completed: nIsl, total: nIsl,
+  });
   const url = new URL(location.href);
   url.searchParams.set("seed", String(seed));
   url.searchParams.delete("mode"); // chain forge is the default mode

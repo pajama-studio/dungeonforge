@@ -1,0 +1,27 @@
+[package]
+name = "dungeon-core"
+version = "0.1.0"
+edition = "2024"
+description = "Deterministic hot-path maze kernel for Dungeonforge"
+license = "MIT"
+repository = "https://github.com/pajama-studio/dungeonforge"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "0.2.126"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# The Homebrew binaryen currently installed on the demo machine predates the
+# bulk-memory/trunc-sat features emitted by Rust 1.94. rustc+LTO already yields
+# a 25KB module; keep regeneration reproducible instead of invoking that
+# incompatible post-pass.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

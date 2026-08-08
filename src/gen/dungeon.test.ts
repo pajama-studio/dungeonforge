@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { generate, checksum, FLOOR, WALL, DX, DY, type Layout } from "./dungeon";
+import {
+  generate, checksum, FLOOR, WALL, VOID, DX, DY, FOOTPRINT_KINDS,
+  type Layout,
+} from "./dungeon";
 
 function bfsReachAll(l: Layout): boolean {
   const gi = (x: number, y: number) => y * l.N + x;
@@ -32,6 +35,15 @@ describe("dungeon generator", () => {
 
   it("different seeds differ", () => {
     expect(checksum(generate(1))).not.toBe(checksum(generate(2)));
+  });
+
+  it("embeds a partial multi-level Markov volume inside each block", () => {
+    for (const seed of [4, 19, 88, 501]) {
+      const l = generate(seed);
+      expect(l.stats.volumeCells).toBeGreaterThanOrEqual(10);
+      expect(l.stats.volumeLevels).toBeGreaterThanOrEqual(2);
+      expect(l.volumeMask.reduce((sum, value) => sum + value, 0)).toBeGreaterThanOrEqual(l.stats.volumeCells);
+    }
   });
 
   it("every floor cell is reachable from the entrance (Δtier ≤ 1 moves)", () => {
@@ -68,6 +80,41 @@ describe("dungeon generator", () => {
     }
   });
 
+  it("reserves vertical stair cores and connected level courts during generation", () => {
+    const request = { id: 91, x: 11, y: 17, dockDir: 0 as const };
+    const l = generate({ seed: 808, size: 13, verticalAnchors: [request] });
+    const a = l.verticalAnchors.find((v) => v.id === request.id)!;
+    const core = a.y * l.N + a.x;
+    expect(l.kind[core]).toBe(WALL);
+    expect(l.shaftMask[core]).toBe(1);
+    const courtTiers = new Set<number>();
+    for (let y = a.y - 1; y <= a.y + 1; y++) for (let x = a.x - 1; x <= a.x + 1; x++) {
+      if (x === a.x && y === a.y) continue;
+      const c = y * l.N + x;
+      expect(l.kind[c], `${x},${y}`).toBe(FLOOR);
+      expect(l.stairMask[c], `${x},${y}`).toBe(0);
+      courtTiers.add(l.tier[c]);
+    }
+    expect(courtTiers.size).toBe(1);
+    expect(bfsReachAll(l)).toBe(true);
+    expect(checksum(l)).not.toBe(checksum(generate({ seed: 808, size: 13 })));
+  });
+
+  it("grades a vertical court into adjacent landmark floors instead of disconnecting it", () => {
+    // Reliquary regression: after inverse rotation this court meets a raised
+    // landmark edge by more than two tiers. It must get a stairable grade,
+    // not be rejected or silently moved back to the outer wall.
+    const request = { id: 30_005, x: 21, y: 19, dockDir: 0 as const };
+    const l = generate({
+      seed: 1_308_394_102, size: 13, rot: 3,
+      verticalAnchors: [request], templeOn: true,
+      decay: 0.4315, mound: 0, plazas: 1, totems: 3,
+    });
+    expect(l.verticalAnchors).toContainEqual(request);
+    expect(l.shaftMask[request.y * l.N + request.x]).toBe(1);
+    expect(bfsReachAll(l)).toBe(true);
+  });
+
   it("holds invariants across sizes, plaza and totem counts", () => {
     for (const size of [9, 13, 21]) {
       for (const plazas of [0, 3]) {
@@ -80,12 +127,33 @@ describe("dungeon generator", () => {
     }
   });
 
-  it("survives 40 arbitrary seeds without throwing, few attempts", () => {
-    for (let s = 100; s < 140; s++) {
+  it("solves every non-square footprint with gates and vertical courts intact", () => {
+    for (let i = 0; i < FOOTPRINT_KINDS.length; i++) {
+      const footprint = FOOTPRINT_KINDS[i];
+      const l = generate({
+        seed: 7_000 + i, size: 13, footprint,
+        gateSides: [0, 2], gateRows: [7, 19],
+        verticalAnchors: [{ id: 700 + i, x: 8, y: 15, dockDir: 0 }],
+      });
+      expect(l.footprint).toBe(footprint);
+      expect(bfsReachAll(l), footprint).toBe(true);
+      expect(l.gates.map((g) => g.dir)).toEqual(expect.arrayContaining([0, 2]));
+      expect(l.kind.reduce((sum, cell) => sum + Number(cell === VOID), 0)).toBeGreaterThan(l.N);
+      const anchor = l.verticalAnchors.find((a) => a.id === 700 + i)!;
+      expect(l.shaftMask[anchor.y * l.N + anchor.x], footprint).toBe(1);
+    }
+  });
+
+  it("survives 100 arbitrary shape-varying seeds without throwing, few attempts", () => {
+    const seen = new Set<string>();
+    for (let s = 100; s < 200; s++) {
       const l = generate(s);
+      seen.add(l.footprint);
       expect(l.stats.attempts).toBeLessThanOrEqual(6);
       expect(l.stairs.length).toBeGreaterThanOrEqual(6);
       expect(l.torches.length).toBeGreaterThan(8);
+      expect(bfsReachAll(l), `seed ${s} (${l.footprint})`).toBe(true);
     }
+    expect(seen).toEqual(new Set(FOOTPRINT_KINDS));
   });
 });

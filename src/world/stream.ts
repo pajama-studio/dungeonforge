@@ -6,7 +6,7 @@
 // is ever created.
 
 import type * as THREE from "three/webgpu";
-import type { Layout } from "../gen/dungeon";
+import { FOOTPRINT_KINDS, type Layout } from "../gen/dungeon";
 import { buildWorld, buildBridgeLink, type WorldHandle, type LightSpec } from "../scene/build";
 import { pruneSlots } from "../scene/slots";
 import { CELL, ISLAND_GAP, linkArc } from "../config";
@@ -44,6 +44,7 @@ export class EndlessWorld {
     this.edgeHandles.clear();
     this.freeEdgeSlots.length = 0;
     this.timer = -10;
+    this.ctx.actors.clear();
   }
 
   private eh32(a: number, b: number, salt: number): number {
@@ -78,6 +79,7 @@ export class EndlessWorld {
     for (const { e, side } of edges) if (e.has) { gateSides.push(side); gateRows.push(e.row); }
     const l = await ctx.gen.generate(this.eh32(mi, mj, 0x11) || 1, ctx.genParams, {
       gateSides, gateRows, size,
+      footprint: FOOTPRINT_KINDS[this.eh32(mi, mj, 0xc1) % FOOTPRINT_KINDS.length],
       rot: this.eh32(mi, mj, 0x44) % 4,
       templeOn: this.eh32(mi, mj, 0x55) % 100 < 65,
       ravineOn: this.eh32(mi, mj, 0x66) % 100 < 75,
@@ -107,12 +109,14 @@ export class EndlessWorld {
     const { ctx } = this;
     ctx.worlds.length = 0;
     ctx.walk.clear();
+    ctx.actors.clear();
     const allLights: LightSpec[] = [];
     const activeSlots = new Set<number>();
     for (const cell of this.cells.values()) {
       activeSlots.add(cell.slot);
       ctx.worlds.push(cell.handle);
       ctx.walk.addIsland(cell.l, cell.ox, cell.oy, cell.oz, cell.slot);
+      ctx.actors.addIsland(cell.l, cell, cell.slot);
       for (const ls of cell.handle.lights) allLights.push({ ...ls, x: ls.x + cell.ox, y: ls.y + cell.oy, z: ls.z + cell.oz });
     }
     // inter-cell bridges for every present pair that agreed on a gate

@@ -22,11 +22,15 @@ export class Player {
   private idleAction: THREE.AnimationAction | null = null;
   private runAction: THREE.AnimationAction | null = null;
   private walkAction: THREE.AnimationAction | null = null;
+  private attackAction: THREE.AnimationAction | null = null;
+  private torchFlameAnchor: THREE.Object3D | null = null;
   private gait: "idle" | "walk" | "run" = "idle";
+  private attacking = false;
   private heading = 0;
   private vy = 0;
   falling = false;
   climbing = false;
+  attacksPlayed = 0;
   lastSafeX = 0;
   lastSafeZ = 0;
 
@@ -56,25 +60,44 @@ export class Player {
     const gltf = await new GLTFLoader().loadAsync(url);
     this.model = gltf.scene;
     this.model.scale.setScalar(0.72); // a touch smaller than the corridors suggest
+    const playerMaterials = new Map<string, THREE.Material>();
     this.model.traverse((o) => {
       if ((o as THREE.Mesh).isMesh) {
         o.castShadow = false;
         o.receiveShadow = false;
-        // no self-glow, and matte bone: kill emissive, push roughness up
-        const mat = (o as THREE.Mesh).material as THREE.MeshStandardMaterial;
-        if (mat && "emissive" in mat) {
-          mat.emissive.setRGB(0, 0, 0);
-          mat.emissiveIntensity = 0;
-          mat.roughness = 0.95;
-          mat.metalness = 0;
+        // Old bone must receive the cold moon key and the warm hand torch. The
+        // former unlit Basic material flattened every value into plastic grey.
+        // Clustered forward lighting keeps this one skinned Lambert pipeline
+        // independent of the scene's torch count; it remains demand-loaded.
+        const mesh = o as THREE.Mesh;
+        const source = mesh.material as THREE.MeshStandardMaterial;
+        const kind = /eyes/i.test(mesh.name) ? "eyes" : /cloak/i.test(mesh.name) ? "cloak" : "bone";
+        let material = playerMaterials.get(kind);
+        if (!material) {
+          if (kind === "eyes") {
+            material = new THREE.MeshBasicNodeMaterial({ color: 0xff7a2b });
+          } else {
+            material = new THREE.MeshLambertNodeMaterial({
+              color: kind === "cloak" ? 0x414958 : 0xd2c39f,
+              map: source.map,
+              transparent: source.transparent,
+              opacity: source.opacity,
+              alphaTest: source.alphaTest,
+              side: source.side,
+            });
+          }
+          material.name = `player-${kind}-matte`;
+          playerMaterials.set(kind, material);
         }
+        mesh.material = material;
         // never culled: compileAsync only compiles what survives the frustum
         // test, and the player preloads PARKED off-world — culling him there
         // would defer the skinned-pipeline compile to the first Enter (a
         // visible ~1s hitch). A handful of meshes, negligible to keep live.
-        o.frustumCulled = false;
+        mesh.frustumCulled = false;
       }
     });
+    this.attachTorch();
     this.group.add(this.model);
     this.mixer = new THREE.AnimationMixer(this.model);
     const clips = gltf.animations;
@@ -82,9 +105,67 @@ export class Player {
     const idle = find(/^idle$/i) ?? find(/idle/i);
     const run = find(/^running_a$/i) ?? find(/run/i) ?? find(/walk/i);
     const wk = find(/^walking_a$/i) ?? find(/walk/i);
+    const attack = find(/^1H_Melee_Attack_Slice_Horizontal$/i)
+      ?? find(/melee.*attack.*slice/i) ?? find(/attack/i);
     if (idle) { this.idleAction = this.mixer.clipAction(idle); this.idleAction.play(); }
     if (run) { this.runAction = this.mixer.clipAction(run); }
     if (wk) { this.walkAction = this.mixer.clipAction(wk); }
+    if (attack) {
+      this.attackAction = this.mixer.clipAction(attack);
+      this.attackAction.setLoop(THREE.LoopOnce, 1);
+      this.attackAction.clampWhenFinished = false;
+      this.mixer.addEventListener("finished", (event) => {
+        if (event.action !== this.attackAction) return;
+        this.attacking = false;
+        this.attackAction?.fadeOut(0.08);
+        this.actionFor(this.gait)?.reset().fadeIn(0.1).play();
+      });
+    }
+  }
+
+  /** Position of the actual flame, used by the one permanent scene light. */
+  getTorchWorldPosition(target: THREE.Vector3): THREE.Vector3 {
+    if (!this.torchFlameAnchor) return target.copy(this.group.position).add(new THREE.Vector3(0, 2.4, 0));
+    this.torchFlameAnchor.updateWorldMatrix(true, false);
+    return this.torchFlameAnchor.getWorldPosition(target);
+  }
+
+  private attachTorch(): void {
+    if (!this.model) return;
+    // GLTFLoader sanitizes punctuation in bone names (`handslot.l` ->
+    // `handslotl`) to make animation track paths addressable.
+    const leftHand = this.model.getObjectByName("handslot.l")
+      ?? this.model.getObjectByName("handslotl")
+      ?? this.model.getObjectByName("hand.l")
+      ?? this.model.getObjectByName("handl");
+    if (!leftHand) return;
+    const torch = new THREE.Group();
+    torch.name = "left-hand-dungeon-torch";
+    // KayKit's left hand slot points its local +X upward in the authored idle
+    // pose. Rotate our +Y-authored torch into that grip so it is carried
+    // upright instead of projecting horizontally through the wrist.
+    torch.rotation.z = -Math.PI / 2;
+    const wood = new THREE.MeshLambertNodeMaterial({ color: 0x3a2116 });
+    const iron = new THREE.MeshLambertNodeMaterial({ color: 0x2b2c31 });
+    const outerFire = new THREE.MeshBasicNodeMaterial({ color: 0xff6a20 });
+    const innerFire = new THREE.MeshBasicNodeMaterial({ color: 0xffd36a });
+    const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.052, 0.72, 6), wood);
+    handle.position.y = 0.29;
+    const basket = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.062, 0.17, 6), iron);
+    basket.position.y = 0.68;
+    const flame = new THREE.Mesh(new THREE.OctahedronGeometry(0.14, 0), outerFire);
+    flame.name = "torch-flame-outer";
+    flame.position.y = 0.84;
+    flame.scale.set(0.72, 1.45, 0.72);
+    const core = new THREE.Mesh(new THREE.OctahedronGeometry(0.085, 0), innerFire);
+    core.name = "torch-flame-core";
+    core.position.y = 0.81;
+    core.scale.set(0.62, 1.3, 0.62);
+    this.torchFlameAnchor = new THREE.Object3D();
+    this.torchFlameAnchor.name = "torch-flame-light-anchor";
+    this.torchFlameAnchor.position.y = 0.84;
+    torch.add(handle, basket, flame, core, this.torchFlameAnchor);
+    leftHand.add(torch);
   }
 
   place(x: number, z: number, ground: GroundSampler): void {
@@ -94,7 +175,7 @@ export class Player {
     this.vy = 0;
   }
 
-  update(dt: number, input: PlayerInput, camYaw: number, ground: GroundSampler): void {
+  update(dt: number, input: PlayerInput, camYaw: number, ground: GroundSampler, speedScale = 1): void {
     const p = this.group.position;
     if (this.climbing) {
       // the ladder owns vertical motion; just keep the animation alive
@@ -114,7 +195,7 @@ export class Player {
       // camera-relative movement
       const dx = (Math.sin(camYaw) * input.f + Math.cos(camYaw) * input.s) * inv;
       const dz = (Math.cos(camYaw) * input.f - Math.sin(camYaw) * input.s) * inv;
-      const step = SPEED * dt;
+      const step = SPEED * Math.max(0.1, Math.min(2.4, speedScale)) * dt;
       const tryMove = (mx: number, mz: number): boolean => {
         const g = ground(p.x + mx, p.z + mz, p.y);
         if (!g.ok) {
@@ -151,6 +232,17 @@ export class Player {
     this.mixer?.update(dt);
   }
 
+  /** Play the authored melee clip without allocating a new action. Movement
+   * can continue; the current gait resumes when the one-shot finishes. */
+  attack(): boolean {
+    if (!this.attackAction) return false;
+    this.actionFor(this.gait)?.fadeOut(0.04);
+    this.attackAction.reset().setEffectiveWeight(1).fadeIn(0.035).play();
+    this.attacking = true;
+    this.attacksPlayed++;
+    return true;
+  }
+
   /** scripted locomotion (route walker): position/heading driven externally.
    *  gait "walk" is used on stairs/steep ramps (the pack has no dedicated
    *  climb clip — a slower walk cycle is the standard-issue stand-in). */
@@ -178,6 +270,7 @@ export class Player {
     const fadeOut = this.actionFor(this.gait);
     const fadeIn = this.actionFor(g);
     this.gait = g;
+    if (this.attacking) return;
     if (fadeIn && fadeIn !== fadeOut) { fadeIn.reset().fadeIn(0.18).play(); }
     if (fadeOut && fadeIn !== fadeOut) { fadeOut.fadeOut(0.18); }
   }

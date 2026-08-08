@@ -7,7 +7,12 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "bench:perf": "vite-node scripts/perf-benchmark.ts",
+    "bench:markov": "vite-node scripts/markov-benchmark.ts",
+    "bench:wasm": "vite-node scripts/wasm-maze-benchmark.ts",
+    "build:wasm": "wasm-pack build rust/dungeon-core --release --target web --out-dir ../../src/gen/wasm-pkg && node scripts/keep-wasm-package.mjs",
+    "bench:report": "node scripts/perf-report.mjs"
   },
   "dependencies": {
     "three": "^0.185.1"

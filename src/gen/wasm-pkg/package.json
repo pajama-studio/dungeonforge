@@ -1,0 +1,21 @@
+{
+  "name": "dungeon-core",
+  "type": "module",
+  "description": "Deterministic hot-path maze kernel for Dungeonforge",
+  "version": "0.1.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pajama-studio/dungeonforge"
+  },
+  "files": [
+    "dungeon_core_bg.wasm",
+    "dungeon_core.js",
+    "dungeon_core.d.ts"
+  ],
+  "main": "dungeon_core.js",
+  "types": "dungeon_core.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

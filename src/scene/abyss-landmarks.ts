@@ -55,30 +55,38 @@ function makeEyeFireMat(
  *  radial falloff is rippled by slow noise, so the floor reads as glowing
  *  water lapping the statue base and pooling under the maze (painted ref). */
 function makeAbyssPoolMat(): THREE.MeshBasicNodeMaterial {
+  // NORMAL blending, near-opaque inside: an additive sheet let pillar bases
+  // show through and everything standing in the water read as floating. A
+  // solid dark water body with emissive blooms gives a real waterline where
+  // geometry pierces the surface.
   const mat = new THREE.MeshBasicNodeMaterial({
-    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    transparent: true, depthWrite: false,
   });
   const fall = smoothstep(1.0, 0.06, length(uv().sub(0.5)).mul(2));
   const ripple = triNoise3D(vec3(uv().mul(3.2), 0.7), 0.18, time).mul(0.42).add(0.72);
-  // peaks reach ~2.5 linear — well past the bloom threshold, so the water
-  // genuinely GLOWS instead of merely being tinted
-  mat.colorNode = color(0x1fd4b4).mul(fall.pow(1.8)).mul(ripple).mul(3.0);
-  mat.opacityNode = fall.mul(0.9);
+  // peaks reach past the bloom threshold, so the water genuinely GLOWS
+  mat.colorNode = color(0x1fd4b4).mul(fall.pow(1.8)).mul(ripple).mul(3.0)
+    .add(color(0x03211d));
+  mat.opacityNode = fall.mul(0.94);
   return mat;
 }
 
 /** The broad basin sheet under the maze: much dimmer and PATCHY — dark
  *  water with drifting glowing blooms, not a uniform lit floor. */
 function makeAbyssBasinMat(): THREE.MeshBasicNodeMaterial {
+  // Same normal-blended water body as the root pool: dark surface with
+  // drifting emissive blooms. Near-opaque so pillars and ruins get a clean
+  // waterline instead of ghosting through an additive mist.
   const mat = new THREE.MeshBasicNodeMaterial({
-    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    transparent: true, depthWrite: false,
   });
   const fall = smoothstep(1.0, 0.1, length(uv().sub(0.5)).mul(2));
   const blooms = triNoise3D(vec3(uv().mul(2.6), 0.4), 0.12, time);
   const patch = smoothstep(0.28, 0.78, blooms).mul(0.85).add(0.16);
   // bright blooms cross 1.0 and halo; the dark water between them stays dark
-  mat.colorNode = color(0x13836f).mul(fall).mul(patch).mul(1.9);
-  mat.opacityNode = fall.mul(patch).mul(0.85);
+  mat.colorNode = color(0x13836f).mul(patch).mul(2.4)
+    .add(color(0x04201c));
+  mat.opacityNode = fall.mul(0.92);
   return mat;
 }
 
@@ -2014,10 +2022,12 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
     const floorY = oracle.position.y;
     abyssPool.position.copy(oracle.position)
       .addScaledVector(oracleForward, oracleScale * 5)
-      .add(new THREE.Vector3(0, 2.6, 0));
+      .add(new THREE.Vector3(0, 1.6, 0));
     abyssPool.scale.setScalar(oracleScale * 26);
+    // sit the basin sheet in the bedrock DIPS: high ground pierces it as
+    // shores and ruin pillars puncture a real waterline instead of hovering
     abyssBasinPool.position.set(
-      oracle.position.x * 0.3, floorY + 1.8, oracle.position.z * 0.3);
+      oracle.position.x * 0.3, floorY - 2, oracle.position.z * 0.3);
     abyssBasinPool.scale.setScalar(Math.max(oracleScale * 40, half * 1.25));
     abyssShoreRing.position.copy(oracle.position)
       .addScaledVector(oracleForward, oracleScale * 4)
@@ -2031,7 +2041,7 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
       dabMatrix.makeScale(size, 1, size);
       dabMatrix.setPosition(
         oracle.position.x + Math.cos(angle) * radius + oracleForward.x * oracleScale * 4,
-        floorY + 2.2,
+        floorY + 1.9,
         oracle.position.z + Math.sin(angle) * radius + oracleForward.z * oracleScale * 4,
       );
       abyssDabs.setMatrixAt(i, dabMatrix);

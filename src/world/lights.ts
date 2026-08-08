@@ -6,6 +6,11 @@ import * as THREE from "three/webgpu";
 import type { CinematicLightSpec, LightSpec } from "../scene/build";
 import { LIGHT_POOL_SIZE } from "../config";
 
+/** ref-C grade: torch pools carry the warm counterweight to the green-teal
+ *  air, so they burn hotter than the authored specs. Applied in BOTH assign()
+ *  and tick() — the flicker overwrites intensity every frame. */
+const EMBER_BOOST = 1.45;
+
 export class LightPool {
   private pool: THREE.PointLight[] = [];
   private specs: LightSpec[] = [];
@@ -57,8 +62,14 @@ export class LightPool {
       if (s) {
         pl.position.set(s.x, s.y, s.z);
         pl.color.setHex(s.color);
+        // deterministic per-slot hue jitter: identical orange everywhere read
+        // as one repeated asset — a ±0.025 hue / small lightness spread keeps
+        // some pools ember-red and others candle-gold without any random()
+        const jitter = (((i + 1) * 2654435761) >>> 16) % 1000 / 1000;
+        // slight red bias (-0.55 midpoint): embers over candles, per ref-C
+        pl.color.offsetHSL((jitter - 0.55) * 0.05, 0.08, (jitter - 0.5) * 0.06);
         pl.distance = s.dist;
-        pl.intensity = s.base;
+        pl.intensity = s.base * EMBER_BOOST;
       } else {
         pl.intensity = 0;
       }
@@ -113,7 +124,7 @@ export class LightPool {
   tick(t: number, damp = 1): void {
     for (let i = 0; i < this.specs.length; i++) {
       const s = this.specs[i];
-      this.pool[i].intensity = s.base * (0.82 + damp * (0.12 * Math.sin(t * 7.3 + s.ph) + 0.06 * Math.sin(t * 13.1 + s.ph * 1.7)));
+      this.pool[i].intensity = s.base * EMBER_BOOST * (0.82 + damp * (0.12 * Math.sin(t * 7.3 + s.ph) + 0.06 * Math.sin(t * 13.1 + s.ph * 1.7)));
     }
   }
 }

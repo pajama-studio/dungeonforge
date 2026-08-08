@@ -159,6 +159,80 @@
       border-radius: 50%; background: #d8c9a3; border: 1px solid #6b5f45; cursor: pointer;
     }
 
+    /* ---- left: dungeon editor drawer ---- */
+    #editor {
+      position: fixed; top: 18px; left: 20px; bottom: 74px; z-index: 12; width: 268px;
+      display: flex; flex-direction: column;
+      background: rgba(14, 18, 34, .9); border: 1px solid #32324a; border-radius: 10px;
+      font-family: Georgia, serif; color: #b7a982;
+      backdrop-filter: blur(6px); box-shadow: 0 18px 60px rgba(0,0,0,.5);
+      transition: transform .25s ease, opacity .25s ease;
+    }
+    #editor.closed { transform: translateX(-112%); opacity: 0; pointer-events: none; }
+    #editor header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 11px 13px 9px; border-bottom: 1px solid #26263c;
+    }
+    #editor header strong {
+      font-size: 11px; letter-spacing: .3em; font-weight: 400;
+      color: #8f7f5c; text-transform: uppercase;
+    }
+    #editor .editor-close { padding: 2px 7px; border: none; background: none; color: #7d7460; }
+    #editor .editor-close:hover { color: #ffe9b8; }
+    .editor-tabs { display: flex; gap: 4px; padding: 8px 10px 0; }
+    .editor-tabs button {
+      flex: 1; padding: 6px 4px; font-size: 11px; letter-spacing: .08em;
+      border-radius: 6px 6px 0 0; border-bottom-color: transparent;
+    }
+    .editor-tabs button.active { background: rgba(64, 54, 34, .6); color: #f0d79f; border-color: #6b5f45; }
+    .editor-page { display: none; padding: 4px 13px 14px; overflow-y: auto; flex: 1; }
+    .editor-page.show { display: block; }
+    #editor h3 {
+      margin: 13px 0 3px; font-size: 10.5px; letter-spacing: .22em; font-weight: 400;
+      color: #6f6a58; text-transform: uppercase;
+      border-bottom: 1px solid #26263c; padding-bottom: 4px;
+    }
+    .editor-empty { margin: 8px 0; font-size: 11px; line-height: 1.5; color: #6a6454; }
+    .editor-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; margin-top: 7px; }
+    .editor-tile {
+      display: flex; flex-direction: column; align-items: center; gap: 2px;
+      padding: 7px 2px 5px; border-radius: 7px; overflow: hidden;
+    }
+    .editor-tile .ico { font-size: 17px; line-height: 1.1; }
+    .editor-tile .cap {
+      font-size: 8px; letter-spacing: .02em; color: #7d7460; text-align: center;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+    }
+    .editor-tile:hover { border-color: #6b5f45; background: rgba(64, 54, 34, .55); }
+    .editor-tile:hover .cap { color: #e8dcc0; }
+    .editor-seg { display: flex; gap: 4px; margin: 9px 0 4px; }
+    .editor-seg button { flex: 1; padding: 6px 2px; font-size: 10.5px; }
+    .editor-seg button.active { background: rgba(64, 54, 34, .7); color: #f0d79f; border-color: #6b5f45; }
+    .editor-check { display: flex; align-items: center; gap: 6px; font-size: 11px; margin: 8px 0; }
+    .editor-vec { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin-top: 5px; }
+    .editor-vec label { display: flex; align-items: center; gap: 4px; font-size: 10px; color: #6f6a58; }
+    .editor-vec input { width: 100%; min-width: 0; padding: 4px 5px; font-size: 11px; }
+    .editor-actions { display: flex; gap: 5px; margin-top: 11px; }
+    .editor-actions.wrap { flex-wrap: wrap; }
+    .editor-actions button { flex: 1; min-width: 74px; padding: 7px 4px; font-size: 11px; }
+    .editor-actions button.danger { color: #cf9a90; border-color: #5b3733; }
+    .editor-actions button.danger:hover { background: rgba(90, 40, 34, .5); color: #ffd9cf; }
+    .editor-wide { width: 100%; margin-top: 12px; padding: 8px; }
+    .editor-outliner { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; }
+    .editor-row { text-align: left; padding: 5px 8px; font-size: 11px; border-radius: 5px; }
+    .editor-row.active { background: rgba(64, 54, 34, .7); color: #f0d79f; border-color: #6b5f45; }
+    #editor label { display: block; font-size: 11.5px; margin: 7px 0 2px; letter-spacing: .06em; }
+    #editor label span { float: right; color: #e8dcc0; }
+    #editor input[type=range] {
+      width: 100%; height: 4px; -webkit-appearance: none; appearance: none;
+      background: #2c2c44; border-radius: 2px; outline: none; margin: 2px 0 0; border: none;
+    }
+    #editor input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none; width: 11px; height: 11px;
+      border-radius: 50%; background: #d8c9a3; border: 1px solid #6b5f45; cursor: pointer;
+    }
+    body.editing #hud { display: none; }
+
     #tip {
       position: fixed; bottom: 64px; right: 22px; z-index: 9;
       color: #5d5645; font: 11px Georgia, serif; letter-spacing: .1em;
@@ -255,6 +329,7 @@
     <button id="btnWalk" title="the skeleton walks the route (Esc stops)">💀</button>
     <button id="btnBreak" title="GPU destruction — click masonry (X)">💥</button>
     <button id="btnDragonGizmo" title="move dragon + rock landmark (G)">🐉</button>
+    <button id="btnEditor" title="dungeon editor — assets, gizmo, generation (E)">🛠</button>
     <button id="btnParams" title="forge parameters">⚙</button>
   </div>
 

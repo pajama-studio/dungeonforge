@@ -687,6 +687,49 @@ document.getElementById("btnParamsClose")!.addEventListener("click", () => {
   btnParams.classList.remove("active");
 });
 
+// 🛠 dungeon editor: asset library + placement gizmo + generation params.
+// Built lazily on first open so neither its TransformControls import nor its
+// palette DOM is on the startup path.
+const btnEditor = document.getElementById("btnEditor") as HTMLButtonElement;
+let editor: import("./editor").DungeonEditor | null = null;
+let editorLoad: Promise<import("./editor").DungeonEditor> | null = null;
+
+async function ensureEditor(): Promise<import("./editor").DungeonEditor> {
+  if (editor) return editor;
+  editorLoad ??= import("./editor").then(({ DungeonEditor }) => {
+    const instance = new DungeonEditor({
+      scene, camera, dom: renderer.domElement, controls,
+      genParams: ctx.genParams,
+      state: ctx.state,
+      activeMode: () => activeMode,
+      reforge,
+      // the editor owns the camera while open — nothing else may drive it
+      quiesce: () => {
+        if (walking) stopWalk();
+        if (rogueMode) stopRogueRun();
+        cine.stop();
+        void setDragonGizmoActive(false);
+      },
+      toast: (message) => flashRunToast(message),
+    });
+    editor = instance;
+    void instance.restoreSaved();
+    return instance;
+  });
+  return editorLoad;
+}
+
+async function toggleEditor(force?: boolean): Promise<void> {
+  const instance = await ensureEditor();
+  instance.toggle(force);
+  btnEditor.classList.toggle("active", instance.open);
+  document.getElementById("tip")!.textContent = instance.open
+    ? "click a prop to select · 1/2/3 move·rotate·scale · ⌫ delete · ⌘Z undo"
+    : "drag to orbit · scroll to zoom · Esc stops";
+}
+
+btnEditor.addEventListener("click", () => { void toggleEditor(); });
+
 // ---- skeleton route walker: the CC0 skeleton walks the whole route --------
 let walking = false;
 let walkU = 0, walkLen = 1, walkEndAt = 0;
@@ -1096,6 +1139,10 @@ addEventListener("keydown", (e: KeyboardEvent) => {
   const editingText = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
   if (e.key.toLowerCase() === "g" && !editingText && !e.repeat) {
     void setDragonGizmoActive(!dragonGizmoActive);
+    e.preventDefault();
+  }
+  if (e.key.toLowerCase() === "e" && !editingText && !e.repeat && !e.metaKey && !e.ctrlKey) {
+    void toggleEditor();
     e.preventDefault();
   }
   if (e.key === "Escape" && dragonGizmoActive) void setDragonGizmoActive(false);

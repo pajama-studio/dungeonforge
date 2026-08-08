@@ -9,9 +9,11 @@ export interface PanelHooks {
   onParams: () => void;
 }
 
-interface Def { key: keyof Params; label: string; min: number; max: number; step: number }
+export interface Def { key: keyof Params; label: string; min: number; max: number; step: number }
 
-const GROUPS: Array<{ title: string; defs: Def[] }> = [
+/** Shared with the editor's Generate tab so both surfaces expose exactly the
+ *  same tunables — a slider added here shows up in both. */
+export const GROUPS: Array<{ title: string; defs: Def[] }> = [
   {
     title: "Layout",
     defs: [

@@ -24,7 +24,7 @@ import {
   resetGodrayShape, loadGodrayShape, type GodrayShape,
 } from "./scene/env";
 import { setInteriorCull, getInteriorCull, setClosedCourses, getClosedCourses, setFarShadows, getFarShadows } from "./scene/build";
-import { flickerDamp, loadHandPaintedStoneTexture, setOcclusionWindow, stoneStyle, loadBrushAtlas } from "./scene/kit/materials";
+import { flickerDamp, loadHandPaintedStoneTexture, setOcclusionWindow, stoneStyle, loadBrushAtlas, loadStoneSet } from "./scene/kit/materials";
 import { createPost } from "./render/post";
 import { GpuMasonryScene } from "./render/gpu-scene";
 import { Player } from "./player/player";
@@ -1328,7 +1328,7 @@ async function boot(): Promise<void> {
   // placeholder already compiled with the masonry shader, so swapping pixels
   // later neither blocks startup nor creates a new render pipeline.
   window.setTimeout(() => {
-    void Promise.all([loadHandPaintedStoneTexture(), loadBrushAtlas()])
+    void Promise.all([loadHandPaintedStoneTexture(), loadBrushAtlas(), loadStoneSet()])
       .then(() => { startupTiming.stoneTextureReadyAt = performance.now(); })
       .catch((error) => console.warn("Hand-painted stone texture failed to stream", error));
   }, 1400);

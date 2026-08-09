@@ -49,6 +49,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--size", type=int, default=1024)
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--bond", choices=["running", "irregular"], default="running")
+    parser.add_argument("--cells", type=int, default=0,
+                        help="override the style's stone count; 1 gives a single face for per-brick use")
     return parser.parse_args()
 
 
@@ -143,7 +145,7 @@ def build(args: argparse.Namespace) -> dict:
     style = STYLES[args.style]
     rng = np.random.default_rng(args.seed)
 
-    edge, stone_id = brick_cells(size, style["cells"], rng, args.bond)
+    edge, stone_id = brick_cells(size, args.cells or style["cells"], rng, args.bond)
 
     # --- height: the one authored field ------------------------------------
     joint = np.clip(edge / 0.055, 0, 1) ** 0.6          # mortar recess

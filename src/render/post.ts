@@ -227,7 +227,10 @@ export function createPost(
   // still cross the bloom threshold.
   const toe = vibrant.min(vec3(1));
   const curved = toe.mul(toe).mul(vec3(3).sub(toe.mul(2)));
-  const shaped = vibrant.add(mix(toe, curved, 0.38)).sub(toe);
+  // 0.26 rather than 0.38: at a wide framing most of the maze already sits
+  // in the cavern lid's shadow, and a harder toe crushed it into one
+  // unreadable mass instead of grouping it.
+  const shaped = vibrant.add(mix(toe, curved, 0.26)).sub(toe);
   postProcessing.outputNode = vec4(shaped.mul(vig), fogged.a);
   return {
     post: postProcessing,

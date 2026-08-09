@@ -165,7 +165,7 @@ export function buildEnvironment(
   // painted reference every block soffit reads cool while warmth appears only
   // where a torch actually is — an earthy ground colour smeared that warmth
   // everywhere and flattened the whole value structure.
-  const hemi = new THREE.HemisphereLight(0x36586e, 0x1d4a45, 0.82);
+  const hemi = new THREE.HemisphereLight(0x36586e, 0x1d4a45, 0.98);
   group.add(hemi);
 
   const rim = new THREE.DirectionalLight(0x568fa0, 0.56);

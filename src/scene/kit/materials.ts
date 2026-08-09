@@ -504,7 +504,11 @@ export function makeMaterials(): MatKit {
     const flick = sin(time.mul(8.9).add(ph)).mul(0.1).add(sin(time.mul(14.7).add(ph.mul(1.9))).mul(0.06))
       .mul(flickerDamp).add(0.86);
     const fall = smoothstep(0.5, 0.04, length(uv().sub(vec2(0.5, 0.42))));
-    wallGlowMat.colorNode = color(0xff8a35).mul(fall).mul(flick).mul(0.56);
+    // Carries the "lit city" read at wide framings. The cavern lid shadows
+    // everything outside the beam, so at distance a point light has fallen
+    // off to nothing and these emissive cards are the ONLY thing saying the
+    // maze is inhabited — they have to be generous.
+    wallGlowMat.colorNode = color(0xff8a35).mul(fall).mul(flick).mul(0.9);
     wallGlowMat.opacityNode = fall;
   }
 
@@ -516,7 +520,7 @@ export function makeMaterials(): MatKit {
     const flick = sin(time.mul(8.3).add(ph)).mul(0.09).add(sin(time.mul(13.9).add(ph.mul(2.3))).mul(0.05))
       .mul(flickerDamp).add(0.88);
     const fall = smoothstep(0.5, 0.03, length(uv().sub(0.5)));
-    floorGlowMat.colorNode = color(0xff9440).mul(fall).mul(flick).mul(0.64);
+    floorGlowMat.colorNode = color(0xff9440).mul(fall).mul(flick).mul(1.05);
     floorGlowMat.opacityNode = fall;
   }
 

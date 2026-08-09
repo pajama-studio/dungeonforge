@@ -9,8 +9,11 @@ export interface AssetDef {
   id: string;
   label: string;
   group: string;
-  /** emoji shown in the palette tile — cheap, themeable, zero image loads */
+  /** emoji fallback for the palette tile, used until/unless a thumbnail exists */
   icon: string;
+  /** silhouette data URL drawn from the geometry; absent for streamed assets
+   *  whose mesh is not resident until first placed */
+  thumbnail?: () => string | null;
   /** Streamed assets resolve asynchronously; kit primitives resolve instantly. */
   build: () => THREE.Object3D | Promise<THREE.Object3D>;
   /** default uniform scale applied at spawn */

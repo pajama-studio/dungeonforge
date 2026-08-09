@@ -6,6 +6,7 @@
 import * as THREE from "three/webgpu";
 import type { TransformControls } from "three/addons/controls/TransformControls.js";
 import type { AssetDef, GizmoMode, PlacementRecord, WorldOverride } from "./types";
+import { NO_VARIANCE, sampleVariance, type VarianceSettings } from "./variance";
 
 /** Generated content the editor refuses to adopt: moving these breaks the
  *  frame rather than the art. Everything else in the world is fair game. */
@@ -317,7 +318,12 @@ export class EditorStage {
     asset: AssetDef,
     at: THREE.Vector3,
     restore?: PlacementRecord,
-    options: { silent?: boolean; normal?: THREE.Vector3 | null } = {},
+    options: {
+      silent?: boolean;
+      normal?: THREE.Vector3 | null;
+      variance?: VarianceSettings;
+      varianceSeed?: number;
+    } = {},
   ): Promise<PlacementRecord> {
     const object = await asset.build();
     const uid = restore?.uid ?? nextUid();
@@ -331,6 +337,15 @@ export class EditorStage {
       object.scale.setScalar(asset.scale ?? 1);
       const tilt = options.normal ? surfaceAlignment(options.normal) : null;
       if (tilt) object.quaternion.copy(tilt);
+      const variance = options.variance ?? NO_VARIANCE;
+      if (variance !== NO_VARIANCE) {
+        const sample = sampleVariance(variance, options.varianceSeed ?? this.placed.size);
+        // yaw about the object's own up, so a tilted prop spins in its plane
+        object.rotateY(sample.yaw);
+        object.rotateX(sample.tiltX);
+        object.rotateZ(sample.tiltZ);
+        object.scale.multiplyScalar(sample.scale);
+      }
     }
     object.userData.editorAsset = asset.id;
     object.userData.editorUid = uid;
@@ -389,6 +404,10 @@ export class EditorStage {
 
   selectedUids(): string[] {
     return [...this.selection];
+  }
+
+  objectFor(uid: string): THREE.Object3D | null {
+    return this.placed.get(uid)?.object ?? null;
   }
 
   remove(uid: string): void {

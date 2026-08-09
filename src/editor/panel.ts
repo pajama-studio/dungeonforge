@@ -5,8 +5,10 @@
 
 import type { Params } from "../gen/dungeon";
 import { GROUPS } from "../ui/panel";
+import { DEFAULT_BRUSH, type BrushSettings } from "./brush";
 import { assetGroups } from "./catalog";
 import type { AssetDef, GizmoMode, PlacementRecord } from "./types";
+import type { VarianceSettings } from "./variance";
 
 export interface EditorHooks {
   onSpawn: (asset: AssetDef) => void;
@@ -20,6 +22,9 @@ export interface EditorHooks {
   onSpaceChange: (space: "world" | "local") => void;
   onFrame: () => void;
   onArray: (count: number, axis: "x" | "y" | "z", spacing: number) => void;
+  onBrushToggle: (asset: AssetDef | null) => void;
+  onBrushSettings: (next: Partial<BrushSettings>) => void;
+  onVariance: (on: boolean, next?: Partial<VarianceSettings>) => void;
   onParams: () => void;
   onReforge: () => void;
   onSave: () => void;
@@ -43,6 +48,11 @@ export class EditorPanel {
   private worldActions!: HTMLElement;
   private arrayRow!: HTMLElement;
   private transformFields!: HTMLElement;
+  private brushBar!: HTMLElement;
+  private brushLabel!: HTMLElement;
+  private brushAssetId: string | null = null;
+  private tiles: HTMLElement[] = [];
+  private groupSections: HTMLElement[] = [];
   private subjectLabel!: HTMLElement;
   private activeTab: Tab = "library";
   private selectedUid: string | null = null;
@@ -103,23 +113,128 @@ export class EditorPanel {
     const page = this.pages.get("library")!;
     const hint = document.createElement("p");
     hint.className = "editor-empty";
-    hint.textContent = "Click an asset to drop it at the view centre.";
+    hint.textContent = "Click to drop under the cursor. Alt-click to load the brush.";
     page.appendChild(hint);
+
+    const search = document.createElement("input");
+    search.type = "search";
+    search.className = "editor-search";
+    search.placeholder = "filter assets…";
+    search.addEventListener("input", () => this.filterLibrary(search.value));
+    page.appendChild(search);
+
+    this.brushBar = document.createElement("div");
+    this.brushBar.className = "editor-brushbar";
+    this.brushBar.style.display = "none";
+    page.appendChild(this.brushBar);
+    this.buildBrushControls();
+
     for (const group of assetGroups()) {
+      const section = document.createElement("div");
+      section.className = "editor-group";
       const title = document.createElement("h3");
       title.textContent = group.title;
-      page.appendChild(title);
       const grid = document.createElement("div");
       grid.className = "editor-grid";
       for (const asset of group.assets) {
         const tile = document.createElement("button");
         tile.className = "editor-tile";
-        tile.title = asset.label;
-        tile.innerHTML = `<span class="ico">${asset.icon}</span><span class="cap">${asset.label}</span>`;
-        tile.addEventListener("click", () => this.hooks.onSpawn(asset));
+        tile.dataset.assetId = asset.id;
+        tile.dataset.search = `${asset.label} ${asset.group} ${asset.id}`.toLowerCase();
+        tile.title = `${asset.label} — click to place, alt-click to brush`;
+        const face = document.createElement("span");
+        face.className = "ico";
+        // real silhouette when the geometry can supply one, emoji otherwise
+        const url = asset.thumbnail?.() ?? null;
+        if (url) {
+          const img = document.createElement("img");
+          img.src = url;
+          img.alt = "";
+          face.appendChild(img);
+        } else {
+          face.textContent = asset.icon;
+        }
+        const cap = document.createElement("span");
+        cap.className = "cap";
+        cap.textContent = asset.label;
+        tile.append(face, cap);
+        tile.addEventListener("click", (event) => {
+          if (event.altKey) this.hooks.onBrushToggle(this.brushAssetId === asset.id ? null : asset);
+          else this.hooks.onSpawn(asset);
+        });
         grid.appendChild(tile);
+        this.tiles.push(tile);
       }
-      page.appendChild(grid);
+      section.append(title, grid);
+      page.appendChild(section);
+      this.groupSections.push(section);
+    }
+  }
+
+  private filterLibrary(query: string): void {
+    const needle = query.trim().toLowerCase();
+    for (const tile of this.tiles) {
+      const hit = !needle || (tile.dataset.search ?? "").includes(needle);
+      tile.style.display = hit ? "" : "none";
+    }
+    // hide a whole group heading once nothing in it survives the filter
+    for (const section of this.groupSections) {
+      const anyVisible = Array.from(section.querySelectorAll<HTMLElement>(".editor-tile"))
+        .some((tile) => tile.style.display !== "none");
+      section.style.display = anyVisible ? "" : "none";
+    }
+  }
+
+  private buildBrushControls(): void {
+    const label = document.createElement("div");
+    label.className = "editor-brush-label";
+    this.brushLabel = label;
+    const stop = document.createElement("button");
+    stop.className = "editor-mini";
+    stop.textContent = "✕";
+    stop.title = "put the brush down";
+    stop.addEventListener("click", () => this.hooks.onBrushToggle(null));
+    const head = document.createElement("div");
+    head.className = "editor-brush-head";
+    head.append(label, stop);
+
+    const grid = document.createElement("div");
+    grid.className = "editor-brush-grid";
+    const number = (
+      text: string, value: number, step: number, apply: (n: number) => void,
+    ) => {
+      const wrap = document.createElement("label");
+      const input = document.createElement("input");
+      input.type = "number";
+      input.value = String(value);
+      input.step = String(step);
+      input.min = "0";
+      input.addEventListener("change", () => apply(Number(input.value) || 0));
+      wrap.append(document.createTextNode(text), input);
+      grid.appendChild(wrap);
+    };
+    number("radius", DEFAULT_BRUSH.radius, 0.5, (n) => this.hooks.onBrushSettings({ radius: n }));
+    number("spacing", DEFAULT_BRUSH.spacing, 0.5, (n) => this.hooks.onBrushSettings({ spacing: n }));
+    number("per step", DEFAULT_BRUSH.density, 1, (n) => this.hooks.onBrushSettings({ density: Math.max(1, n) }));
+    number("max", DEFAULT_BRUSH.maxDabs, 50, (n) => this.hooks.onBrushSettings({ maxDabs: Math.max(1, n) }));
+
+    const varianceRow = document.createElement("label");
+    varianceRow.className = "editor-check";
+    const varianceOn = document.createElement("input");
+    varianceOn.type = "checkbox";
+    varianceOn.checked = true;
+    varianceOn.addEventListener("change", () => this.hooks.onVariance(varianceOn.checked));
+    varianceRow.append(varianceOn, document.createTextNode(" vary rotation & scale"));
+
+    this.brushBar.append(head, grid, varianceRow);
+  }
+
+  setBrush(assetId: string | null): void {
+    this.brushAssetId = assetId;
+    this.brushBar.style.display = assetId ? "" : "none";
+    if (assetId) this.brushLabel.textContent = `Brush · ${assetId}`;
+    for (const tile of this.tiles) {
+      tile.classList.toggle("brushing", tile.dataset.assetId === assetId);
     }
   }
 

@@ -12,6 +12,7 @@ import * as THREE from "three/webgpu";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
 import { getKit } from "../scene/kit";
+import { thumbnailFor } from "./thumbs";
 import type { AssetDef } from "./types";
 
 const draco = new DRACOLoader();
@@ -162,6 +163,9 @@ export function assetCatalog(): AssetDef[] {
     group: entry.group,
     icon: entry.icon,
     scale: entry.scale ?? 1,
+    // Silhouette drawn from the real geometry. Deferred until the palette
+    // asks, so the kit is not forced to build during startup.
+    thumbnail: () => thumbnailFor(entry.id, entry.pick(getKit())[0]),
     build: () => {
       const [geometry, material, lift] = entry.pick(getKit());
       return kitMesh(geometry, material, lift ?? 0);

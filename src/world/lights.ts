@@ -54,7 +54,26 @@ export class LightPool {
     scene.add(this.dragonRim);
   }
 
+  /** Lights the editor has placed by hand. They are MERGED into every
+   *  assign() rather than added to the scene, because a changing scene light
+   *  count recompiles every pipeline in three's WebGPU forward path. Editor
+   *  lights take the last pool slots, so a hand-placed torch displaces a
+   *  generated one instead of costing a rebuild. */
+  private editorSpecs: LightSpec[] = [];
+
+  setEditorSpecs(specs: LightSpec[]): void {
+    this.editorSpecs = specs;
+    this.assign(this.generatedSpecs);
+  }
+
+  private generatedSpecs: LightSpec[] = [];
+
   assign(specs: LightSpec[]): void {
+    this.generatedSpecs = specs;
+    if (this.editorSpecs.length > 0) {
+      const room = Math.max(0, this.dynamicSize - this.editorSpecs.length);
+      specs = [...specs.slice(0, room), ...this.editorSpecs];
+    }
     this.specs = specs.slice(0, this.dynamicSize);
     for (let i = 0; i < this.dynamicSize; i++) {
       const pl = this.pool[i];

@@ -714,6 +714,7 @@ async function ensureEditor(): Promise<import("./editor").DungeonEditor> {
         cine.stop();
         void setDragonGizmoActive(false);
       },
+      setEditorLights: (specs) => ctx.lights.setEditorSpecs(specs),
       toast: (message) => flashRunToast(message),
     });
     editor = instance;

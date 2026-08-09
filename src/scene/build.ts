@@ -18,7 +18,7 @@ import {
   getSlot, putInstanced, putInstancedCombined, putInstancedTwin,
   isDecorSuppressed, setSlotDetail, setSlotLodLevel,
 } from "./slots";
-import { InstArena, InstList } from "./instances";
+import { InstArena, InstList, courseTarget } from "./instances";
 
 export interface LightSpec { x: number; y: number; z: number; color: number; base: number; dist: number; ph: number }
 
@@ -561,11 +561,10 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
       // the exposed top course needs a cap (and never a hidden bottom).
       const breachCourse = floorTier !== ABYSS
         && yMid > floorTier * TH && yMid < floorTier * TH + 2.65;
-      const topCourse = k === nCourses - 1 && !breachCourse;
-      const openCourse = k < nCourses - 1 && !breachCourse;
-      const target = topCourse ? blockTops : (openCourse || breachCourse) ? blockMids : blocks;
-      const targetBreaches = topCourse ? breachByTopInstance
-        : (openCourse || breachCourse) ? breachByMiddleInstance : breachByInstance;
+      const slot = courseTarget(k, nCourses, breachCourse);
+      const target = slot === "full" ? blocks : slot === "top" ? blockTops : blockMids;
+      const targetBreaches = slot === "full" ? breachByInstance
+        : slot === "top" ? breachByTopInstance : breachByMiddleInstance;
       const instanceId = target.count;
       target.pushY(cx + jx, yMid, cz + jz, (h1 - 0.5) * 0.065, s * handSx * sx, 1, s * handSz * sz, stoneColor);
       if (breachCourse) {

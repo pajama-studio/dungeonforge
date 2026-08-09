@@ -3,7 +3,7 @@
 
 import { describe, it, expect } from "vitest";
 import { Matrix4, Quaternion, Vector3, Euler } from "three";
-import { InstArena, InstList } from "./instances";
+import { InstArena, InstList, courseTarget } from "./instances";
 import { getSlot, putInstanced, putInstancedTwin } from "./slots";
 import * as THREE from "three/webgpu";
 
@@ -107,5 +107,42 @@ describe("instanced render-object twins", () => {
     geometry.dispose();
     sourceMaterial.dispose();
     twinMaterial.dispose();
+  });
+});
+
+describe("courseTarget", () => {
+  it("caps the topmost course", () => {
+    // A capless top course is a hole in the roof of the block.
+    expect(courseTarget(3, 4, false)).toBe("top");
+  });
+
+  it("uses the side-only mesh only for courses that are covered both ways", () => {
+    expect(courseTarget(0, 4, false)).toBe("middle");
+    expect(courseTarget(2, 4, false)).toBe("middle");
+  });
+
+  it("gives breach-band courses the closed mesh", () => {
+    // They can be exposed from any side once the wall around them opens, and
+    // they must collapse atomically, so they need the full box.
+    expect(courseTarget(1, 4, true)).toBe("full");
+  });
+
+  it("still closes a breach course that is also the topmost", () => {
+    // The regression: `topCourse = k === last && !breachCourse` meant a breach
+    // course at the top fell through to the side-only mesh and rendered with
+    // no lid at all.
+    expect(courseTarget(3, 4, true)).toBe("full");
+  });
+
+  it("caps a single-course column", () => {
+    expect(courseTarget(0, 1, false)).toBe("top");
+  });
+
+  it("never returns the side-only mesh for the last course", () => {
+    for (let n = 1; n <= 8; n++) {
+      for (const breach of [false, true]) {
+        expect(courseTarget(n - 1, n, breach)).not.toBe("middle");
+      }
+    }
   });
 });

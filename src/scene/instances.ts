@@ -119,3 +119,24 @@ export class InstArena {
     return list;
   }
 }
+
+
+/** Which masonry mesh a course belongs in.
+ *
+ *  Three geometries, and picking the wrong one shows through the wall:
+ *    - `full`   closed box, has a cap and an underside
+ *    - `top`    cap but no underside — safe only with masonry beneath
+ *    - `middle` sides only — safe only when capped above AND floored below
+ *
+ *  Breach-band courses go in the full mesh so a single impact collapses them
+ *  atomically, and because they can be exposed from any side once the wall
+ *  around them opens. The topmost course always needs a cap.
+ */
+export type CourseTarget = "full" | "top" | "middle";
+
+export function courseTarget(
+  k: number, courseCount: number, breachCourse: boolean,
+): CourseTarget {
+  if (breachCourse) return "full";
+  return k === courseCount - 1 ? "top" : "middle";
+}

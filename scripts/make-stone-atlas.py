@@ -190,6 +190,13 @@ def build(args: argparse.Namespace) -> dict:
     lo, hi = style["rough"]
     roughness = np.clip(lo + (1 - height) * (hi - lo) + moss * 0.06 - wear * 0.10, 0, 1)
 
+    # Centre the two maps the shader uses multiplicatively on 0.5, so it can
+    # modulate around 1.0 instead of darkening. Un-centred, the ruined albedo
+    # came out at mean 0.352 and the AO at 0.506, which multiplied the masonry
+    # by roughly a half — the scene going dark was arithmetic, not art.
+    albedo = np.clip(albedo * (0.5 / max(albedo.mean(), 1e-3)), 0, 1)
+    cavity = np.clip(cavity * (0.5 / max(cavity.mean(), 1e-3)), 0, 1)
+
     return {
         "albedo": (albedo * 255).astype(np.uint8),
         "normal": (normal * 255).astype(np.uint8),

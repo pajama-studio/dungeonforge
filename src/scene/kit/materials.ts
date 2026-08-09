@@ -87,6 +87,10 @@ export const stoneStyle = {
   /** Strength of the atlas-derived surface relief. This is what separates
    *  hand-carved stone from a machined bevel. */
   paintedRelief: uniform(1.0),
+  /** Contrast of the generated albedo and cavity, both centred on 1.0 so they
+   *  add surface without changing overall value. */
+  stoneDetail: uniform(0.85),
+  stoneCavity: uniform(0.55),
   // Texture-sampled fracture, separate from the noise-based `crack` above.
   // Driven from the layout's decay so one material covers pristine to ruined.
   damage: uniform(0.5),
@@ -591,8 +595,11 @@ export function makeStoneMat(
   // The generated set replaces the fine-grain image for surface character and
   // supplies its own cavity. handPaintedStoneFactor stays for the per-instance
   // value break-up that keeps a wall of identical bricks from reading as one.
-  const stoneAlbedo = sampleStone("albedo", stoneUv).rgb.mul(1.55).add(0.18);
-  const stoneAo = sampleStone("ao", stoneUv).r.mul(0.55).add(0.45);
+  // Modulate around 1.0, never below it on average. The maps are written
+  // centred on 0.5, so (s - 0.5) * k + 1 keeps the mean at unity whatever the
+  // style is, and the contrast is the only thing being chosen here.
+  const stoneAlbedo = sampleStone("albedo", stoneUv).rgb.sub(0.5).mul(stoneStyle.stoneDetail).add(1);
+  const stoneAo = sampleStone("ao", stoneUv).r.sub(0.5).mul(stoneStyle.stoneCavity).add(1);
   mat.colorNode = vec3(albedo)
     .mul(handPaintedStoneFactor(idf))
     .mul(stoneAlbedo)

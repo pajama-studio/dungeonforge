@@ -110,8 +110,11 @@ def masonry_block(variant: int) -> bpy.types.Object:
     obj = new_mesh(f"masonry-block-{variant}")
     bm = bmesh.new()
 
-    w, h, d = CELL * 1.02, COURSE * 1.02, CELL * 1.02
-    faces = box(bm, w, h, d)
+    # Blender is Z-up: height goes in sz. three.js BoxGeometry(x, y, z) puts
+    # height in y, and the glTF exporter rotates Z-up to Y-up on the way out,
+    # so authoring height in y here would export a course standing on edge.
+    w, d, h = CELL * 1.02, CELL * 1.02, COURSE * 1.02
+    faces = box(bm, w, d, h)
 
     # Chamfer every edge; the arris is what reads as cut stone at distance.
     bevel = 0.055 + 0.02 * variant
@@ -122,7 +125,7 @@ def masonry_block(variant: int) -> bpy.types.Object:
     # Recessed bed joint on the four upright faces: a shallow inset band at the
     # bottom, which is where mortar shadow lives on real coursed masonry.
     inset = 0.05 + 0.015 * variant
-    band = [f for f in bm.faces if abs(f.normal.z) < 0.3 and f.calc_center_median().z < -h * 0.22]
+    band = [f for f in bm.faces if abs(f.normal.z) < 0.3 and f.calc_center_median().z < -h * 0.18]
     if band:
         result = bmesh.ops.inset_individual(bm, faces=band, thickness=0.03, depth=-inset)
         del result
@@ -143,7 +146,7 @@ def block_cap() -> bpy.types.Object:
     """Wall head: a weathered coping course with a slight overhang."""
     obj = new_mesh("masonry-cap")
     bm = bmesh.new()
-    box(bm, CELL * 1.08, COURSE * 0.62, CELL * 1.08, at=(0, 0, 0))
+    box(bm, CELL * 1.08, CELL * 1.08, COURSE * 0.62, at=(0, 0, 0))
     bmesh.ops.bevel(bm, geom=list(bm.edges) + list(bm.verts), offset=0.075, segments=1, affect="EDGES")
     top = [f for f in bm.faces if f.normal.z > 0.85]
     if top:
@@ -156,11 +159,13 @@ def stair_step() -> bpy.types.Object:
     """One tread. Dimensions must match stepGeo or stairs stop meeting floors."""
     obj = new_mesh("stair-step")
     bm = bmesh.new()
-    box(bm, CELL * 1.0, TH / 4, CELL / 4 + 0.06)
+    # stepGeo is BoxGeometry(CELL, TH/4, CELL/4+0.06): height in y there,
+    # so depth and height swap for Z-up authoring.
+    box(bm, CELL * 1.0, CELL / 4 + 0.06, TH / 4)
     bmesh.ops.bevel(bm, geom=list(bm.edges) + list(bm.verts), offset=0.035, segments=1, affect="EDGES")
     # Worn nosing: the front top edge takes the traffic, so round it harder.
     front = [e for e in bm.edges
-             if all(v.co.y > (CELL / 8) * 0.55 for v in e.verts)
+             if all(v.co.y > ((CELL / 4 + 0.06) / 2) * 0.55 for v in e.verts)
              and all(v.co.z > (TH / 8) * 0.4 for v in e.verts)]
     if front:
         bmesh.ops.bevel(bm, geom=front, offset=0.05, segments=2, affect="EDGES")
@@ -172,10 +177,10 @@ def arch_voussoir() -> bpy.types.Object:
     """A single wedge of an arch ring. Tapered so a run of them closes a curve."""
     obj = new_mesh("arch-voussoir")
     bm = bmesh.new()
-    faces = box(bm, CELL * 0.42, COURSE * 0.95, CELL * 0.9)
+    faces = box(bm, CELL * 0.42, CELL * 0.9, COURSE * 0.95)
     # Taper the inner face to a wedge: scale the -z end in.
     for v in bm.verts:
-        if v.co.z < 0:
+        if v.co.y < 0:
             v.co.x *= 0.72
     bmesh.ops.bevel(bm, geom=list(bm.edges) + list(bm.verts), offset=0.04, segments=1, affect="EDGES")
     del faces
@@ -187,7 +192,7 @@ def bridge_plank() -> bpy.types.Object:
     """Rope-bridge decking. Thin, so it needs the bevel to catch any light."""
     obj = new_mesh("bridge-plank")
     bm = bmesh.new()
-    box(bm, 1.15, 0.085, 0.42)
+    box(bm, 1.15, 0.42, 0.085)
     bmesh.ops.bevel(bm, geom=list(bm.edges) + list(bm.verts), offset=0.018, segments=1, affect="EDGES")
     # Split the top face lengthwise so grain has somewhere to sit.
     top = [f for f in bm.faces if f.normal.z > 0.85]
@@ -201,7 +206,7 @@ def merlon() -> bpy.types.Object:
     """Rampart tooth."""
     obj = new_mesh("merlon")
     bm = bmesh.new()
-    box(bm, 0.72, 0.55, 0.72)
+    box(bm, 0.72, 0.72, 0.55)
     bmesh.ops.bevel(bm, geom=list(bm.edges) + list(bm.verts), offset=0.05, segments=1, affect="EDGES")
     finish(obj, bm)
     return obj

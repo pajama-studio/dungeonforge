@@ -12,6 +12,7 @@ import type { Layout, Dir } from "../gen/dungeon";
 import { FLOOR, WALL, VOID, ABYSS, DX, DY } from "../gen/dungeon";
 import { hash2, hash3 } from "../gen/rng";
 import { TH, CELL, COURSE, linkArc, districtLinkArc } from "../config";
+import { setStoneDamage } from "./kit/materials";
 import { getKit } from "./kit";
 import {
   getSlot, putInstanced, putInstancedCombined, putInstancedTwin,
@@ -384,6 +385,9 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   worldLists.reset();
   const list = (capacity = 64) => worldLists.take(capacity);
   const R = getKit();
+  // Point the texture-sampled fracture layer at this layout's decay, so the
+  // same shared material renders a pristine sanctum and a collapsed ossuary.
+  setStoneDamage(l.params?.decay ?? 0.5);
   const { N, kind, tier, wallTop, wallBase, support } = l;
   const gi = (x: number, y: number) => y * N + x;
   const worldCoord = new Float32Array(N);

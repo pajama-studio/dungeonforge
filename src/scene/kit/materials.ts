@@ -84,7 +84,15 @@ export const stoneStyle = {
   pits: uniform(0.07),
   crack: uniform(0.50),
   warmEdge: uniform(0.31),
+  // Texture-sampled fracture, separate from the noise-based `crack` above.
+  // Driven from the layout's decay so one material covers pristine to ruined.
+  damage: uniform(0.5),
 };
+
+/** Point the fracture layer at the generator's decay. Called once per forge. */
+export function setStoneDamage(decay: number): void {
+  stoneStyle.damage.value = Math.max(0, Math.min(1, decay));
+}
 
 // One 76 KB hand-painted albedo is shared by every masonry material. A neutral
 // 1×1 placeholder keeps startup I/O off the first-visible critical path; the
@@ -146,6 +154,50 @@ function handPaintedStoneFactor(stableId = instanceIndex.toFloat()): any {
   const painted = textureNode(activeHandPaintedStoneTexture, randomizedUv);
   handPaintedStoneNodes.push(painted as unknown as { value: THREE.Texture });
   return painted.rgb.mul(1.35).add(0.58);
+}
+
+/** Cracks and chipping, sampled from the same authored atlas at a much higher
+ *  frequency and thresholded to its dark veins.
+ *
+ *  The point is unlimited variation from one texture: each instance gets its
+ *  own swap/flip/scale/offset, exactly like handPaintedStoneFactor, but from a
+ *  different hash family so the crack pattern is uncorrelated with the stone
+ *  grain underneath. No crack atlas to author or ship, and no per-variant
+ *  geometry — a thousand blocks share one mesh and never repeat visibly.
+ *
+ *  `damage` is the generator's decay, so a pristine sanctum stays clean and a
+ *  collapsed ossuary shatters, from the same material.
+ */
+function crackFactor(stableId: any, damage: any): any {
+  const id = stableId;
+  const an = abs(normalLocal);
+  const useX = step(an.y, an.x).mul(step(an.z, an.x));
+  const useY = step(an.x, an.y).mul(step(an.z, an.y));
+  const xy = vec2(positionLocal.x, positionLocal.y);
+  const zy = vec2(positionLocal.z, positionLocal.y);
+  const xz = vec2(positionLocal.x, positionLocal.z);
+  // 3.1x the grain frequency: cracks are a finer feature than the brush planes,
+  // and the higher rate also decorrelates the two samples of the same image.
+  const projected = mix(mix(xy, zy, useX), xz, useY).mul(1.7);
+  const swap = step(0.5, hash(id.add(113.29)));
+  const swapped = mix(projected, vec2(projected.y, projected.x), swap);
+  const flipX = step(0.5, hash(id.add(127.41))).mul(2).sub(1);
+  const flipY = step(0.5, hash(id.add(151.07))).mul(2).sub(1);
+  const scaleJitter = hash(id.add(163.93)).mul(0.55).add(0.75);
+  const offset = vec2(hash(id.add(179.11)), hash(id.add(191.57)));
+  const uv = swapped.mul(vec2(flipX, flipY)).mul(scaleJitter).add(offset);
+
+  const sampled = textureNode(activeHandPaintedStoneTexture, uv);
+  handPaintedStoneNodes.push(sampled as unknown as { value: THREE.Texture });
+
+  // Keep only the dark tail of the atlas as fracture. smoothstep's edges set
+  // how much of the image counts as a crack; widening them with damage is what
+  // makes the same block read as chipped or shattered.
+  const luma = sampled.r.mul(0.34).add(sampled.g.mul(0.5)).add(sampled.b.mul(0.16));
+  const bite = damage.mul(0.34).add(0.06);
+  const crack = smoothstep(bite.add(0.16), bite.sub(0.02), luma);
+  // Darken into the fracture rather than lightening: a crack is a shadow.
+  return float(1).sub(crack.mul(damage).mul(0.62));
 }
 
 /** Hero-landmark version of the same authored surface. It avoids instanceIndex
@@ -348,7 +400,10 @@ export function makeStoneMat(
   // The generated target used a restrained ochre dry-brush on worn arrises.
   // A single tunable vector accent captures that cue without a texture fetch.
   const warmEdge = vec3(0.11, 0.045, -0.018).mul(wear).mul(stoneStyle.warmEdge);
-  mat.colorNode = vec3(albedo).mul(handPaintedStoneFactor(idf)).add(warmEdge);
+  mat.colorNode = vec3(albedo)
+    .mul(handPaintedStoneFactor(idf))
+    .mul(crackFactor(idf, stoneStyle.damage))
+    .add(warmEdge);
   return mat;
 }
 

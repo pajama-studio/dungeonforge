@@ -11,7 +11,7 @@ import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
 import { CCDIKSolver } from "three/addons/animation/CCDIKSolver.js";
 import {
   color, uv, smoothstep, sin, time, mix, float, vec3, positionLocal, length,
-  triNoise3D,
+  triNoise3D, positionWorld,
 } from "three/tsl";
 import { hash2 } from "../gen/rng";
 import { ABYSS } from "../gen/dungeon";
@@ -54,6 +54,26 @@ function makeEyeFireMat(
 /** Bioluminescent water for the abyss basin: flat additive discs whose
  *  radial falloff is rippled by slow noise, so the floor reads as glowing
  *  water lapping the statue base and pooling under the maze (painted ref). */
+/** A drifting current, sampled in WORLD space.
+ *
+ *  UV space was the bug: these sheets are scaled past 200 units, so a 0–1 UV
+ *  made one enormous feature that pulsed in place instead of flowing.
+ *  Sampling world XZ gives ripples a real size whatever the disc's scale, and
+ *  offsetting each wave by the one before it (domain warping) bends the bands
+ *  into something that reads as moving water rather than sliding stripes.
+ *
+ *  Three sines per layer, not triNoise3D: this surface covers a large part of
+ *  the frame, and the ground-fog raymarch already taught us what ~180 ops per
+ *  fragment costs on a near-fullscreen pass. Returns roughly [-1, 1]. */
+function waterFlow(scale: number, speed: number, warp: number) {
+  const p = positionWorld.xz.mul(scale);
+  const bend = sin(p.x.mul(0.61).sub(p.y.mul(0.43)).add(time.mul(speed * 0.6))).mul(warp);
+  const a = sin(p.x.add(bend).add(time.mul(speed)));
+  const b = sin(p.y.mul(1.13).add(bend).sub(time.mul(speed * 0.78)));
+  const c = sin(p.x.add(p.y).mul(0.57).add(time.mul(speed * 0.41)));
+  return a.add(b).add(c).mul(1 / 3);
+}
+
 function makeAbyssPoolMat(): THREE.MeshBasicNodeMaterial {
   // Pure additive glow ACCENT layered on the basin water body. There must be
   // exactly ONE dark normal-blended sheet (the basin): a second one overlaps
@@ -63,9 +83,14 @@ function makeAbyssPoolMat(): THREE.MeshBasicNodeMaterial {
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
   });
   const fall = smoothstep(1.0, 0.06, length(uv().sub(0.5)).mul(2));
-  const ripple = triNoise3D(vec3(uv().mul(3.2), 0.7), 0.18, time).mul(0.42).add(0.72);
-  // peaks reach past the bloom threshold, so the water genuinely GLOWS
-  mat.colorNode = color(0x1fd4b4).mul(fall.pow(1.8)).mul(ripple).mul(3.0);
+  const field = waterFlow(0.05, 0.32, 0.9).mul(0.62)
+    .add(waterFlow(0.15, 0.62, 1.5).mul(0.38));
+  const shimmer = field.mul(0.5).add(0.5);
+  // a sharp vein carries the actual glow; it crosses the bloom threshold
+  const veins = smoothstep(0.60, 0.82, shimmer);
+  mat.colorNode = color(0x1fd4b4).mul(shimmer.mul(1.1))
+    .add(color(0x9dffe8).mul(veins).mul(1.9))
+    .mul(fall.pow(1.6));
   mat.opacityNode = fall.mul(0.9);
   return mat;
 }
@@ -80,10 +105,23 @@ function makeAbyssBasinMat(): THREE.MeshBasicNodeMaterial {
     transparent: true, depthWrite: false,
   });
   const fall = smoothstep(1.0, 0.1, length(uv().sub(0.5)).mul(2));
-  const blooms = triNoise3D(vec3(uv().mul(2.6), 0.4), 0.12, time);
-  const patch = smoothstep(0.28, 0.78, blooms).mul(0.85).add(0.16);
-  // bright blooms cross 1.0 and halo; the dark water between them stays dark
-  mat.colorNode = color(0x13836f).mul(patch).mul(2.4)
+  // Three layers at different scales and drift rates. The slowest is the
+  // tide the eye reads as "this is moving"; the fastest breaks the bands up
+  // so it never looks like sliding wallpaper.
+  const tide = waterFlow(0.018, 0.11, 0.7);
+  const swell = waterFlow(0.055, 0.24, 1.1);
+  const fine = waterFlow(0.17, 0.46, 1.6);
+  const field = tide.mul(0.46).add(swell.mul(0.36)).add(fine.mul(0.18));
+  const level = field.mul(0.5).add(0.5);
+  // Thresholds follow where the signal actually lives: three averaged sines
+  // pile up around 0.5 ± 0.18, so a mask starting at 0.8 catches nothing and
+  // the sheet goes flat black. Narrow and bright beats wide and bright —
+  // wide masks bloom into each other and read as mist, and it is the dark
+  // water BETWEEN the veins that makes this look like a surface at all.
+  const bloomMask = smoothstep(0.42, 0.68, level);
+  const veins = smoothstep(0.63, 0.82, level);
+  mat.colorNode = color(0x13836f).mul(bloomMask).mul(1.7)
+    .add(color(0x86ffe0).mul(veins).mul(2.0))
     .add(color(0x04201c));
   mat.opacityNode = fall.mul(0.92);
   return mat;
@@ -97,8 +135,10 @@ function makeAbyssShoreMat(): THREE.MeshBasicNodeMaterial {
   });
   const r = length(uv().sub(0.5)).mul(2);
   const band = smoothstep(0.74, 0.87, r).mul(smoothstep(1.0, 0.94, r));
-  const shimmer = triNoise3D(vec3(uv().mul(6.2), 1.7), 0.3, time).mul(0.5).add(0.7);
-  mat.colorNode = color(0x3af2cf).mul(band).mul(shimmer).mul(3.4);
+  // the shoreline rides the same current as the water it edges, so the two
+  // never look like separate effects laid on top of each other
+  const wash = waterFlow(0.22, 0.7, 1.8).mul(0.4).add(0.75);
+  mat.colorNode = color(0x3af2cf).mul(band).mul(wash).mul(3.4);
   mat.opacityNode = band.mul(0.9);
   return mat;
 }

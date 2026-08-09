@@ -146,3 +146,28 @@ describe("courseTarget", () => {
     }
   });
 });
+
+describe("courseTarget bottom exposure", () => {
+  it("closes the lowest course when it hangs over the void", () => {
+    // The open meshes drop their bottom cap, so an exposed underside is a
+    // window straight up the inside of the column.
+    expect(courseTarget(0, 5, false, true)).toBe("full");
+  });
+
+  it("leaves the lowest course open when something is under it", () => {
+    expect(courseTarget(0, 5, false, false)).toBe("middle");
+  });
+
+  it("still caps the top of an exposed single-course column", () => {
+    expect(courseTarget(0, 1, false, true)).toBe("full");
+  });
+
+  it("never leaves an exposed column open at both ends", () => {
+    for (let n = 1; n <= 8; n++) {
+      const bottom = courseTarget(0, n, false, true);
+      const top = courseTarget(n - 1, n, false, true);
+      expect(bottom).not.toBe("top");    // "top" has no underside
+      expect(top).not.toBe("middle");    // "middle" has no cap
+    }
+  });
+});

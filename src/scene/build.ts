@@ -561,7 +561,9 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
       // the exposed top course needs a cap (and never a hidden bottom).
       const breachCourse = floorTier !== ABYSS
         && yMid > floorTier * TH && yMid < floorTier * TH + 2.65;
-      const slot = courseTarget(k, nCourses, breachCourse);
+      // The lowest course needs its underside when the column hangs over the
+      // void; wallBase is ABYSS exactly then.
+      const slot = courseTarget(k, nCourses, breachCourse, wallBase[cell] === ABYSS);
       const target = slot === "full" ? blocks : slot === "top" ? blockTops : blockMids;
       const targetBreaches = slot === "full" ? breachByInstance
         : slot === "top" ? breachByTopInstance : breachByMiddleInstance;

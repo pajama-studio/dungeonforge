@@ -131,12 +131,19 @@ export class InstArena {
  *  Breach-band courses go in the full mesh so a single impact collapses them
  *  atomically, and because they can be exposed from any side once the wall
  *  around them opens. The topmost course always needs a cap.
+ *
+ *  `bottomExposed` closes the lowest course. The open geometries drop their
+ *  bottom cap to save 46 of 68 triangles, which assumes nothing ever sees the
+ *  underside — true for masonry standing on ground, false for a fortress
+ *  floating over the abyss. Looking up at one of those, every hollow course is
+ *  a window and you see straight up the inside of the column.
  */
 export type CourseTarget = "full" | "top" | "middle";
 
 export function courseTarget(
-  k: number, courseCount: number, breachCourse: boolean,
+  k: number, courseCount: number, breachCourse: boolean, bottomExposed = false,
 ): CourseTarget {
   if (breachCourse) return "full";
+  if (bottomExposed && k === 0) return "full";
   return k === courseCount - 1 ? "top" : "middle";
 }

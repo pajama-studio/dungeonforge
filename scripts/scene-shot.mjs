@@ -35,8 +35,10 @@ const framed = await page.evaluate(() => {
   if (!df?.camera || !df?.controls) return false;
   df.controls.autoRotate = false;
   df.controls.enabled = false;
-  df.camera.position.set(6.5, 5.2, 12.0);
-  df.controls.target.set(0.5, 3.4, 0.5);
+  // Underside view: the failure only shows when looking up at a mass that
+  // overhangs the abyss.
+  df.camera.position.set(8.0, -6.5, 14.0);
+  df.controls.target.set(0.0, 6.0, 0.0);
   df.camera.lookAt(df.controls.target);
   df.controls.update?.();
   return true;

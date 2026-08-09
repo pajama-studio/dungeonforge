@@ -130,6 +130,36 @@ export function openCourseGeometry(
   return geometry;
 }
 
+/** Mirror of openChamferSlabGeometry: bottom cap plus the vertical ring, no
+ *  top. Needed by the column planner for a course that has masonry above it
+ *  but open air below — the case that produced see-through banding when the
+ *  only options were "sealed", "capped" and "open at both ends".
+ */
+export function openBaseGeometry(
+  width: number, height: number, depth: number, bevel: number,
+): THREE.BufferGeometry {
+  const source = openChamferSlabGeometry(width, height, depth, bevel);
+  const position = source.getAttribute("position") as THREE.BufferAttribute;
+  const normal = source.getAttribute("normal") as THREE.BufferAttribute;
+  // Flip through the XZ plane, then reverse winding so faces still point out.
+  for (let i = 0; i < position.count; i++) {
+    position.setY(i, -position.getY(i));
+    normal.setY(i, -normal.getY(i));
+  }
+  for (let i = 0; i < position.count; i += 3) {
+    for (const attr of [position, normal]) {
+      const ax = attr.getX(i + 1), ay = attr.getY(i + 1), az = attr.getZ(i + 1);
+      attr.setXYZ(i + 1, attr.getX(i + 2), attr.getY(i + 2), attr.getZ(i + 2));
+      attr.setXYZ(i + 2, ax, ay, az);
+    }
+  }
+  position.needsUpdate = true;
+  normal.needsUpdate = true;
+  source.computeBoundingBox();
+  source.computeBoundingSphere();
+  return source;
+}
+
 /** A floor slab only exposes its chamfered top and outer vertical ring. The
  * old general-purpose chamfer box spent 46 of 68 triangles on a sealed bottom
  * and corner/cap planes hidden inside supporting masonry. */
@@ -269,6 +299,7 @@ export interface GeoKit {
   blockGeoLo: THREE.BufferGeometry;
   blockMiddleGeo: THREE.BufferGeometry;
   blockTopGeo: THREE.BufferGeometry;
+  blockBaseGeo: THREE.BufferGeometry;
   debrisGeo: THREE.BufferGeometry;
   tileGeo: THREE.BufferGeometry;
   tileGeoLo: THREE.BufferGeometry;
@@ -539,6 +570,7 @@ export function makeGeometries(): GeoKit {
     blockGeoLo: shadeFaces(new THREE.BoxGeometry(CELL * 1.02, COURSE * 1.02, CELL * 1.02)),
     blockMiddleGeo: shadeFaces(openCourseGeometry(CELL * 1.02, COURSE * 1.02, CELL * 1.02, 0.11)),
     blockTopGeo: shadeFaces(openChamferSlabGeometry(CELL * 1.02, COURSE * 1.02, CELL * 1.02, 0.11)),
+    blockBaseGeo: shadeFaces(openBaseGeometry(CELL * 1.02, COURSE * 1.02, CELL * 1.02, 0.11)),
     debrisGeo: fracturedBlockGeometry(CELL * 1.02, COURSE * 1.02, CELL * 1.02),
     tileGeo: shadeFaces(openChamferSlabGeometry(CELL * 0.985, 0.15, CELL * 0.985, 0.065)),
     tileGeoLo: shadeFaces(new THREE.BoxGeometry(CELL * 0.985, 0.15, CELL * 0.985)),

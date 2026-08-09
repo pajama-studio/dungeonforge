@@ -18,7 +18,7 @@ import {
   getSlot, putInstanced, putInstancedCombined, putInstancedTwin,
   isDecorSuppressed, setSlotDetail, setSlotLodLevel,
 } from "./slots";
-import { InstArena, InstList, courseTarget } from "./instances";
+import { InstArena, InstList, planColumn, type CourseShell } from "./instances";
 
 export interface LightSpec { x: number; y: number; z: number; color: number; base: number; dist: number; ph: number }
 
@@ -424,6 +424,7 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   const blocks = list(N * N * 2);
   const blockMids = list(N * N * 3);
   const blockTops = list(N * N);
+  const blockBases = list(N * N);
   const blocksLow = list(N * N);
   const merlons = list(N * 4);
   const architecturalBays = list(N * 3);
@@ -488,6 +489,7 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   const breachByInstance = new Map<number, MasonryBreachCell>();
   const breachByMiddleInstance = new Map<number, MasonryBreachCell>();
   const breachByTopInstance = new Map<number, MasonryBreachCell>();
+  const breachByBaseInstance = new Map<number, MasonryBreachCell>();
   let masonryPotential = 0;
   let masonryInteriorCulled = 0;
   let masonryDoorCulled = 0;
@@ -526,25 +528,46 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
     const occlH = occlTier[cell] * TH;
     // occlTier is a purely horizontal test — the minimum height at which all
     // four neighbours hide this column's flanks. It has no concept of "below",
-    // so for a mass overhanging the abyss it happily culls the very course
-    // whose sealed underside is the only thing standing between the camera and
-    // the hollow inside of the column.
+    // so a mass overhanging the abyss needs its lowest course sealed.
     const bottomExposed = wallBase[cell] === ABYSS;
+    const courseY0 = (k: number) => baseTier * TH + k * COURSE;
+    const inDoorGap = (k: number): boolean => {
+      if (!doorCell || !l.door) return false;
+      const yMid = courseY0(k) + COURSE / 2;
+      return yMid > l.door.tier * TH && yMid < l.door.tier * TH + 2.6;
+    };
+    const breachAt = (k: number): boolean => {
+      const floorTier = breachTier[cell];
+      if (floorTier === ABYSS) return false;
+      const yMid = courseY0(k) + COURSE / 2;
+      return yMid > floorTier * TH && yMid < floorTier * TH + 2.65;
+    };
+    // One decision for the whole column, so a course can never be left with a
+    // missing face because something else removed its neighbour.
+    const column = planColumn({
+      courseCount: nCourses,
+      removed: (k) => {
+        if (inDoorGap(k)) return true;
+        if (!interiorCullEnabled) return false;
+        if (breachAt(k)) return false;
+        if (bottomExposed && k === 0) return false;
+        return k < nCourses - 1 && courseY0(k) + COURSE <= occlH - 0.01;
+      },
+      sealed: (k) => breachAt(k) || DEBUG_CLOSED_COURSES,
+      // A boundary below the occlusion height is hidden by the neighbours, so
+      // it needs no geometry even when the adjacent course is gone.
+      boundaryVisible: (k) => courseY0(k) > occlH - 0.01,
+      bottomExposed,
+    });
     for (let k = 0; k < nCourses; k++) {
       masonryPotential++;
       const y0 = baseTier * TH + k * COURSE;
       const yMid = y0 + COURSE / 2;
-      if (interiorCullEnabled && k < nCourses - 1 && !(bottomExposed && k === 0)
-          && y0 + COURSE <= occlH - 0.01) {
-        masonryInteriorCulled++;
-        continue; // fully hidden
-      }
-      if (doorCell && l.door) {
-        const gapLo = l.door.tier * TH, gapHi = l.door.tier * TH + 2.6;
-        if (yMid > gapLo && yMid < gapHi) {
-          masonryDoorCulled++;
-          continue; // doorway gap (lintel above survives)
-        }
+      const planned = column[k];
+      if (!planned.render) {
+        if (inDoorGap(k)) masonryDoorCulled++;
+        else masonryInteriorCulled++;
+        continue;
       }
       const h1 = hash3(seed, x * 131 + y, k, 1);
       const h2v = hash3(seed, x * 131 + y, k, 2);
@@ -575,17 +598,15 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
       const s = scaleXZ * cornice;
       const handSx = 0.965 + h1 * 0.07;
       const handSz = 0.965 + h3v * 0.07;
+      const breachCourse = breachAt(k);
       const floorTier = breachTier[cell];
-      // Keep a passage band's companion courses in the same full source mesh:
-      // a single impact can collapse them atomically. Ordinary lower courses
-      // have masonry beneath them, so they join the open side-only pool; only
-      // the exposed top course needs a cap (and never a hidden bottom).
-      const breachCourse = floorTier !== ABYSS
-        && yMid > floorTier * TH && yMid < floorTier * TH + 2.65;
-      const slot = courseTarget(k, nCourses, breachCourse, bottomExposed);
-      const target = slot === "full" ? blocks : slot === "top" ? blockTops : blockMids;
-      const targetBreaches = slot === "full" ? breachByInstance
-        : slot === "top" ? breachByTopInstance : breachByMiddleInstance;
+      const shell: CourseShell = planned.shell;
+      const target = shell === "full" ? blocks
+        : shell === "top" ? blockTops
+        : shell === "base" ? blockBases : blockMids;
+      const targetBreaches = shell === "full" ? breachByInstance
+        : shell === "top" ? breachByTopInstance
+        : shell === "base" ? breachByBaseInstance : breachByMiddleInstance;
       const instanceId = target.count;
       target.pushY(cx + jx, yMid, cz + jz, (h1 - 0.5) * 0.065, s * handSx * sx, 1, s * handSz * sz, stoneColor);
       if (breachCourse) {
@@ -1524,6 +1545,7 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   putInstanced(pool, "blocks", R.blockGeo, R.stoneMat, blocks);
   putInstanced(pool, "blockMids", DEBUG_CLOSED_COURSES ? R.blockGeo : R.blockMiddleGeo, R.stoneMat, blockMids);
   putInstanced(pool, "blockTops", DEBUG_CLOSED_COURSES ? R.blockGeo : R.blockTopGeo, R.stoneMat, blockTops);
+  putInstanced(pool, "blockBases", DEBUG_CLOSED_COURSES ? R.blockGeo : R.blockBaseGeo, R.stoneMat, blockBases);
   (pool.meshes.get("blocks")!.userData as {
     masonryCull?: { potential: number; interior: number; authoredGaps: number; emitted: number };
   }).masonryCull = {
@@ -1561,6 +1583,7 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   putInstancedTwin(pool, "blockMidsFade", "blockMids", R.blockGeo, R.stoneFadeMat, false);
   putInstancedTwin(pool, "blockMidsLoFade", "blockMidsLo", R.blockGeoLo, R.stoneLoFadeMat, false);
   putInstancedTwin(pool, "blockTopsFade", "blockTops", R.blockGeo, R.stoneFadeMat, false);
+  putInstancedTwin(pool, "blockBasesFade", "blockBases", R.blockGeo, R.stoneFadeMat, false);
   putInstancedTwin(pool, "blockTopsLoFade", "blockTopsLo", R.blockGeoLo, R.stoneLoFadeMat, false);
   pool.meshes.get("blocksFade")!.count = 0;
   pool.meshes.get("blocksMidLoFade")!.count = 0;

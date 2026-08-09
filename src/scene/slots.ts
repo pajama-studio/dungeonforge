@@ -454,6 +454,8 @@ function applyArchitectureVisibility(p: SlotPool): void {
   setCount(p, "blockMidsLo", !faded && middle);
   setCount(p, "blockMidsFade", faded && high);
   setCount(p, "blockMidsLoFade", faded && middle);
+  setCount(p, "blockBases", !faded && high);
+  setCount(p, "blockBasesFade", faded && high);
   setCount(p, "blockTops", !faded && high);
   setCount(p, "blockTopsLo", !faded && middle);
   setCount(p, "blockTopsFade", faded && high);

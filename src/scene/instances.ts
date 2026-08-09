@@ -123,27 +123,78 @@ export class InstArena {
 
 /** Which masonry mesh a course belongs in.
  *
- *  Three geometries, and picking the wrong one shows through the wall:
- *    - `full`   closed box, has a cap and an underside
- *    - `top`    cap but no underside — safe only with masonry beneath
- *    - `middle` sides only — safe only when capped above AND floored below
+ *  Four shells, chosen by which faces are actually exposed:
+ *    - `open`   sides only            — enclosed above and below
+ *    - `top`    sides + cap           — open air above
+ *    - `base`   sides + floor         — open air below
+ *    - `full`   sealed box            — open air both ways, or translucent
  *
- *  Breach-band courses go in the full mesh so a single impact collapses them
- *  atomically, and because they can be exposed from any side once the wall
- *  around them opens. The topmost course always needs a cap.
- *
- *  `bottomExposed` closes the lowest course. The open geometries drop their
- *  bottom cap to save 46 of 68 triangles, which assumes nothing ever sees the
- *  underside — true for masonry standing on ground, false for a fortress
- *  floating over the abyss. Looking up at one of those, every hollow course is
- *  a window and you see straight up the inside of the column.
+ *  The previous design assumed a course's position in the column implied its
+ *  enclosure: last one gets a cap, everything else is open. That is only true
+ *  while nothing else removes courses. Five things do — the occlusion cull,
+ *  doorway gaps, destruction breaches, LOD tier swaps and the reveal window —
+ *  and each one leaves a neighbour with a face it no longer has. Hence
+ *  see-through banding that four separate patches could not fix, because the
+ *  bug was the assumption rather than any single rule.
  */
-export type CourseTarget = "full" | "top" | "middle";
+export type CourseShell = "open" | "top" | "base" | "full";
 
-export function courseTarget(
-  k: number, courseCount: number, breachCourse: boolean, bottomExposed = false,
-): CourseTarget {
-  if (breachCourse) return "full";
-  if (bottomExposed && k === 0) return "full";
-  return k === courseCount - 1 ? "top" : "middle";
+export interface CoursePlan {
+  /** false when the course is culled and emits nothing at all. */
+  render: boolean;
+  shell: CourseShell;
+}
+
+export interface ColumnSpec {
+  courseCount: number;
+  /** Course is removed entirely — occlusion cull, doorway gap, breach. */
+  removed: (k: number) => boolean;
+  /** Course must stay sealed regardless of neighbours: breach bands (they can
+   *  be exposed from any side once the wall opens) and anything drawn with the
+   *  translucent reveal material. */
+  sealed?: (k: number) => boolean;
+  /** True when a face at this course boundary could actually be seen. Lets the
+   *  occlusion cull's own conclusion carry over: if a neighbour was dropped
+   *  because it sits below the occlusion height, the face between them is
+   *  hidden too and does not need geometry. Boundary k is below course k. */
+  boundaryVisible?: (k: number) => boolean;
+  /** Underside of the whole column faces the void. */
+  bottomExposed?: boolean;
+}
+
+/** Decide render and shell for every course in one column.
+ *
+ *  Pure and total: same spec in, same plan out, and every rendered course is
+ *  guaranteed a face wherever its neighbour is missing. */
+export function planColumn(spec: ColumnSpec): CoursePlan[] {
+  const { courseCount, removed, sealed, boundaryVisible, bottomExposed = false } = spec;
+  const visible = boundaryVisible ?? (() => true);
+
+  const rendered: boolean[] = [];
+  for (let k = 0; k < courseCount; k++) rendered[k] = !removed(k);
+
+  const plan: CoursePlan[] = [];
+  for (let k = 0; k < courseCount; k++) {
+    if (!rendered[k]) {
+      plan.push({ render: false, shell: "open" });
+      continue;
+    }
+    if (sealed?.(k)) {
+      plan.push({ render: true, shell: "full" });
+      continue;
+    }
+    // A cap is needed when nothing renders directly above and that boundary
+    // can be seen. Same for a floor, with the column's underside as the case
+    // below course zero.
+    const aboveMissing = k + 1 >= courseCount || !rendered[k + 1];
+    const belowMissing = k === 0 ? bottomExposed : !rendered[k - 1];
+    const needCap = aboveMissing && visible(k + 1);
+    const needFloor = belowMissing && (k === 0 ? bottomExposed : visible(k));
+
+    plan.push({
+      render: true,
+      shell: needCap && needFloor ? "full" : needCap ? "top" : needFloor ? "base" : "open",
+    });
+  }
+  return plan;
 }

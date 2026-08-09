@@ -3,7 +3,7 @@
 
 import { describe, it, expect } from "vitest";
 import { Matrix4, Quaternion, Vector3, Euler } from "three";
-import { InstArena, InstList, courseTarget } from "./instances";
+import { InstArena, InstList, planColumn } from "./instances";
 import { getSlot, putInstanced, putInstancedTwin } from "./slots";
 import * as THREE from "three/webgpu";
 
@@ -110,64 +110,79 @@ describe("instanced render-object twins", () => {
   });
 });
 
-describe("courseTarget", () => {
+describe("planColumn", () => {
+  const plain = (courseCount: number, over: Partial<Parameters<typeof planColumn>[0]> = {}) =>
+    planColumn({ courseCount, removed: () => false, ...over });
+
+  it("opens every course that is enclosed both ways", () => {
+    const plan = plain(4);
+    expect(plan.slice(0, 3).map((p) => p.shell)).toEqual(["open", "open", "open"]);
+  });
+
   it("caps the topmost course", () => {
-    // A capless top course is a hole in the roof of the block.
-    expect(courseTarget(3, 4, false)).toBe("top");
+    expect(plain(4)[3].shell).toBe("top");
   });
 
-  it("uses the side-only mesh only for courses that are covered both ways", () => {
-    expect(courseTarget(0, 4, false)).toBe("middle");
-    expect(courseTarget(2, 4, false)).toBe("middle");
+  it("seals a single course that hangs in the air", () => {
+    // Nothing above and nothing below: it needs both faces.
+    expect(plain(1, { bottomExposed: true })[0].shell).toBe("full");
   });
 
-  it("gives breach-band courses the closed mesh", () => {
-    // They can be exposed from any side once the wall around them opens, and
-    // they must collapse atomically, so they need the full box.
-    expect(courseTarget(1, 4, true)).toBe("full");
+  it("floors the lowest course when the column overhangs the void", () => {
+    const plan = plain(4, { bottomExposed: true });
+    expect(plan[0].shell).toBe("base");
+    expect(plan[3].shell).toBe("top");
   });
 
-  it("still closes a breach course that is also the topmost", () => {
-    // The regression: `topCourse = k === last && !breachCourse` meant a breach
-    // course at the top fell through to the side-only mesh and rendered with
-    // no lid at all.
-    expect(courseTarget(3, 4, true)).toBe("full");
+  it("gives the course above a doorway gap a floor", () => {
+    // The regression that four patches missed: removing a course mid-column
+    // leaves its neighbours with faces they do not have.
+    const plan = plain(6, { removed: (k) => k === 2 });
+    expect(plan[2].render).toBe(false);
+    expect(plan[3].shell).toBe("base"); // open air below it now
+    expect(plan[1].shell).toBe("top");  // open air above it now
   });
 
-  it("caps a single-course column", () => {
-    expect(courseTarget(0, 1, false)).toBe("top");
+  it("seals a course isolated on both sides", () => {
+    const plan = plain(5, { removed: (k) => k === 1 || k === 3 });
+    expect(plan[2].shell).toBe("full");
   });
 
-  it("never returns the side-only mesh for the last course", () => {
-    for (let n = 1; n <= 8; n++) {
-      for (const breach of [false, true]) {
-        expect(courseTarget(n - 1, n, breach)).not.toBe("middle");
+  it("keeps breach bands sealed regardless of neighbours", () => {
+    const plan = plain(5, { sealed: (k) => k === 2 });
+    expect(plan[2].shell).toBe("full");
+  });
+
+  it("skips faces at boundaries the occlusion cull proved hidden", () => {
+    // If a neighbour was dropped because it sits below the occlusion height,
+    // the shared boundary is hidden too and needs no geometry.
+    const plan = planColumn({
+      courseCount: 4,
+      removed: (k) => k === 0,
+      boundaryVisible: (k) => k > 1,
+    });
+    expect(plan[1].shell).toBe("open"); // boundary 1 hidden, so no floor
+  });
+
+  it("never leaves a rendered course missing a face it needs", () => {
+    // Exhaustive over small columns and every removal pattern.
+    for (let n = 1; n <= 6; n++) {
+      for (let mask = 0; mask < (1 << n); mask++) {
+        for (const bottomExposed of [false, true]) {
+          const removed = (k: number) => (mask & (1 << k)) !== 0;
+          const plan = planColumn({ courseCount: n, removed, bottomExposed });
+          for (let k = 0; k < n; k++) {
+            if (!plan[k].render) continue;
+            const aboveMissing = k + 1 >= n || removed(k + 1);
+            const belowMissing = k === 0 ? bottomExposed : removed(k - 1);
+            const shell = plan[k].shell;
+            const hasCap = shell === "top" || shell === "full";
+            const hasFloor = shell === "base" || shell === "full";
+            if (aboveMissing) expect(hasCap, `n=${n} mask=${mask} k=${k} needs cap`).toBe(true);
+            if (belowMissing) expect(hasFloor, `n=${n} mask=${mask} k=${k} needs floor`).toBe(true);
+          }
+        }
       }
-    }
-  });
-});
-
-describe("courseTarget bottom exposure", () => {
-  it("closes the lowest course when it hangs over the void", () => {
-    // The open meshes drop their bottom cap, so an exposed underside is a
-    // window straight up the inside of the column.
-    expect(courseTarget(0, 5, false, true)).toBe("full");
-  });
-
-  it("leaves the lowest course open when something is under it", () => {
-    expect(courseTarget(0, 5, false, false)).toBe("middle");
-  });
-
-  it("still caps the top of an exposed single-course column", () => {
-    expect(courseTarget(0, 1, false, true)).toBe("full");
-  });
-
-  it("never leaves an exposed column open at both ends", () => {
-    for (let n = 1; n <= 8; n++) {
-      const bottom = courseTarget(0, n, false, true);
-      const top = courseTarget(n - 1, n, false, true);
-      expect(bottom).not.toBe("top");    // "top" has no underside
-      expect(top).not.toBe("middle");    // "middle" has no cap
     }
   });
 });

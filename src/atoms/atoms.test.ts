@@ -212,3 +212,36 @@ describe("placement against a real layout", () => {
     }
   });
 });
+
+describe("the shipped library", () => {
+  beforeEach(clearAtoms);
+
+  it("installs without duplicate ids and covers every StoryRole", async () => {
+    const { ATOMS, installAtoms } = await import("./catalog");
+    installAtoms();
+
+    const roles = ["threshold", "archive", "ossuary", "forge", "pilgrim", "overgrowth", "sanctum"] as const;
+    for (const role of roles) {
+      const picked = resolve("role-dressing", { role, decay: 0.5, tier: 0, hash: 0.5 });
+      expect(picked, `no atom for role ${role}`).not.toBeNull();
+      expect(picked!.def.roles).toContain(role);
+    }
+    expect(ATOMS.length).toBeGreaterThanOrEqual(roles.length * 2);
+  });
+
+  it("is idempotent, so hot reload does not take the scene down", async () => {
+    const { installAtoms } = await import("./catalog");
+    installAtoms();
+    expect(() => installAtoms()).not.toThrow();
+  });
+
+  it("still dresses a pristine dungeon, where decay-gated atoms drop out", async () => {
+    const { installAtoms } = await import("./catalog");
+    installAtoms();
+    // decay 0 excludes the collapsed bookcase and the slag heap; every role
+    // must still have something to place or those districts render bare.
+    for (const role of ["archive", "forge"] as const) {
+      expect(resolve("role-dressing", { role, decay: 0, tier: 0, hash: 0.5 })).not.toBeNull();
+    }
+  });
+});

@@ -257,7 +257,24 @@ export function buildEnvironment(
   indexedAperture.dispose();
   apertureGeometry.computeVertexNormals();
   apertureGeometry.computeBoundingSphere();
-  const apertureMaterial = new THREE.MeshLambertNodeMaterial({ vertexColors: true, side: THREE.DoubleSide });
+  // Invisible to the camera, still a shadow caster. This lid's entire job is
+  // to block the moon everywhere except the hole — it is the physical cause
+  // of the shaft, not scenery. Rendered opaque it is a 600-unit slab at
+  // y≈400 that swings across frame whenever the camera rises, which is
+  // exactly the "big thing blocking the view" the orbit hits.
+  //
+  // DEPENDENCY: three still draws this into the shadow map despite opacity 0
+  // (the shadow pass uses its own depth material). Verified by forcing a
+  // fresh bake with the lid hidden and confirming the shaft survived — if a
+  // future three drops fully-transparent casters, the shaft vanishing is the
+  // symptom, and this is the line to look at.
+  const apertureMaterial = new THREE.MeshLambertNodeMaterial({
+    vertexColors: true,
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+  });
   const cavernAperture = new THREE.Mesh(apertureGeometry, apertureMaterial);
   cavernAperture.name = "procedural-overhead-cavern-godray-aperture";
   cavernAperture.castShadow = true;
@@ -711,6 +728,8 @@ export function buildEnvironment(
     },
     tick(camera: THREE.Camera) {
       cemetery.tick(camera);
+      (landmarkGroup.userData as { clearCamera?: (c: THREE.Camera) => void })
+        .clearCamera?.(camera);
       atmosphereParticles.rotation.y = performance.now() * 0.000003;
     },
     dispose() {

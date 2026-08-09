@@ -1938,6 +1938,38 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
   dragonLandmark.add(dragonPerch);
   let refitDragonPerchContact = () => {};
   const cancelDragonPerchStream = streamTripoDragonPerch(dragonPerch, () => refitDragonPerchContact());
+
+  // Camera clearance. The perch is deliberately pulled in so the dragon
+  // overhangs the maze silhouette — good composition, but it means one arc of
+  // the orbit puts the camera INSIDE a 325-unit rock, and measuring the sweep
+  // showed it covering 100% of frame at one bearing. Hide it while the camera
+  // is in it: by then nothing is visible anyway, so the pop costs nothing,
+  // and toggling `visible` avoids the pipeline rebuild that flipping
+  // `material.transparent` at runtime would trigger.
+  const perchBounds = new THREE.Box3();
+  let perchBoundsFresh = false;
+  const clearCamera = (camera: THREE.Camera) => {
+    if (!perchBoundsFresh) {
+      // Bound the PERCH, not the landmark. The landmark also holds the rigged
+      // dragon, and Box3.setFromObject on a skinned mesh returns its bind-pose
+      // extent — measured at 7322 × 3938 × 7398 here, which put the camera
+      // permanently "inside" and hid the dragon even from a 500-unit wide
+      // shot. The rock is the thing the camera actually collides with.
+      dragonPerch.updateWorldMatrix(true, true);
+      perchBounds.setFromObject(dragonPerch);
+      perchBoundsFresh = true;
+    }
+    // The box is an axis-aligned superset of an elongated rock, so its
+    // distance is only a LOWER bound on the distance to real geometry — a
+    // tight threshold (14) still left the rock filling 72% of frame at one
+    // bearing. 30 covers it, and is far inside the ~500 units the wide
+    // framings keep between camera and dragon, so those still show it.
+    const distance = perchBounds.distanceToPoint(camera.position);
+    // hysteresis band so a camera hovering on the boundary can't strobe
+    const wanted = distance < 30 ? false : distance > 42 ? true : dragonLandmark.visible;
+    if (dragonLandmark.visible !== wanted) dragonLandmark.visible = wanted;
+  };
+  const invalidatePerchBounds = () => { perchBoundsFresh = false; };
   const dragonSlot = new THREE.Group();
   dragonSlot.name = "streamed-colossal-perched-dragon-slot";
   dragonLandmark.add(dragonSlot);
@@ -2436,7 +2468,11 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
     crags.computeBoundingSphere();
   };
   refitDragonPerchContact = () => fit(lastFitHalf, lastFitTop);
-  (root.userData as { fit?: (half: number, top: number) => void }).fit = fit;
+  (root.userData as { fit?: (half: number, top: number) => void }).fit = (half, top) => {
+    fit(half, top);
+    invalidatePerchBounds(); // the perch just moved; its bounds are stale
+  };
+  (root.userData as { clearCamera?: (camera: THREE.Camera) => void }).clearCamera = clearCamera;
   (root.userData as { dispose?: () => void }).dispose = () => {
     cancelOracleStream();
     cancelDragonStream();

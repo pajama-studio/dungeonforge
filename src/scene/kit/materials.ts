@@ -110,11 +110,10 @@ let activeHandPaintedStoneTexture: THREE.Texture = handPaintedStoneTexture;
 const handPaintedStoneNodes: Array<{ value: THREE.Texture }> = [];
 let handPaintedStoneLoad: Promise<void> | null = null;
 
-// Brush atlas: 4x4 tiles of surface character lifted from the statue albedo,
-// high-passed so it carries brushwork rather than tentacles. Each instance
-// picks a tile, which is where the variation comes from — one image, no repeat
-// visible across a wall.
-const BRUSH_GRID = 4;
+// Brush texture: surface character lifted from the statue albedo, high-passed
+// so it carries brushwork rather than tentacles, and made seamless so it can
+// wrap in hardware. Variation comes from the per-instance UV transform, not
+// from atlas tiles — an atlas addressed by fract draws mip seams.
 const brushPlaceholder = new THREE.DataTexture(
   new Uint8Array([128, 128, 128, 255]), 1, 1, THREE.RGBAFormat,
 );
@@ -129,9 +128,7 @@ export function loadBrushAtlas(): Promise<void> {
   brushLoad = new Promise((resolve, reject) => {
     new THREE.TextureLoader().load("/assets/textures/hand-painted-brush-1024.webp", (loaded) => {
       loaded.colorSpace = THREE.SRGBColorSpace;
-      // Clamp, not repeat: tiles are addressed by offset inside one image, so
-      // wrapping would bleed a neighbouring tile across the seam.
-      loaded.wrapS = loaded.wrapT = THREE.ClampToEdgeWrapping;
+      loaded.wrapS = loaded.wrapT = THREE.RepeatWrapping;
       loaded.minFilter = THREE.LinearMipmapLinearFilter;
       loaded.magFilter = THREE.LinearFilter;
       loaded.anisotropy = 4;
@@ -211,14 +208,15 @@ function sampleAtlas(uvNode: any): any {
  *  texture and it needs no tangents, which instanced masonry does not carry.
  */
 function paintedRelief(stableId: any, strength: any): any {
-  // Wrap the projection into one tile, then offset to the instance's tile.
-  // fract keeps the sample inside its own cell so a brick never straddles two.
-  const raw = paintedUv(stableId, 0.55, 91);
-  const cell = float(1 / BRUSH_GRID);
-  const tile = hash(stableId.add(73.19)).mul(BRUSH_GRID * BRUSH_GRID).floor();
-  const tileX = tile.mod(BRUSH_GRID);
-  const tileY = tile.div(BRUSH_GRID).floor();
-  const uvBase = fract(raw).mul(cell).add(vec2(tileX, tileY).mul(cell));
+  // One seamless tile with hardware REPEAT, not an atlas addressed by fract.
+  //
+  // The atlas version drew a dark lattice across every wall: the GPU takes
+  // texture derivatives across the fract discontinuity, reads them as an
+  // enormous UV step, and drops to the lowest mip along that line. It repeated
+  // in world space every 1/0.55 units, which is what gave it away. Hardware
+  // wrapping has no discontinuity to trip over, and the per-instance
+  // swap/flip/scale/offset already supplies the variation the atlas was for.
+  const uvBase = paintedUv(stableId, 0.55, 91);
 
   const step0 = 0.0035;
   const sampleBrush = (at: any) => {

@@ -31,6 +31,71 @@ export const MOON_DIR = new THREE.Vector3(-0.45, 1, -0.25).normalize();
 // leans teal-green rather than navy, so distance reads as deep-sea murk.
 export const HORIZON_FOG = 0x0d2328;
 
+/** Author-controlled overrides for the godray shaft.
+ *
+ *  The aperture's size and height are derived from the layout, which is right
+ *  as a default and wrong as a constraint — the shaft is the single strongest
+ *  compositional element in the scene and wants to be placed by eye. These
+ *  multiply or offset the computed values so a saved shape survives a re-forge
+ *  onto a differently sized dungeon.
+ */
+export interface GodrayShape {
+  /** Multiplies the computed opening radius — how wide the shaft reads. */
+  radius: number;
+  /** Multiplies the computed roof height — how far the light falls. */
+  height: number;
+  /** Shifts the aperture across the dungeon, in world units. */
+  offsetX: number;
+  offsetZ: number;
+  /** Vertical thickness of the lid annulus. */
+  thickness: number;
+}
+
+export const DEFAULT_GODRAY_SHAPE: GodrayShape = {
+  radius: 1, height: 1, offsetX: 0, offsetZ: 0, thickness: 18,
+};
+
+const STORAGE_KEY = "df-godray-shape";
+let godrayShape: GodrayShape = { ...DEFAULT_GODRAY_SHAPE };
+let reseatGodray: (() => void) | null = null;
+
+export function getGodrayShape(): GodrayShape {
+  return { ...godrayShape };
+}
+
+/** Apply a shape and re-seat the aperture immediately — no re-forge needed,
+ *  because tuning a shaft you cannot see change is guesswork. */
+export function setGodrayShape(partial: Partial<GodrayShape>): GodrayShape {
+  godrayShape = { ...godrayShape, ...partial };
+  reseatGodray?.();
+  return { ...godrayShape };
+}
+
+export function saveGodrayShape(): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(godrayShape));
+  } catch {
+    // Private browsing or a full quota: the shape simply is not remembered.
+  }
+}
+
+export function loadGodrayShape(): GodrayShape {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) godrayShape = { ...DEFAULT_GODRAY_SHAPE, ...JSON.parse(raw) };
+  } catch {
+    godrayShape = { ...DEFAULT_GODRAY_SHAPE };
+  }
+  return { ...godrayShape };
+}
+
+export function resetGodrayShape(): GodrayShape {
+  godrayShape = { ...DEFAULT_GODRAY_SHAPE };
+  try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
+  reseatGodray?.();
+  return { ...godrayShape };
+}
+
 export function buildEnvironment(
   scene: THREE.Scene,
   seed: number,
@@ -640,19 +705,27 @@ export function buildEnvironment(
       // tuned in one place; per unit of height the shaft drifts by tilt*height
       const tiltX = MOON_DIR.x / MOON_DIR.y;
       const tiltZ = MOON_DIR.z / MOON_DIR.y;
-      cavernAperture.position.set(
-        centerX + roofY * tiltX,
-        roofY,
-        centerZ + roofY * tiltZ,
-      );
-      cavernAperture.scale.set(openingRadius, 18, openingRadius);
-      cavernAperture.updateMatrixWorld();
-      cavernAperture.userData.aperture = {
-        ...cavernAperture.userData.aperture,
-        openingRadius,
-        roofY,
-        center: cavernAperture.position.toArray(),
+      // Re-seatable so the editor can drag the shaft without a re-forge.
+      const seat = () => {
+        const shape = godrayShape;
+        const roof = roofY * shape.height;
+        cavernAperture.position.set(
+          centerX + roof * tiltX + shape.offsetX,
+          roof,
+          centerZ + roof * tiltZ + shape.offsetZ,
+        );
+        const radius = openingRadius * shape.radius;
+        cavernAperture.scale.set(radius, shape.thickness, radius);
+        cavernAperture.updateMatrixWorld();
+        cavernAperture.userData.aperture = {
+          ...cavernAperture.userData.aperture,
+          openingRadius: radius,
+          roofY: roof,
+          center: cavernAperture.position.toArray(),
+        };
       };
+      seat();
+      reseatGodray = seat;
       // seat the dust curtain along the aperture→maze shaft axis
       const shaftBottom = new THREE.Vector3(centerX, 4, centerZ);
       const shaftAxis = cavernAperture.position.clone().sub(shaftBottom);

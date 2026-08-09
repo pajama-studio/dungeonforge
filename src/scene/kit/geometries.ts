@@ -614,14 +614,14 @@ export function makeGeometries(): GeoKit {
     // Same 68/16/22-triangle topology, but a broader hand-cut arris. The old
     // 0.06 bevel was sub-pixel in ordinary gameplay and left the masonry
     // reading as perfectly extruded cubes even with a detailed shader.
-    blockGeo: shadeFaces(chamferBoxGeometry(CELL * 1.02, COURSE * 1.02, CELL * 1.02, 0.11)),
-    blockGeoLo: shadeFaces(new THREE.BoxGeometry(CELL * 1.02, COURSE * 1.02, CELL * 1.02)),
+    blockGeo: shadeFaces(chamferBoxGeometry(CELL * 1.08, COURSE * 1.06, CELL * 1.08, 0.11)),
+    blockGeoLo: shadeFaces(new THREE.BoxGeometry(CELL * 1.08, COURSE * 1.06, CELL * 1.08)),
     // Sealed, not open: jittered courses only partially cover each other, so
     // an uncapped middle course shows its hollow interior through the gap.
-    blockMiddleGeo: shadeFaces(sealedCourseGeometry(CELL * 1.02, COURSE * 1.02, CELL * 1.02, 0.11)),
-    blockTopGeo: shadeFaces(sealedCourseGeometry(CELL * 1.02, COURSE * 1.02, CELL * 1.02, 0.11)),
-    blockBaseGeo: shadeFaces(sealedCourseGeometry(CELL * 1.02, COURSE * 1.02, CELL * 1.02, 0.11)),
-    debrisGeo: fracturedBlockGeometry(CELL * 1.02, COURSE * 1.02, CELL * 1.02),
+    blockMiddleGeo: shadeFaces(sealedCourseGeometry(CELL * 1.08, COURSE * 1.06, CELL * 1.08, 0.11)),
+    blockTopGeo: shadeFaces(sealedCourseGeometry(CELL * 1.08, COURSE * 1.06, CELL * 1.08, 0.11)),
+    blockBaseGeo: shadeFaces(sealedCourseGeometry(CELL * 1.08, COURSE * 1.06, CELL * 1.08, 0.11)),
+    debrisGeo: fracturedBlockGeometry(CELL * 1.08, COURSE * 1.06, CELL * 1.08),
     tileGeo: shadeFaces(openChamferSlabGeometry(CELL * 0.985, 0.15, CELL * 0.985, 0.065)),
     tileGeoLo: shadeFaces(new THREE.BoxGeometry(CELL * 0.985, 0.15, CELL * 0.985)),
     merlonGeo: shadeFaces(openChamferSlabGeometry(0.72, 0.55, 0.72, 0.07)),

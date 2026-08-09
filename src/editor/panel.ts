@@ -5,6 +5,9 @@
 
 import type { Params } from "../gen/dungeon";
 import { GROUPS } from "../ui/panel";
+import {
+  getGodrayShape, setGodrayShape, saveGodrayShape, resetGodrayShape, type GodrayShape,
+} from "../scene/env";
 import { DEFAULT_BRUSH, type BrushSettings } from "./brush";
 import { assetGroups } from "./catalog";
 import type { AssetDef, GizmoMode, PlacementRecord } from "./types";
@@ -368,6 +371,67 @@ export class EditorPanel {
     this.inspectorBody.appendChild(this.worldActions);
   }
 
+  /** The shaft is the strongest compositional element in the scene, and its
+   *  size and height are derived from the layout — a good default, a bad
+   *  constraint. These re-seat the aperture live, with no re-forge, because
+   *  tuning something you cannot watch change is guesswork. */
+  private buildGodrayControls(page: HTMLElement): void {
+    const title = document.createElement("h3");
+    title.textContent = "Godray shaft";
+    page.appendChild(title);
+
+    const shape = getGodrayShape();
+    const defs: Array<{ key: keyof GodrayShape; label: string; min: number; max: number; step: number }> = [
+      { key: "radius", label: "Width", min: 0.2, max: 3, step: 0.02 },
+      { key: "height", label: "Height", min: 0.3, max: 2.5, step: 0.02 },
+      { key: "offsetX", label: "Shift X", min: -120, max: 120, step: 1 },
+      { key: "offsetZ", label: "Shift Z", min: -120, max: 120, step: 1 },
+      { key: "thickness", label: "Lid thickness", min: 2, max: 60, step: 1 },
+    ];
+    const inputs: Array<{ def: typeof defs[number]; input: HTMLInputElement; value: HTMLSpanElement }> = [];
+
+    for (const def of defs) {
+      const label = document.createElement("label");
+      label.textContent = `${def.label} `;
+      const value = document.createElement("span");
+      value.textContent = String(shape[def.key]);
+      label.appendChild(value);
+      const input = document.createElement("input");
+      input.type = "range";
+      input.min = String(def.min);
+      input.max = String(def.max);
+      input.step = String(def.step);
+      input.value = String(shape[def.key]);
+      input.addEventListener("input", () => {
+        value.textContent = input.value;
+        setGodrayShape({ [def.key]: Number(input.value) } as Partial<GodrayShape>);
+      });
+      page.append(label, input);
+      inputs.push({ def, input, value });
+    }
+
+    const row = document.createElement("div");
+    row.className = "editor-row";
+    const save = document.createElement("button");
+    save.textContent = "💾 Save shaft";
+    save.addEventListener("click", () => {
+      saveGodrayShape();
+      save.textContent = "saved";
+      setTimeout(() => { save.textContent = "💾 Save shaft"; }, 1200);
+    });
+    const reset = document.createElement("button");
+    reset.textContent = "↺ Reset";
+    reset.addEventListener("click", () => {
+      const next = resetGodrayShape();
+      for (const { def, input, value } of inputs) {
+        input.value = String(next[def.key]);
+        value.textContent = input.value;
+      }
+    });
+    row.append(save, reset);
+    page.appendChild(row);
+  }
+
   private buildGenerate(): void {
     const page = this.pages.get("generate")!;
     let debounce = 0;
@@ -396,6 +460,8 @@ export class EditorPanel {
         page.append(label, input);
       }
     }
+    this.buildGodrayControls(page);
+
     const reforge = document.createElement("button");
     reforge.className = "editor-wide";
     reforge.textContent = "⚒ Re-forge now";

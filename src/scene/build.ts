@@ -598,8 +598,28 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
       if (palettePick < 0.46) stoneColor.lerp(_paintCool, 0.22 + (0.46 - palettePick) * 0.34);
       else if (palettePick > 0.76) stoneColor.lerp(_paintWarm, 0.12 + (palettePick - 0.76) * 0.25);
       if (yMid < refFloorTier * TH + COURSE && h1 < 0.12) stoneColor.lerp(MOSS_TINT, 0.45); // moss
-      const jx = (h2v - 0.5) * 0.12 + ((k % 2) ? 0.05 : -0.05);
-      const jz = (h3v - 0.5) * 0.12 + ((k % 2) ? -0.05 : 0.05);
+      // Hand-laid jitter has to stay inside what the course overlap can cover,
+      // or the uncovered ring shows as a dark ledge on every brick — the
+      // lattice Clay kept reporting. Measured: independent per-course jitter
+      // gave a worst-case ring of 0.165 units against a 0.022 margin.
+      //
+      // Two changes. The stagger no longer flips a full step every course; a
+      // running bond offsets ALONG a wall, and offsetting perpendicular to the
+      // face is what builds the ledge. And the random part is now a slow walk
+      // rather than an independent draw, so the column still wanders its full
+      // range over several courses while consecutive courses stay close.
+      const walk = (salt: number) => {
+        const period = 6;
+        const cell0 = Math.floor(k / period);
+        const t = (k % period) / period;
+        const a = hash3(seed, x * 131 + y, cell0, salt);
+        const b = hash3(seed, x * 131 + y, cell0 + 1, salt);
+        const smooth = t * t * (3 - 2 * t);
+        return a + (b - a) * smooth - 0.5;
+      };
+      const stagger = (k % 2 ? 1 : -1) * 0.015;
+      const jx = walk(2) * 0.12 + stagger;
+      const jz = walk(3) * 0.12 - stagger;
       // cornice ring every 5th course on towers — segmented silhouette
       const cornice = scaleXZ > 1.2 && k % 5 === 4 ? 1.14 : 1;
       const s = scaleXZ * cornice;

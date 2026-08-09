@@ -19,7 +19,10 @@ import {
   pruneSlots, setSlotDetail, setSlotLodLevel, setDecorSuppressed, revealDecor,
   setOccludingSlots, areSlotsLodWarm, stageSlotLodWarmup,
   type LodLevel, gpuSceneSlotPools } from "./scene/slots";
-import { buildEnvironment } from "./scene/env";
+import {
+  buildEnvironment, getGodrayShape, setGodrayShape, saveGodrayShape,
+  resetGodrayShape, loadGodrayShape, type GodrayShape,
+} from "./scene/env";
 import { setInteriorCull, getInteriorCull, setClosedCourses, getClosedCourses, setFarShadows, getFarShadows } from "./scene/build";
 import { flickerDamp, loadHandPaintedStoneTexture, setOcclusionWindow, stoneStyle, loadBrushAtlas } from "./scene/kit/materials";
 import { createPost } from "./render/post";
@@ -1647,6 +1650,13 @@ void boot().catch((error) => {
   openEditor: (open?: boolean) => toggleEditor(open),
   cameraShots,
   stoneStyle,
+  godray: {
+    get shape() { return getGodrayShape(); },
+    /** Live — the aperture re-seats immediately, no re-forge. */
+    set(partial: Partial<GodrayShape>) { return setGodrayShape(partial); },
+    save() { saveGodrayShape(); },
+    reset() { return resetGodrayShape(); },
+  },
   masonry: {
     get interiorCull() { return getInteriorCull(); },
     /** Turn the interior-course cull off, then re-forge, to tell whether a

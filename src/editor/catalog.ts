@@ -12,33 +12,8 @@ import * as THREE from "three/webgpu";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
 import { getKit } from "../scene/kit";
-import { standingSoldierGeometry } from "../scene/abyss-landmarks";
 import { thumbnailFor } from "./thumbs";
 import type { AssetDef } from "./types";
-
-// Procedural sentinels. Built once and shared: the geometry is a few hundred
-// merged primitives, and every placement pointing at the same buffer keeps a
-// rank of them to one pipeline.
-const sentinelCache = new Map<number, THREE.BufferGeometry>();
-let sentinelMaterial: THREE.Material | null = null;
-
-function sentinel(variant: 0 | 1): THREE.Object3D {
-  let geometry = sentinelCache.get(variant);
-  if (!geometry) {
-    geometry = standingSoldierGeometry(variant);
-    sentinelCache.set(variant, geometry);
-  }
-  sentinelMaterial ??= new THREE.MeshLambertNodeMaterial({
-    vertexColors: true, flatShading: true, emissive: 0x09111f,
-  });
-  const mesh = new THREE.Mesh(geometry, sentinelMaterial);
-  mesh.castShadow = false;
-  mesh.receiveShadow = false;
-  const holder = new THREE.Group();
-  holder.add(mesh);
-  holder.userData.editorShared = true; // shared geometry/material, never disposed
-  return holder;
-}
 
 const draco = new DRACOLoader();
 draco.setDecoderPath("https://www.gstatic.com/draco/versioned/decoders/1.5.7/");
@@ -176,6 +151,14 @@ const STREAM_ENTRIES: StreamEntry[] = [
     id: "dragon", label: "Colossal dragon", group: "Landmarks", icon: "🐉",
     url: "/assets/abyss/dragon/dragon-render-45k-rigged-runtime.glb", glbScale: 8.4, scale: 1,
   },
+  {
+    id: "sentinel-spear", label: "Sentinel · spear", group: "Landmarks", icon: "🗡",
+    url: "/assets/abyss/sentinel/sentinel-spear-render-30k.glb", glbScale: 5.2, scale: 1,
+  },
+  {
+    id: "sentinel-sword", label: "Sentinel · sword", group: "Landmarks", icon: "⚔",
+    url: "/assets/abyss/sentinel/sentinel-sword-render-30k.glb", glbScale: 5.2, scale: 1,
+  },
 ];
 
 let catalog: AssetDef[] | null = null;
@@ -196,18 +179,6 @@ export function assetCatalog(): AssetDef[] {
       return kitMesh(geometry, material, lift ?? 0);
     },
   }));
-  const sentinelAssets: AssetDef[] = ([0, 1] as const).map((variant) => ({
-    id: variant === 0 ? "sentinel-spear" : "sentinel-sword",
-    label: variant === 0 ? "Sentinel · spear" : "Sentinel · sword",
-    group: "Landmarks",
-    icon: variant === 0 ? "🗡" : "⚔",
-    scale: 1,
-    thumbnail: () => thumbnailFor(
-      variant === 0 ? "sentinel-spear" : "sentinel-sword",
-      sentinelCache.get(variant) ?? standingSoldierGeometry(variant),
-    ),
-    build: () => sentinel(variant),
-  }));
   const streamAssets: AssetDef[] = STREAM_ENTRIES.map((entry) => ({
     id: entry.id,
     label: entry.label,
@@ -221,7 +192,7 @@ export function assetCatalog(): AssetDef[] {
       return holder;
     },
   }));
-  catalog = [...kitAssets, ...sentinelAssets, ...streamAssets];
+  catalog = [...kitAssets, ...streamAssets];
   return catalog;
 }
 

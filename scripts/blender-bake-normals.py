@@ -40,6 +40,12 @@ def parse_args() -> argparse.Namespace:
     # useless here because assets arrive normalized to different heights.
     parser.add_argument("--ray-distance", type=float, default=0.02)
     parser.add_argument("--extrusion", type=float, default=0.01)
+    # Bounds-fitting is right when the high-poly is a raw generated asset at a
+    # different scale from the normalized LOD. It is WRONG when both were
+    # authored in the same space and the high-poly is a displaced twin:
+    # displacement grows the bounds, so fitting shrinks the cage and bakes a
+    # subtly wrong map.
+    parser.add_argument("--no-align", action="store_true")
     parser.add_argument("--draco", action="store_true")
     parser.add_argument("--margin", type=int, default=8)
     return parser.parse_args(argv)
@@ -197,7 +203,10 @@ def bake(args: argparse.Namespace) -> None:
     reset()
     low = import_glb(args.low, "LOW")
     high = import_glb(args.high, "HIGH")
-    align_to(high, low)
+    if args.no_align:
+        print("alignment skipped: high and low authored in the same space", flush=True)
+    else:
+        align_to(high, low)
 
     scale = diagonal(low)
     configure_cycles(args.samples)

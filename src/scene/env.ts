@@ -165,15 +165,26 @@ export function buildEnvironment(
   // painted reference every block soffit reads cool while warmth appears only
   // where a torch actually is — an earthy ground colour smeared that warmth
   // everywhere and flattened the whole value structure.
-  const hemi = new THREE.HemisphereLight(0x36586e, 0x1d4a45, 0.98);
+  const hemi = new THREE.HemisphereLight(0x36586e, 0x1d4a45, 1.35);
   group.add(hemi);
 
-  const rim = new THREE.DirectionalLight(0x568fa0, 0.56);
+  const rim = new THREE.DirectionalLight(0x568fa0, 0.75);
   rim.position.set(52, 20, 34); // low, opposite the moon — silhouette kisser
   group.add(rim, rim.target);
 
   // warm ivory moonbeam (per the painted reference): beam-lit stone tops go
   // gold while unlit masonry stays in the cool teal ambient
+  // THE missing key. The cavern lid shadows everything outside the aperture —
+  // that is what makes the shaft exist — but it also meant the only real key
+  // in the scene lit one narrow column and the other 95% of the world had
+  // nothing but fill. This is the light bouncing back down off the lit lid
+  // and the cavern walls: same broad direction, no shadow map, so masonry
+  // everywhere catches a top light without touching the beam. Created HERE,
+  // before the first compile, so the extra light costs no pipeline rebuild.
+  const caveFill = new THREE.DirectionalLight(0x9ab3c6, 1.9);
+  caveFill.castShadow = false;
+  group.add(caveFill, caveFill.target);
+
   const moon = new THREE.DirectionalLight(0xd4cfae, 1.75);
   moon.position.copy(MOON_DIR).multiplyScalar(80);
   moon.castShadow = true;
@@ -645,6 +656,10 @@ export function buildEnvironment(
       sc.updateProjectionMatrix();
       rim.position.set(centerX + 52, 20 * k, centerZ + 34);
       rim.target.position.set(centerX, 0, centerZ);
+      // the bounced cave key comes down from the opposite rake to the moon,
+      // so lit tops read as two overlapping directions rather than one flat wash
+      caveFill.position.set(centerX + 90, top + 190, centerZ + 130);
+      caveFill.target.position.set(centerX, 0, centerZ);
       // the mesa/mist/ruin ring was authored around a ~40-unit island — recentre
       // on the chain and push it outward so cliffs never intersect the blocks
       const s = Math.max(1, (half + 26) / 72);

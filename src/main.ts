@@ -89,8 +89,13 @@ renderer.setSize(innerWidth, innerHeight);
 renderer.setPixelRatio(Math.min(devicePixelRatio, PR_BASE));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFShadowMap; // static baked shadows — soft PCF not worth the taps
-renderer.toneMapping = THREE.AgXToneMapping;
-renderer.toneMappingExposure = 1.24; // key up: hemi fill dropped for contrast, torch pools carry the warmth
+// AgX was the wrong curve for this scene. It is built to desaturate as it
+// rolls off and to keep shadows flat — safe for photographic material, and
+// exactly wrong for a painted look that lives on saturated teal water and
+// amber torchlight against true black. ACES keeps the chroma and gives the
+// contrast the reference has.
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 2.1; // tuned live across the four saved framings
 app.appendChild(renderer.domElement);
 
 const controls = new OrbitControls(camera, renderer.domElement);

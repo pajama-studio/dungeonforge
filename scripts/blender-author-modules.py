@@ -76,7 +76,20 @@ def finish(obj: bpy.types.Object, bm: bmesh.types.BMesh) -> None:
     bm.normal_update()
     bm.to_mesh(obj.data)
     bm.free()
-    obj.data.materials.append(bpy.data.materials.new(f"{obj.name}_surface"))
+
+    # Matte stone, not the default near-white plastic. Blender's default
+    # material exports baseColor 0.8 grey at roughness 0.4, and that glossy
+    # near-white surface throws enough broad specular to wash a baked normal
+    # straight out — the map is there, you just cannot see it. The project's own
+    # stone sits at roughness 0.97.
+    material = bpy.data.materials.new(f"{obj.name}_surface")
+    material.use_nodes = True
+    bsdf = material.node_tree.nodes.get("Principled BSDF")
+    if bsdf:
+        bsdf.inputs["Base Color"].default_value = (0.34, 0.345, 0.355, 1.0)
+        bsdf.inputs["Roughness"].default_value = 0.95
+        bsdf.inputs["Metallic"].default_value = 0.0
+    obj.data.materials.append(material)
 
 
 def unwrap(obj: bpy.types.Object) -> None:
@@ -224,21 +237,23 @@ def sculpt_high(obj: bpy.types.Object, seed: int) -> bpy.types.Object:
     sub.subdivision_type = "SIMPLE"   # keep the silhouette; we want facets, not a pillow
     sub.levels = sub.render_levels = 4
 
-    tex = bpy.data.textures.new(f"{obj.name}-chisel", type="CLOUDS")
-    tex.noise_scale = 0.42
-    tex.noise_depth = 4
+    tex = bpy.data.textures.new(f"{obj.name}-chisel", type="VORONOI")
+    tex.noise_scale = 0.30
+    tex.distance_metric = "DISTANCE_SQUARED"
+    tex.weight_1 = 1.0
+    tex.weight_2 = -0.6
 
     disp = high.modifiers.new("chisel", "DISPLACE")
     disp.texture = tex
     # Strength is relative to a 2.2-unit block: 0.045 was invisible once baked.
-    disp.strength = 0.16
+    disp.strength = 0.26
     disp.mid_level = 0.5
 
     fine_tex = bpy.data.textures.new(f"{obj.name}-grain", type="STUCCI")
     fine_tex.noise_scale = 0.13
     fine = high.modifiers.new("grain", "DISPLACE")
     fine.texture = fine_tex
-    fine.strength = 0.05
+    fine.strength = 0.075
     fine.mid_level = 0.5
 
     bpy.context.view_layer.objects.active = high

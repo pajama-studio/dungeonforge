@@ -10,6 +10,7 @@ import {
   Fn, If, atomicAdd, atomicStore, instanceIndex, max, storage, uniform, uint, vec4,
 } from "three/tsl";
 import { getKit } from "../scene/kit";
+import { LOD_TIERS, packInstanceMeta } from "./instance-meta";
 import { makeStoneLoMat, makeStoneMat } from "../scene/kit/materials";
 import {
   gpuSceneSlotPools, setGpuSceneManaged, setSlotLodLevel,
@@ -20,9 +21,27 @@ const CAPACITY = 65_536;
 const SLOT_CAPACITY = 128;
 const DEAD_ID = 0xffff_ffff;
 const CULL_MARGIN = 5;
-const MANAGED_KEYS = [
-  "blockMids", "blockMidsLo", "blockMidsFade", "blockMidsLoFade",
+/** Geometry groups the GPU pass owns. One today; the structure exists because
+ *  the measured win is extending it — the scene submits ~719 InstancedMeshes
+ *  where merging across slots would submit ~72, and this pass already proves
+ *  the shape on blockMids: 20 islands, 32k instances, 2 indirect draws.
+ *
+ *  Adding a group means an entry here plus its bucket pair. The instance
+ *  metadata already carries the group index, and packInstanceMeta is
+ *  exhaustively tested against the shader's decode. */
+const MANAGED_GROUPS = [
+  {
+    name: "masonry-middle",
+    /** The pool whose instances feed this group. */
+    source: "blockMids",
+    /** Every mesh key the CPU must stop drawing once the group is managed. */
+    keys: ["blockMids", "blockMidsLo", "blockMidsFade", "blockMidsLoFade"],
+  },
 ] as const;
+
+const GROUP_COUNT = MANAGED_GROUPS.length;
+
+const MANAGED_KEYS = MANAGED_GROUPS.flatMap((group) => group.keys);
 
 type ComputeNode = any;
 
@@ -157,9 +176,11 @@ export class GpuMasonryScene {
       // Destroyed items encode zero. Clamp before unsigned subtraction so a
       // dead item can never form an out-of-bounds slot index, even though its
       // final visibility predicate is false.
+      // Mirrors unpackInstanceMeta: group varies fastest, then LOD, then slot.
       const encoded = uint(max(sourceColor.w, 1)).sub(uint(1));
-      const slotIndex = encoded.div(uint(4));
-      const lod = encoded.mod(uint(4));
+      const withoutGroup = encoded.div(uint(GROUP_COUNT));
+      const slotIndex = withoutGroup.div(uint(LOD_TIERS));
+      const lod = withoutGroup.mod(uint(LOD_TIERS));
       const worldMatrix = slotMatrices.element(slotIndex).mul(sourceMatrices.element(sourceIndex));
       const center = worldMatrix.mul(vec4(0, 0, 0, 1)).xyz;
       let visible: any = sourceColor.w.greaterThan(0.5).and(lod.greaterThan(uint(0)));
@@ -279,7 +300,7 @@ export class GpuMasonryScene {
 
     for (let slotIndex = 0; slotIndex < pools.length; slotIndex++) {
       const pool = pools[slotIndex];
-      const source = pool.meshes.get("blockMids")!;
+      const source = pool.meshes.get(MANAGED_GROUPS[0].source)!;
       const count = (source.userData as { n?: number }).n ?? 0;
       if (cursor + count > CAPACITY) return this.fail(`instance capacity ${cursor + count}/${CAPACITY}`);
       pool.group.updateWorldMatrix(true, true);
@@ -305,9 +326,12 @@ export class GpuMasonryScene {
         colors[colorOffset] = _color.r;
         colors[colorOffset + 1] = _color.g;
         colors[colorOffset + 2] = _color.b;
-        // 0 is destroyed. Alive metadata packs slot + two-bit LOD in one float
-        // and remains exact far beyond SLOT_CAPACITY.
-        colors[colorOffset + 3] = slotIndex * 4 + level + 1;
+        // 0 is destroyed. Everything alive packs slot + LOD tier + geometry
+        // group through the same helper the decode below mirrors, so the two
+        // cannot drift.
+        colors[colorOffset + 3] = packInstanceMeta(
+          { slot: slotIndex, lod: level, group: 0 }, GROUP_COUNT,
+        );
         mapping[localIndex] = cursor++;
       }
 

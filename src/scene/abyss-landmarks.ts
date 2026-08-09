@@ -1,7 +1,7 @@
 // Code-native abyss landmarks reconstructed from the admitted img2threejs
 // references.  The hero geometry is deliberately silhouette-heavy and keeps
 // the whole exterior layer to a small, fixed draw-call count: stone/cavity
-// pairs for the instanced wardens, buried skull and distant oracle, plus the
+// pairs for the instanced wardens and distant oracle, plus the
 // shared arch, rubble and chain batches.
 
 import * as THREE from "three/webgpu";
@@ -438,85 +438,6 @@ function guardianVoidGeometry(): THREE.BufferGeometry {
   return mergedParts((add) => {
     add(new THREE.CircleGeometry(1, 9), [0, 42.7, 4.25], [3.45, 0.72, 1], [0, 0, 0]);
     add(new THREE.BoxGeometry(2.1, 5.7, 0.35), [0, 39.6, 5.25], [1, 1, 1], [0, 0, 0]);
-  });
-}
-
-function dragonSkullStoneGeometry(): THREE.BufferGeometry {
-  const geometry = mergedParts((add) => {
-    // Cranium and progressively tapered muzzle volumes.
-    add(new THREE.IcosahedronGeometry(1, 2), [0, 14.2, -1.5], [13.5, 9.2, 10.0], [0.02, 0, 0.02]);
-    add(new THREE.IcosahedronGeometry(1, 2), [0, 11.0, 8.5], [10.5, 6.2, 7.8]);
-    add(new THREE.IcosahedronGeometry(1, 1), [0, 8.4, 18.0], [7.5, 4.5, 7.3]);
-    add(new THREE.IcosahedronGeometry(1, 1), [0, 7.0, 26.0], [4.9, 3.2, 6.0]);
-    add(facetedTube([[0, 10.0, 24.0], [0, 13.6, 27.2], [0, 18.2, 27.8]], [1.5, 1.0, 0.08], 8, 6), [0, 0, 0]);
-    add(new THREE.TorusGeometry(3.7, 1.05, 6, 12), [-5.2, 15.7, 12.05], [1.08, 0.92, 1], [0, 0, -0.10]);
-    add(new THREE.TorusGeometry(3.7, 1.05, 6, 12), [5.2, 15.7, 12.05], [1.08, 0.92, 1], [0, 0, 0.10]);
-    for (const side of [-1, 1]) {
-      add(facetedTube([
-        [side * 5.4, 8.0, 8.2], [side * 5.1, 7.1, 15.5], [side * 4.4, 6.5, 23.0], [side * 3.3, 6.0, 29.0],
-      ], [1.25, 1.05, 0.85, 0.5], 14, 7), [0, 0, 0]);
-      add(facetedTube([
-        [side * 5.0, 2.8, 7.5], [side * 4.8, 2.0, 15.0], [side * 4.0, 1.8, 22.0], [side * 2.9, 2.0, 27.0],
-      ], [1.15, 1.0, 0.75, 0.42], 13, 7), [0, 0, 0]);
-    }
-
-    // Real side arches around the orbit; these keep an open socket from front
-    // and three-quarter views instead of painting a black circle on a sphere.
-    for (const side of [-1, 1]) {
-      add(facetedTube([
-        [side * 5.2, 20.2, 2.2], [side * 9.2, 18.8, 5.8], [side * 11.0, 14.2, 10.5], [side * 8.6, 10.0, 14.2],
-      ], [1.9, 1.65, 1.35, 1.1], 11, 7), [0, 0, 0]);
-      add(facetedTube([
-        [side * 5.0, 6.1, 8.8], [side * 6.2, 4.6, 14.6], [side * 5.8, 3.7, 21.8], [side * 4.2, 3.0, 28.0],
-      ], [1.75, 1.55, 1.2, 0.72], 13, 7), [0, 0, 0]);
-    }
-
-    // One dominant swept rear horn, one damaged partner and four cheek spikes.
-    add(facetedTube([[5, 20, -5], [8, 25, -10], [10, 31, -17], [9, 37, -27]], [3.0, 2.5, 1.55, 0.12], 18, 7), [0, 0, 0]);
-    add(facetedTube([[-6, 20, -5], [-10, 24, -10], [-12, 28, -16], [-12, 31, -20]], [2.8, 2.2, 1.25, 0.18], 14, 7), [0, 0, 0]);
-    const spikeRoots: Array<[number, number, number, number]> = [
-      [-11, 15, 0, -1], [11, 15, 0, 1], [-10, 10, 10, -1], [10, 10, 10, 1],
-    ];
-    for (const [x, y, z, side] of spikeRoots) {
-      add(facetedTube([[x, y, z], [x + side * 4, y + 3, z - 1], [x + side * 7, y + 5, z - 2]], [1.6, 0.9, 0.08], 7, 6), [0, 0, 0]);
-    }
-
-    // Broken jaw hinge blocks and a few fossil chips that bridge into rubble.
-    add(new THREE.IcosahedronGeometry(1, 1), [-7.6, 5.4, 5.0], [3.2, 3.1, 3.6]);
-    add(new THREE.IcosahedronGeometry(1, 1), [7.6, 5.4, 5.0], [3.2, 3.1, 3.6]);
-    for (let k = 0; k < 9; k++) {
-      const a = -0.45 + k * 0.46;
-      add(new THREE.IcosahedronGeometry(1, 1), [Math.cos(a) * (10 + k % 3), 0.8 + k % 2, 5 + Math.sin(a) * 12], [2.2 + k % 2, 1.5 + (k % 3) * 0.4, 2.0]);
-    }
-  });
-  paintFacets(geometry, 0x34445a, 0x758299, 113);
-  return geometry;
-}
-
-function dragonSkullTeethGeometry(): THREE.BufferGeometry {
-  const geometry = mergedParts((add) => {
-    // Teeth are a separate merged colour batch. They keep the inherited fossil
-    // material family but stay readable against the near-black mouth gap.
-    for (let k = 0; k < 12; k++) {
-      const side = k & 1 ? 1 : -1;
-      const row = Math.floor(k / 2);
-      const z = 8.8 + row * 3.45;
-      const height = 3.0 + (row % 3) * 0.68;
-      add(new THREE.ConeGeometry(0.82 + (row % 2) * 0.12, height, 7), [side * (5.1 - row * 0.36), 6.0 - height / 2, z], [1, 1, 0.82], [0, 0, Math.PI + side * 0.08]);
-      if (row < 5) add(new THREE.ConeGeometry(0.68, height * 0.78, 7), [side * (4.9 - row * 0.31), 2.8 + height * 0.32, z + 0.62], [1, 1, 0.82], [0, 0, side * 0.08]);
-    }
-  });
-  paintFacets(geometry, 0x66758b, 0xa7b1c0, 139);
-  return geometry;
-}
-
-function dragonSkullVoidGeometry(): THREE.BufferGeometry {
-  return mergedParts((add) => {
-    add(new THREE.CircleGeometry(1, 12), [-5.2, 15.7, 11.9], [4.5, 4.15, 1], [0, 0, -0.10]);
-    add(new THREE.CircleGeometry(1, 12), [5.2, 15.7, 11.9], [4.5, 4.15, 1], [0, 0, 0.10]);
-    add(new THREE.CircleGeometry(1, 7), [-1.45, 8.7, 32.1], [0.72, 1.0, 1], [0, 0, -0.08]);
-    add(new THREE.CircleGeometry(1, 7), [1.45, 8.7, 32.1], [0.72, 1.0, 1], [0, 0, 0.08]);
-    add(new THREE.BoxGeometry(9.4, 2.9, 21), [0, 4.3, 19.0]);
   });
 }
 
@@ -1875,20 +1796,6 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
     delay: 6000,
   });
 
-  const skullStoneGeo = dragonSkullStoneGeometry();
-  const skullTeethGeo = dragonSkullTeethGeometry();
-  const skullVoidGeo = dragonSkullVoidGeometry();
-  const skull = new THREE.Group();
-  skull.name = "buried-dragon-skull";
-  const skullMesh = new THREE.Mesh(skullStoneGeo, stone);
-  const skullTeeth = new THREE.Mesh(skullTeethGeo, stone);
-  const skullVoid = new THREE.Mesh(skullVoidGeo, abyss);
-  skullMesh.castShadow = false;
-  skullTeeth.castShadow = false;
-  skullVoid.renderOrder = 1;
-  skull.add(skullMesh, skullTeeth, skullVoid);
-  root.add(skull);
-
   const oracle = new THREE.Group();
   oracle.name = "abyssal-cephalopod-oracle";
   const oracleWallGeo = oracleBackingCliffGeometry();
@@ -2157,16 +2064,6 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
   arches.name = "distant-broken-arches";
   root.add(arches);
 
-  // IcosahedronGeometry detail 0 is already non-indexed in this Three build.
-  const cragGeo = new THREE.IcosahedronGeometry(1, 0);
-  paintFacets(cragGeo, 0x172238, 0x40516b, 271);
-  // Only the eight grounded burial rocks remain. The former 26 randomly
-  // suspended chunks read as generator debris and had no structural support.
-  const crags = new THREE.InstancedMesh(cragGeo, stone, 8);
-  crags.castShadow = false;
-  crags.name = "floating-abyss-rubble";
-  root.add(crags);
-
   const chainPoints: number[] = [];
   for (let k = 0; k < 10; k++) {
     const x = (hash2(seed, k, 340) - 0.5) * 180;
@@ -2234,25 +2131,7 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
     }
     wardenRankStream.sync();
 
-    const skullScale = Math.max(1.2, Math.min(2.2, 1.08 + top / 145));
     const burialY = ABYSS * TH - 12;
-    skull.scale.setScalar(skullScale);
-    skull.position.set(-half * 0.32, burialY - skullScale * 4.4, -(half + 52));
-    skull.rotation.set(-0.28, 0.22, -0.54);
-
-    // Dedicated burial rubble wraps the lower jaw/rear cranium after each fit.
-    for (let k = 0; k < crags.count; k++) {
-      const qk = k + 20;
-      const u = k / 7;
-      const a = -0.35 + u * Math.PI * 1.3;
-      const radius = skullScale * (9 + hash2(seed, qk, 350) * 8);
-      const sc = skullScale * (1.5 + hash2(seed, qk, 351) * 2.1);
-      crags.setMatrixAt(k, matrix.compose(
-        p.set(skull.position.x + Math.cos(a) * radius, burialY - sc * 0.45 + hash2(seed, qk, 352), skull.position.z + Math.sin(a) * radius),
-        q.setFromEuler(new THREE.Euler(hash2(seed, qk, 353) * 2, hash2(seed, qk, 354) * 3, hash2(seed, qk, 355) * 2)),
-        s.set(sc * 1.35, sc * 0.7, sc),
-      ));
-    }
 
     // The gigantic oracle occupies the highest, closed side of the horseshoe
     // wall (-Z). Local +Z faces the maze; the separate cliff overlaps its back
@@ -2595,8 +2474,6 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
     arcade.instanceMatrix.needsUpdate = true;
     arcade.computeBoundingSphere();
 
-    crags.instanceMatrix.needsUpdate = true;
-    crags.computeBoundingSphere();
   };
   refitDragonPerchContact = () => fit(lastFitHalf, lastFitTop);
   (root.userData as { fit?: (half: number, top: number) => void }).fit = (half, top) => {
@@ -2620,7 +2497,6 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
     guardianRankTrianglesPerInstance: 8_000,
     guardianRankInstances: 6,
     guardianRankStreamedBytes: 369_540,
-    dragonSkullTriangles: triangleCount(skullStoneGeo) + triangleCount(skullTeethGeo) + triangleCount(skullVoidGeo),
     oracleTriangles: 0,
     oracleStreamedTriangles: 30_000,
     oracleDestructionProxyTriangles: 2_500,

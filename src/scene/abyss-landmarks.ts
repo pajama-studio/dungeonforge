@@ -601,6 +601,27 @@ function brokenArchGeometry(): THREE.BufferGeometry {
  * cliff, not a statue pedestal: a broad centre shelf guarantees the model's
  * back penetrates stone, while staggered buttresses break the top/side outline
  * so it can merge into the environment's larger horseshoe wall. */
+/** One rock palette, taken from the statues rather than chosen beside them.
+ *
+ *  The dragon, the rock and the oracle were reading as three separate
+ *  materials, and measuring the shipped albedo says why. Both Tripo statues are
+ *  painted almost neutral and dark — the oracle at saturation 0.165 and the
+ *  dragon at 0.050, both around 0.176 luma — while the rock was hand-authored
+ *  blue at saturation 0.21-0.43, up to eight times more saturated, and the
+ *  perch's light end sat at 0.394 luma, more than twice the statues.
+ *
+ *  These are the statues' own hue (0.586) and mean saturation (0.108), with a
+ *  dark-to-light ramp centred on their value so the rock keeps its form without
+ *  becoming a different stone. Anything wanting to be part of this family
+ *  should read from here rather than pick its own blue.
+ */
+export const ROCK_DARK = 0x131518;
+export const ROCK_LIGHT = 0x353b42;
+/** The perch carries a slightly wider ramp: it is a hero silhouette read
+ *  against open abyss, where the cliff is read against the basin behind it. */
+export const PERCH_DARK = 0x171a1d;
+export const PERCH_LIGHT = 0x3c434a;
+
 function oracleBackingCliffGeometry(): THREE.BufferGeometry {
   // Segment counts, not decoration: this wall is 335 world units across, and at
   // one quad per box face its facets were tens of units wide — folded paper, at
@@ -642,7 +663,7 @@ function oracleBackingCliffGeometry(): THREE.BufferGeometry {
     seed: 419, amplitude: 1.5, frequency: 0.055, octaves: 4, strata: 0.6,
   });
   geometry.dispose();
-  paintFacets(weathered, 0x111a2b, 0x34465f, 419);
+  paintFacets(weathered, ROCK_DARK, ROCK_LIGHT, 419);
   return weathered;
 }
 
@@ -1207,8 +1228,11 @@ function paintPerchStone(geometry: THREE.BufferGeometry): void {
   const normal = geometry.getAttribute("normal");
   if (!position) return;
   const colors = new Float32Array(position.count * 3);
-  const dark = new THREE.Color(0x111c2d);
-  const light = new THREE.Color(0x53677c);
+  // Same family as every other rock — see ROCK_DARK. This used to be its own
+  // blue ramp, which is the third tone that made the dragon, its perch and the
+  // oracle read as three materials.
+  const dark = new THREE.Color(PERCH_DARK);
+  const light = new THREE.Color(PERCH_LIGHT);
   const value = new THREE.Color();
   for (let i = 0; i < position.count; i++) {
     const x = position.getX(i);
@@ -1315,8 +1339,8 @@ function paintDragonStone(geometry: THREE.BufferGeometry): void {
   const position = geometry.getAttribute("position");
   if (!position) return;
   const colors = new Float32Array(position.count * 3);
-  const dark = new THREE.Color(0x18263a);
-  const light = new THREE.Color(0x53677e);
+  const dark = new THREE.Color(PERCH_DARK);
+  const light = new THREE.Color(PERCH_LIGHT);
   const value = new THREE.Color();
   for (let i = 0; i < position.count; i++) {
     const x = position.getX(i);

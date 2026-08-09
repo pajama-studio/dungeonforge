@@ -460,7 +460,12 @@ export function makeHandPaintedLandmarkStoneMaterial(): THREE.MeshStandardNodeMa
   // Keep hero stone neutral enough for authored lights to establish hierarchy.
   // The previous strong blue multiplier made the dragon, oracle and fog share
   // one value/hue family before lighting was even evaluated.
-  const stoneColor = painted.rgb.mul(1.48).add(0.22).mul(vec3(0.88, 0.93, 0.99));
+  // The cool bias used to be (0.88, 0.93, 0.99), a 12% blue push. That was set
+  // when the rock's own vertex ramp was saturated blue, and it compounded with
+  // it: the two together put the rock near saturation 0.2 while both streamed
+  // statues are painted at 0.05-0.165. With the ramp now taken from the statue
+  // albedo, this only has to carry the last hint of cold.
+  const stoneColor = painted.rgb.mul(1.48).add(0.22).mul(vec3(0.96, 0.98, 1.0));
   material.colorNode = stoneColor;
   return material;
 }

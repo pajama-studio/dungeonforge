@@ -361,6 +361,145 @@ function swordBladeGeometry(): THREE.BufferGeometry {
   return geometry;
 }
 
+/** Two standing sentinels, carved in the same language as the seated king:
+ *  merged primitives, hard-edged facets, layered plate rather than smooth
+ *  anatomy, and every lower contact embedded in rubble so they read as
+ *  monuments rather than as figures standing on a floor.
+ *
+ *  What separates them from the king is deliberate and legible at silhouette
+ *  distance — no crown, a soldier's plain helm, and a weapon grounded at rest.
+ *  Rank should be readable from the outline alone, which is the whole point
+ *  of putting a crown on one and not the others.
+ *
+ *  `variant` 0 is a spearman at attention, 1 is a swordsman with the blade
+ *  point-down and both gauntlets on the pommel. They share the skeleton so
+ *  the pair reads as the same regiment. */
+export function standingSoldierGeometry(variant: 0 | 1): THREE.BufferGeometry {
+  const spear = variant === 0;
+  // the two lean opposite ways by a hair, so a pair flanking a gate does not
+  // read as one model mirrored
+  const cant = spear ? 1 : -1;
+  const geometry = mergedParts((add) => {
+    // ---- plinth and rubble: the base the king also stands on -------------
+    add(new THREE.BoxGeometry(15, 2.6, 11), [0, 1.3, 0]);
+    add(new THREE.BoxGeometry(12.4, 1.8, 9), [0, 3.4, 0], [1, 1, 1], [0, cant * 0.03, 0]);
+    for (let k = 0; k < 7; k++) {
+      const side = k & 1 ? 1 : -1;
+      add(
+        new THREE.IcosahedronGeometry(1, 1),
+        [side * (4.2 + (k % 3) * 1.9), 1.1 + (k % 2) * 0.7, -3 + (k % 4) * 2.1],
+        [2.3, 1.3, 2.0],
+      );
+    }
+
+    // ---- legs: boots, greaves, knee cops, thighs --------------------------
+    for (const side of [-1, 1]) {
+      // the trailing leg is set back a touch — a figure at attention, not a
+      // mannequin with both feet on one line
+      const back = side === cant ? 1.1 : 0;
+      add(new THREE.BoxGeometry(5.0, 2.4, 7.4), [side * 3.5, 5.4, 1.0 - back], [1, 1, 1], [0, side * 0.07, 0]);
+      add(new THREE.IcosahedronGeometry(1, 1), [side * 3.5, 10.6, -0.2 - back], [2.5, 5.2, 2.7]);
+      add(new THREE.IcosahedronGeometry(1, 1), [side * 3.6, 15.6, 0.4 - back], [2.9, 1.7, 2.9], [0.1, 0, 0]);
+      add(new THREE.IcosahedronGeometry(1, 2), [side * 3.7, 20.8, -0.4 - back * 0.6], [3.2, 5.4, 3.3]);
+    }
+
+    // ---- fauld and belt ---------------------------------------------------
+    add(new THREE.CylinderGeometry(6.4, 7.2, 5.6, 9), [0, 27.2, 0]);
+    add(new THREE.CylinderGeometry(6.0, 6.0, 1.6, 9), [0, 30.4, 0]);
+    for (let k = 0; k < 6; k++) {
+      const a = (k / 6) * Math.PI * 2 + 0.3;
+      add(
+        new THREE.BoxGeometry(3.0, 4.4, 1.5),
+        [Math.sin(a) * 5.6, 26.0, Math.cos(a) * 5.6],
+        [1, 1, 1], [0, -a, 0],
+      );
+    }
+
+    // ---- torso: core plus layered breastplate ----------------------------
+    // A slight contrapposto — shoulders counter-rotated against the hips.
+    // Without it a merged-primitive figure reads as a stack of boxes; this
+    // one rotation is what makes it look carved rather than assembled.
+    add(new THREE.IcosahedronGeometry(1, 2), [cant * 0.5, 37.0, 0], [7.4, 7.6, 4.6], [0, cant * 0.09, cant * 0.035]);
+    add(new THREE.IcosahedronGeometry(1, 1), [0, 40.4, 2.2], [5.4, 1.35, 3.0], [0.06, 0, 0]);
+    add(new THREE.IcosahedronGeometry(1, 1), [0, 37.6, 2.9], [5.0, 1.3, 2.9], [-0.05, 0, 0]);
+    add(new THREE.OctahedronGeometry(3.2, 0), [0, 35.0, 3.6], [1.1, 1.3, 0.4], [0, 0, Math.PI / 4]);
+
+    // ---- pauldrons: two tiers, less rank than the king's three ------------
+    for (const side of [-1, 1]) {
+      for (let tier = 0; tier < 2; tier++) {
+        add(
+          new THREE.IcosahedronGeometry(1, 1),
+          [side * (6.6 + tier * 0.5), 42.2 - tier * 1.9, 0.3 + tier * 0.45],
+          [4.2 - tier * 0.3, 1.4 - tier * 0.07, 3.0 - tier * 0.2],
+          [0.03 * tier, side * 0.05, side * (0.22 - tier * 0.05)],
+        );
+      }
+      // upper arm hanging at the side, forearm brought across for the weapon
+      add(new THREE.IcosahedronGeometry(1, 1), [side * 7.0, 36.4, 0.6], [2.4, 4.6, 2.4], [0, 0, side * 0.09]);
+    }
+
+    // ---- neck and a PLAIN helm — the rank difference, read at silhouette --
+    add(new THREE.CylinderGeometry(2.3, 2.8, 2.6, 8), [0, 45.6, 0.2]);
+    add(new THREE.IcosahedronGeometry(1, 2), [0, 49.4, 0.4], [4.0, 4.6, 3.6]);
+    if (spear) {
+      // domed helm with a low fore-and-aft crest ridge
+      add(new THREE.BoxGeometry(1.1, 1.6, 7.2), [0, 53.0, 0.3], [1, 1, 1], [0.04, 0, 0]);
+    } else {
+      // flat-topped kettle helm with a brim
+      add(new THREE.CylinderGeometry(4.6, 4.2, 1.3, 9), [0, 52.4, 0.3]);
+      add(new THREE.CylinderGeometry(5.4, 5.4, 0.7, 9), [0, 50.8, 0.3], [1, 1, 1], [0.05, 0, 0]);
+    }
+    // cheek guards and a nasal bar — a face implied, never modelled
+    add(new THREE.BoxGeometry(1.9, 4.8, 1.5), [-1.8, 47.6, 3.1], [1, 1, 1], [0.07, 0.1, 0.1]);
+    add(new THREE.BoxGeometry(1.9, 4.8, 1.5), [1.8, 47.6, 3.1], [1, 1, 1], [0.07, -0.1, -0.1]);
+    add(new THREE.BoxGeometry(0.9, 4.2, 1.2), [0, 48.4, 3.5]);
+
+    // ---- weapon, grounded at rest ----------------------------------------
+    if (spear) {
+      // Leaned out from the body rather than parallel to it: a haft flush
+      // against the torso disappears into the silhouette, and the spear is
+      // the whole point of telling this one apart at distance.
+      const x = 9.4;
+      const lean = -0.085;
+      add(new THREE.CylinderGeometry(0.62, 0.78, 56, 7), [x, 28, 4.0], [1, 1, 1], [0.03, 0, lean]);
+      add(new THREE.ConeGeometry(1.7, 7.6, 6), [x - 2.7, 58.6, 4.2], [1, 1, 1], [0.03, 0, lean]);
+      add(new THREE.CylinderGeometry(1.15, 1.15, 1.3, 7), [x - 2.0, 53.8, 4.1], [1, 1, 1], [0.03, 0, lean]);
+      // a pennant lashed below the head, to break the pole's straight line
+      add(new THREE.BoxGeometry(0.35, 5.4, 3.6), [x - 3.4, 49.6, 4.1], [1, 1, 1], [0.03, 0.2, lean]);
+      // gauntlets closed on the haft, at the heights the arms actually reach
+      add(new THREE.IcosahedronGeometry(1, 1), [x - 0.9, 39.4, 4.0], [2.2, 2.0, 2.3], [0, 0, lean]);
+      add(new THREE.IcosahedronGeometry(1, 1), [x - 0.2, 30.6, 3.9], [2.2, 2.0, 2.3], [0, 0, lean]);
+      // forearms bridging shoulder to grip, so the arm is not a floating fist
+      add(new THREE.IcosahedronGeometry(1, 1), [7.9, 39.9, 2.6], [3.0, 1.5, 1.8], [0, 0, 0.22]);
+      add(new THREE.IcosahedronGeometry(1, 1), [7.6, 31.2, 2.4], [2.8, 1.4, 1.7], [0, 0, -0.14]);
+    } else {
+      // Greatsword driven point-down into the plinth — the blade reaches the
+      // stone, so the pose reads as resting on it rather than holding it in
+      // the air, and the arms complete a closed triangle with the body.
+      add(swordBladeGeometry(), [0, 27.0, 6.2], [0.7, 0.92, 0.7], [Math.PI, 0, 0]);
+      add(new THREE.BoxGeometry(13.0, 1.7, 2.3), [0, 34.6, 6.2]);
+      add(new THREE.BoxGeometry(2.6, 1.2, 2.6), [0, 33.2, 6.2]);
+      add(new THREE.CylinderGeometry(0.95, 0.95, 5.4, 7), [0, 37.6, 6.2]);
+      add(new THREE.IcosahedronGeometry(1.9, 1), [0, 40.6, 6.2], [1, 0.8, 1]);
+      for (const side of [-1, 1]) {
+        add(new THREE.IcosahedronGeometry(1, 1), [side * 1.8, 37.4, 6.1], [2.2, 2.1, 2.3], [0, 0, side * 0.12]);
+        // forearm running from the pauldron in to the pommel
+        add(
+          new THREE.IcosahedronGeometry(1, 1),
+          [side * 4.6, 37.0, 4.0], [3.6, 1.6, 2.0], [0, side * 0.5, side * 0.1],
+        );
+      }
+    }
+  });
+  const faceted = geometry.toNonIndexed();
+  geometry.dispose();
+  faceted.computeVertexNormals();
+  faceted.computeBoundingBox();
+  faceted.computeBoundingSphere();
+  paintFacets(faceted, 0x2b3242, 0x8ea0b4, spear ? 411 : 733);
+  return faceted;
+}
+
 function guardianStoneGeometry(): THREE.BufferGeometry {
   const geometry = mergedParts((add) => {
     // Throne and rubble plinth establish side-view thickness and embed every

@@ -18,7 +18,7 @@ import { ABYSS } from "../gen/dungeon";
 import { TH } from "../config";
 import { makeHandPaintedLandmarkStoneMaterial, makeBrambleMat } from "./kit/materials";
 import { brambleClumpGeometry, scatterBrambles } from "./brambles";
-import { erodeGeometry } from "./kit/erode";
+import { erodeGeometry, subdivideGeometry } from "./kit/erode";
 
 /** Layered ghost-fire for the oracle's eye sockets. The torch flame material
  *  reads fine at prop scale but falls apart on a hero close-up, so the gaze
@@ -635,9 +635,15 @@ function oracleBackingCliffGeometry(): THREE.BufferGeometry {
   });
   // Weathering comes last. It moves vertices, so it changes which way faces
   // point — painting the face values before this would colour the old normals.
-  erodeGeometry(geometry, { seed: 419, amplitude: 2.1, frequency: 0.055, octaves: 4, strata: 0.6 });
-  paintFacets(geometry, 0x111a2b, 0x34465f, 419);
-  return geometry;
+  // subdivideGeometry returns a NEW geometry rather than mutating in place, so
+  // the weathered result is what gets painted and returned — painting the
+  // original here would colour a mesh nobody ever sees.
+  const weathered = erodeGeometry(subdivideGeometry(geometry, 1), {
+    seed: 419, amplitude: 1.5, frequency: 0.055, octaves: 4, strata: 0.6,
+  });
+  geometry.dispose();
+  paintFacets(weathered, 0x111a2b, 0x34465f, 419);
+  return weathered;
 }
 
 /** A grounded fan of monumental slate blades. The dominant blade climbs from
@@ -1255,6 +1261,18 @@ function streamTripoDragonPerch(target: THREE.Mesh, onReady: () => void): () => 
         if (attribute !== "position" && attribute !== "normal") geometry.deleteAttribute(attribute);
       }
       if (!geometry.getAttribute("normal")) geometry.computeVertexNormals();
+      // The shipped perch is a 986-quad remesh — about a thousand triangles
+      // holding up a spire 128 units tall, so its facets are ten units across.
+      // That is fine for a thing on the horizon and wrong for the one rock a
+      // dragon sits on, which the camera gets right up against. Subdividing
+      // twice and weathering the result gives it a surface; the silhouette the
+      // remesh was chosen for is untouched, because midpoint subdivision never
+      // leaves the original hull.
+      const before = geometry.getAttribute("position").count / 3;
+      geometry = erodeGeometry(subdivideGeometry(geometry, 3), {
+        seed: DRAGON_PERCH_STRATA.seed, amplitude: 0.8, frequency: 0.06, octaves: 4, strata: 0.7,
+      });
+      geometry.userData.weathered = { from: before, to: geometry.getAttribute("position").count / 3 };
       geometry.computeBoundingBox();
       geometry.computeBoundingSphere();
       paintPerchStone(geometry);
@@ -1992,7 +2010,10 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
   dragonLandmark.position.fromArray(DRAGON_LANDMARK_DEFAULT_OFFSET);
   dragonLandmark.userData.generatedPlacement = [...DRAGON_LANDMARK_DEFAULT_OFFSET];
   root.add(dragonLandmark);
-  const dragonPerchGeo = dragonPerchColumnGeometry(DRAGON_PERCH_STRATA);
+  const dragonPerchGeo = erodeGeometry(
+    subdivideGeometry(dragonPerchColumnGeometry(DRAGON_PERCH_STRATA), 3),
+    { seed: DRAGON_PERCH_STRATA.seed, amplitude: 0.8, frequency: 0.06, octaves: 4, strata: 0.7 },
+  );
   const dragonPerch = new THREE.Mesh(dragonPerchGeo, stone);
   dragonPerch.name = "colossal-dragon-slate-spire";
   dragonPerch.castShadow = false;

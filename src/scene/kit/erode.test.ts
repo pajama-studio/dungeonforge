@@ -1,7 +1,7 @@
 import * as THREE from "three/webgpu";
 import { describe, expect, it } from "vitest";
 
-import { erodeGeometry, ERODE_DEFAULTS } from "./erode";
+import { erodeGeometry, subdivideGeometry, ERODE_DEFAULTS } from "./erode";
 
 const box = (segments = 6) => new THREE.BoxGeometry(40, 60, 24, segments, segments, segments);
 
@@ -70,5 +70,41 @@ describe("erodeGeometry", () => {
   it("does nothing to a geometry with no positions", () => {
     const empty = new THREE.BufferGeometry();
     expect(() => erodeGeometry(empty, ERODE_DEFAULTS)).not.toThrow();
+  });
+});
+
+describe("subdivideGeometry", () => {
+  it("multiplies triangles by four per level and preserves the hull", () => {
+    const src = new THREE.IcosahedronGeometry(10, 0);
+    const before = src.toNonIndexed().getAttribute("position").count / 3;
+    const g = subdivideGeometry(src, 2);
+    expect(g.getAttribute("position").count / 3).toBe(before * 16);
+    // Midpoint subdivision never leaves the original hull, so the bounds cannot grow.
+    g.computeBoundingBox();
+    const bb = g.boundingBox!;
+    expect(bb.max.x).toBeLessThanOrEqual(10.0001);
+    expect(bb.min.x).toBeGreaterThanOrEqual(-10.0001);
+  });
+
+  it("still cannot crack once eroded", () => {
+    // The point of subdividing before eroding: shared edges gain vertices at
+    // identical coordinates, and positional displacement keeps them together.
+    const g = erodeGeometry(subdivideGeometry(new THREE.BoxGeometry(20, 30, 12, 2, 2, 2), 1), { seed: 4 });
+    const p = g.getAttribute("position");
+    const seen = new Map<string, [number, number, number]>();
+    const src = subdivideGeometry(new THREE.BoxGeometry(20, 30, 12, 2, 2, 2), 1).getAttribute("position");
+    let checked = 0;
+    for (let i = 0; i < src.count; i++) {
+      const key = `${src.getX(i).toFixed(4)},${src.getY(i).toFixed(4)},${src.getZ(i).toFixed(4)}`;
+      const moved: [number, number, number] = [p.getX(i), p.getY(i), p.getZ(i)];
+      const prev = seen.get(key);
+      if (prev) {
+        checked++;
+        expect(moved[0]).toBeCloseTo(prev[0], 10);
+        expect(moved[1]).toBeCloseTo(prev[1], 10);
+        expect(moved[2]).toBeCloseTo(prev[2], 10);
+      } else seen.set(key, moved);
+    }
+    expect(checked).toBeGreaterThan(0);
   });
 });

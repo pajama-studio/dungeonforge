@@ -109,3 +109,51 @@ export function erodeGeometry(
   geometry.computeBoundingBox();
   return geometry;
 }
+
+
+/** Midpoint-subdivide every triangle, `levels` times.
+ *
+ *  Erosion can only move vertices that exist. A 1,000-triangle remesh standing
+ *  128 units tall has facets ten units across, and no amount of displacement
+ *  fixes that — it just makes ten-unit facets that wobble. This gives the
+ *  displacement something to bite on.
+ *
+ *  Triangle count multiplies by 4 per level, so two levels is 16x. Non-indexed
+ *  in, non-indexed out: erodeGeometry displaces by position, so the duplicated
+ *  vertices along shared edges still land together and nothing cracks.
+ */
+export function subdivideGeometry(geometry: THREE.BufferGeometry, levels = 1): THREE.BufferGeometry {
+  let source = geometry.index ? geometry.toNonIndexed() : geometry;
+  for (let pass = 0; pass < levels; pass++) {
+    const position = source.getAttribute("position");
+    if (!position) return source;
+    const out = new Float32Array(position.count * 4 * 3);
+    let w = 0;
+    const push = (
+      ax: number, ay: number, az: number, bx: number, by: number, bz: number,
+      cx: number, cy: number, cz: number,
+    ) => {
+      out[w++] = ax; out[w++] = ay; out[w++] = az;
+      out[w++] = bx; out[w++] = by; out[w++] = bz;
+      out[w++] = cx; out[w++] = cy; out[w++] = cz;
+    };
+    for (let i = 0; i < position.count; i += 3) {
+      const ax = position.getX(i), ay = position.getY(i), az = position.getZ(i);
+      const bx = position.getX(i + 1), by = position.getY(i + 1), bz = position.getZ(i + 1);
+      const cx = position.getX(i + 2), cy = position.getY(i + 2), cz = position.getZ(i + 2);
+      const mx = (ax + bx) / 2, my = (ay + by) / 2, mz = (az + bz) / 2;
+      const nx = (bx + cx) / 2, ny = (by + cy) / 2, nz = (bz + cz) / 2;
+      const ox = (cx + ax) / 2, oy = (cy + ay) / 2, oz = (cz + az) / 2;
+      push(ax, ay, az, mx, my, mz, ox, oy, oz);
+      push(mx, my, mz, bx, by, bz, nx, ny, nz);
+      push(ox, oy, oz, nx, ny, nz, cx, cy, cz);
+      push(mx, my, mz, nx, ny, nz, ox, oy, oz);
+    }
+    const next = new THREE.BufferGeometry();
+    next.setAttribute("position", new THREE.BufferAttribute(out, 3));
+    if (source !== geometry) source.dispose();
+    source = next;
+  }
+  source.computeVertexNormals();
+  return source;
+}

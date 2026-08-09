@@ -245,7 +245,7 @@ export function buildBridgeLink(
     flames.pushY(end.x + perp.x * lanternSide, end.y + 0.85, end.z + perp.z * lanternSide, 0, 0.8, 0.85, 0.8, hex(0xffffff));
   }
   putInstanced(pool, "linkStones", R.blockGeo, R.stoneMat, stones, true);
-  putInstancedTwin(pool, "linkStonesLo", "linkStones", R.blockGeoLo, R.stoneLoMat, true);
+  putInstancedTwin(pool, "linkStonesLo", "linkStones", R.blockGeoLo, R.stoneLoMat, farShadows);
   putInstanced(pool, "linkBowls", R.bowlGeo, R.woodMat, bowls, false);
   putInstanced(pool, "linkFlames", R.flameGeo, R.flameWarm, flames, false);
   // A new/rebuilt companion slot must start in exactly one LOD. Leaving both
@@ -354,7 +354,7 @@ export function buildSupportPiers(
     blockers.push({ x: px, z: pz, y0: baseY, y1: topY, radius: CELL * 0.58, slot });
   }
   putInstanced(pool, "blocks", R.blockGeo, R.stoneMat, bricks, true);
-  putInstancedTwin(pool, "blocksLo", "blocks", R.blockGeoLo, R.stoneLoMat, true);
+  putInstancedTwin(pool, "blocksLo", "blocks", R.blockGeoLo, R.stoneLoMat, farShadows);
   setSlotDetail(slot, false);
   const rise = makeRise(pool.group, riseDelay);
   return { group: pool.group, lights: [], tick: rise, dispose() {}, blockers };
@@ -390,6 +390,13 @@ let interiorCullEnabled = true;
 /** Experiment switch: draw every course with the sealed box. If see-through
  *  banding disappears with this on, the open shells are the cause. */
 let DEBUG_CLOSED_COURSES = false;
+/** Far-LOD masonry casting shadows. Every caster is drawn a second time in the
+ *  shadow pass, and the far tier is where that pays least: the geometry is
+ *  already a collapsed box and its shadow lands far from the camera. Toggle to
+ *  compare — __df.masonry.setFarShadows(). */
+let farShadows = false;
+export function setFarShadows(on: boolean): void { farShadows = on; }
+export function getFarShadows(): boolean { return farShadows; }
 export function setClosedCourses(on: boolean): void { DEBUG_CLOSED_COURSES = on; }
 export function getClosedCourses(): boolean { return DEBUG_CLOSED_COURSES; }
 export function setInteriorCull(on: boolean): void { interiorCullEnabled = on; }
@@ -1558,9 +1565,9 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   // Middle LOD keeps the exact authored transform/color of every visible
   // course. Only bevel topology and the expensive near material disappear;
   // the vertically collapsed blocksLo representation is reserved for far.
-  putInstancedTwin(pool, "blocksMidLo", "blocks", R.blockGeoLo, R.stoneLoMat, true);
-  putInstancedTwin(pool, "blockMidsLo", "blockMids", R.blockGeoLo, R.stoneLoMat, true);
-  putInstancedTwin(pool, "blockTopsLo", "blockTops", R.blockGeoLo, R.stoneLoMat, true);
+  putInstancedTwin(pool, "blocksMidLo", "blocks", R.blockGeoLo, R.stoneLoMat, farShadows);
+  putInstancedTwin(pool, "blockMidsLo", "blockMids", R.blockGeoLo, R.stoneLoMat, farShadows);
+  putInstancedTwin(pool, "blockTopsLo", "blockTops", R.blockGeoLo, R.stoneLoMat, farShadows);
   (pool.meshes.get("blocks")!.userData as { masonry?: MasonryStructureData }).masonry = {
     byInstance: breachByInstance,
   };
@@ -1596,8 +1603,8 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   putInstanced(pool, "architecturalBays", R.architecturalBayGeo, R.stoneMat, architecturalBays, false);
   putInstanced(pool, "towerRoofs", R.towerRoofGeo, R.stoneMat, towerRoofs, false);
   putInstanced(pool, "tiles", R.tileGeo, R.stoneMat, tiles, true);
-  putInstanced(pool, "tilesLo", R.tileGeoLo, R.stoneLoMat, tilesLow, true);
-  putInstancedTwin(pool, "tilesMidLo", "tiles", R.tileGeoLo, R.stoneLoMat, true);
+  putInstanced(pool, "tilesLo", R.tileGeoLo, R.stoneLoMat, tilesLow, farShadows);
+  putInstancedTwin(pool, "tilesMidLo", "tiles", R.tileGeoLo, R.stoneLoMat, farShadows);
   // Every rebuilt slot starts in the cheap state. The main loop promotes at
   // most one nearby island per frame after the background high-detail compile.
   const blockHi = pool.meshes.get("blocks"), blockLo = pool.meshes.get("blocksLo");
@@ -1618,7 +1625,7 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   }
   putInstanced(pool, "redTiles", R.tileGeo, R.redMat, redTiles, true);
   putInstanced(pool, "steps", R.stepGeo, R.stoneMat, steps);
-  putInstancedTwin(pool, "stepsLo", "steps", R.stepGeo, R.stoneLoMat, true);
+  putInstancedTwin(pool, "stepsLo", "steps", R.stepGeo, R.stoneLoMat, farShadows);
   pool.meshes.get("steps")!.count = 0;
   pool.meshes.get("steps")!.visible = false;
   putInstanced(pool, "cheeks", R.cheekGeo, R.stoneMat, cheeks, false);
@@ -1637,7 +1644,7 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   putInstanced(pool, "moss", R.mossGeo, R.mossMat, moss, false);
   putInstancedCombined(pool, "stains", R.stainGeo, R.stainMat, [bloodStains, greenGrime], false);
   putInstanced(pool, "cols", R.colGeo, R.stoneMat, cols, true);
-  putInstancedTwin(pool, "colsLo", "cols", R.colGeo, R.stoneLoMat, true);
+  putInstancedTwin(pool, "colsLo", "cols", R.colGeo, R.stoneLoMat, farShadows);
   putInstancedTwin(pool, "colsFade", "cols", R.colGeo, R.stoneFadeMat, false);
   putInstancedTwin(pool, "colsLoFade", "colsLo", R.colGeo, R.stoneLoFadeMat, false);
   pool.meshes.get("cols")!.count = 0;

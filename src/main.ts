@@ -21,7 +21,7 @@ import {
   type LodLevel,
 } from "./scene/slots";
 import { buildEnvironment } from "./scene/env";
-import { setInteriorCull, getInteriorCull, setClosedCourses, getClosedCourses } from "./scene/build";
+import { setInteriorCull, getInteriorCull, setClosedCourses, getClosedCourses, setFarShadows, getFarShadows } from "./scene/build";
 import { flickerDamp, loadHandPaintedStoneTexture, setOcclusionWindow, stoneStyle } from "./scene/kit/materials";
 import { createPost } from "./render/post";
 import { GpuMasonryScene } from "./render/gpu-scene";
@@ -1656,6 +1656,9 @@ void boot().catch((error) => {
     get closedCourses() { return getClosedCourses(); },
     /** Draw every course with the sealed box. Re-forge after changing. */
     setClosedCourses(on: boolean) { setClosedCourses(on); },
+    get farShadows() { return getFarShadows(); },
+    /** Far-LOD masonry shadow casting. Re-forge after changing. */
+    setFarShadows(on: boolean) { setFarShadows(on); },
   },
   gpuScene,
   destruction,

@@ -209,7 +209,15 @@ export function createPost(
   // ivory-green so torch pools stay amber while the air goes deep-sea teal
   const graded = fogged.rgb.mul(mix(vec3(0.85, 1.03, 1.06), vec3(1.16, 1.09, 0.83), toneMixK));
   const vibrant = mix(vec3(luma), graded, 1.16);
-  postProcessing.outputNode = vec4(vibrant.mul(vig), fogged.a);
+  // Painted value grouping: an S-curve pulls the low midtones down into one
+  // dark mass so the lit areas separate from it — that grouping is what makes
+  // the reference read as painted rather than evenly exposed. Shaped below
+  // 1.0 only, so torch cores and the moon shaft keep their HDR headroom and
+  // still cross the bloom threshold.
+  const toe = vibrant.min(vec3(1));
+  const curved = toe.mul(toe).mul(vec3(3).sub(toe.mul(2)));
+  const shaped = vibrant.add(mix(toe, curved, 0.38)).sub(toe);
+  postProcessing.outputNode = vec4(shaped.mul(vig), fogged.a);
   return {
     post: postProcessing,
     setBloom: (s: number) => { bloomPass.strength.value = s; },

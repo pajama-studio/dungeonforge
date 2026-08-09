@@ -159,7 +159,12 @@ export function buildEnvironment(
   // cyan moon KEY, a steel-blue counter-RIM barely warmer than the sky, and a
   // warm earthen ground bounce. The variation comes from cyan↔teal↔amber —
   // violet pulled the frame apart, so the rim keeps only a whisper of it.
-  const hemi = new THREE.HemisphereLight(0x36586e, 0x412a1a, 0.9);
+  // Ground colour is a TEAL bounce, not earth: the thing below this world is
+  // a luminous basin, so masonry undersides should catch its light. In the
+  // painted reference every block soffit reads cool while warmth appears only
+  // where a torch actually is — an earthy ground colour smeared that warmth
+  // everywhere and flattened the whole value structure.
+  const hemi = new THREE.HemisphereLight(0x36586e, 0x1d4a45, 0.82);
   group.add(hemi);
 
   const rim = new THREE.DirectionalLight(0x568fa0, 0.56);

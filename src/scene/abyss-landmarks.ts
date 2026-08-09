@@ -54,46 +54,42 @@ function makeEyeFireMat(
 /** Bioluminescent water for the abyss basin: flat additive discs whose
  *  radial falloff is rippled by slow noise, so the floor reads as glowing
  *  water lapping the statue base and pooling under the maze (painted ref). */
-/** A slowly turning current direction, in world space.
+/** Viscous internal churn — the liquid rolling over inside itself.
  *
- *  This is the flow map. There is no texture to author — the field is three
- *  low-frequency sines turned into an angle, which gives smoothly wandering
- *  currents and eddies instead of one uniform drift. Being low frequency it
- *  costs almost nothing; the expensive part is what gets advected along it. */
-function flowField() {
-  const fp = positionWorld.xz.mul(0.009);
-  const angle = sin(fp.x)
-    .add(sin(fp.y.mul(1.31)))
-    .add(sin(fp.x.add(fp.y).mul(0.67)))
-    .mul(1.1);
-  return vec2(cos(angle), sin(angle));
-}
-
-/** Caustic filaments advected along the flow field.
+ *  Surface patterns were the wrong model. A flow map advects a texture ACROSS
+ *  a surface, which is right for a river seen from above and wrong for a body
+ *  of luminous liquid: what reads as "deep" is turbulence happening at
+ *  several depths at once, slowly folding into itself.
  *
- *  Straight scrolling noise looks like sliding wallpaper, and advecting a
- *  pattern along a flow field smears it forever in the flow direction. The
- *  fix is Valve's two-phase trick: advect the SAME pattern twice, half a
- *  cycle apart, and cross-fade between them on |1 − 2·phase|. Each sample is
- *  never stretched more than half a cycle before the other one takes over,
- *  so the water flows without ever visibly tearing or smearing.
+ *  This is Iñigo Quilez's domain warping: noise sampled at a position that
+ *  has itself been displaced by noise, twice. Each warp folds the field over
+ *  and the result churns rather than scrolls. Time enters as a slow drift on
+ *  the warp offsets, not as a scroll on the final lookup, so the pattern
+ *  rolls in place instead of sliding past.
  *
- *  The pattern itself is ridged Perlin — `1 − |noise|` turns the zero
- *  crossings into thin bright filaments, which is what caustics actually
- *  look like, and costs one gradient-noise evaluation instead of Worley's
- *  nine cell probes. Returns [0, 1]. */
-function waterCaustics(scale: number, cycleSeconds: number, travel: number) {
+ *  Returns the field in [-1, 1] plus the warp magnitude, which says how
+ *  violently a given spot is being folded — the emissive cores are hung off
+ *  that, so the light lives where the liquid is actually moving. */
+function liquidChurn(scale: number, speed: number, fold: number) {
   const p = positionWorld.xz.mul(scale);
-  const flow = flowField();
-  const t = time.div(cycleSeconds);
-  const phase0 = fract(t);
-  const phase1 = fract(t.add(0.5));
-  // ridged noise: |noise| inverted turns the zero crossings into thin bright
-  // filaments, which is what caustics actually look like
-  const sample0 = float(1).sub(mx_noise_float(p.sub(flow.mul(phase0.mul(travel)))).abs());
-  const sample1 = float(1).sub(mx_noise_float(p.sub(flow.mul(phase1.mul(travel)))).abs());
-  const blend = float(1).sub(phase0.mul(2)).abs();
-  return sample0.mix(sample1, blend);
+  const t = time.mul(speed);
+
+  // first displacement: two independent noise fields as an offset vector
+  const q = vec2(
+    mx_noise_float(p.add(vec2(float(0), t))),
+    mx_noise_float(p.add(vec2(float(5.2), t.negate().add(1.3)))),
+  );
+  // second displacement, sampled at the already-warped position: this is the
+  // fold that turns drift into churn
+  const warped = p.add(q.mul(fold));
+  const r = vec2(
+    mx_noise_float(warped.add(vec2(t.mul(0.4).add(1.7), float(9.2)))),
+    mx_noise_float(warped.add(vec2(float(8.3), t.mul(-0.3).add(2.8)))),
+  );
+  return {
+    value: mx_noise_float(p.add(r.mul(fold))),
+    turbulence: r.x.abs().add(r.y.abs()).mul(0.5),
+  };
 }
 
 function makeAbyssPoolMat(): THREE.MeshBasicNodeMaterial {
@@ -105,13 +101,16 @@ function makeAbyssPoolMat(): THREE.MeshBasicNodeMaterial {
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
   });
   const fall = smoothstep(1.0, 0.06, length(uv().sub(0.5)).mul(2));
-  const caustic = waterCaustics(0.09, 7, 6);
-  // the filament tips are what bloom; the body is the soft glow around them
-  const veins = smoothstep(0.72, 0.97, caustic);
-  mat.colorNode = color(0x1fd4b4).mul(caustic.mul(1.0))
-    .add(color(0x9dffe8).mul(veins).mul(2.1))
+  // Faster and tighter than the basin: this is the pool the statue stands in,
+  // where the bloom concentrates and the liquid is most agitated.
+  const churn = liquidChurn(0.06, 0.1, 2.6);
+  const level = churn.value.mul(0.5).add(0.5);
+  const core = smoothstep(0.52, 0.86, level);
+  const spark = smoothstep(0.5, 0.92, churn.turbulence).mul(core);
+  mat.colorNode = color(0x1fd4b4).mul(core).mul(1.2)
+    .add(color(0x9dffe8).mul(spark).mul(2.0))
     .mul(fall.pow(1.6));
-  mat.opacityNode = fall.mul(0.9);
+  mat.opacityNode = fall.mul(0.85);
   return mat;
 }
 
@@ -125,21 +124,30 @@ function makeAbyssBasinMat(): THREE.MeshBasicNodeMaterial {
     transparent: true, depthWrite: false,
   });
   const fall = smoothstep(1.0, 0.1, length(uv().sub(0.5)).mul(2));
-  // Two advected scales: a broad slow drift carrying the body colour, and a
-  // finer, faster one whose filament tips carry the light. Both ride the
-  // same flow field, so the surface reads as one current rather than two
-  // effects stacked on each other.
-  const broad = waterCaustics(0.035, 11, 9);
-  const fine = waterCaustics(0.11, 6.5, 5);
-  const body = smoothstep(0.34, 0.86, broad.mul(0.6).add(fine.mul(0.4)));
-  // narrow and bright beats wide and bright: a wide mask blooms into itself
-  // and reads as mist, and it is the dark water BETWEEN the filaments that
-  // makes this look like a surface at all
-  const veins = smoothstep(0.78, 0.99, fine);
-  mat.colorNode = color(0x13836f).mul(body).mul(1.55)
-    .add(color(0x86ffe0).mul(veins).mul(2.2))
-    .add(color(0x04201c));
-  mat.opacityNode = fall.mul(0.92);
+  const churn = liquidChurn(0.019, 0.05, 3.4);
+  const level = churn.value.mul(0.5).add(0.5);
+
+  // Emission is gated TWICE, because a surface that glows everywhere stops
+  // reading as dark water with light in it.
+  //  1. a very low-frequency mask, so only some stretches of the basin are
+  //     alive at all — the rest is just black water;
+  //  2. a high threshold inside those stretches, so within a lit stretch the
+  //     glow still sits in cores rather than washing the whole area.
+  const alive = smoothstep(0.40, 0.78,
+    mx_noise_float(positionWorld.xz.mul(0.0042)).mul(0.5).add(0.5));
+  const core = smoothstep(0.66, 0.93, level).mul(alive);
+  // the hottest specks follow the fold itself, so light sits where the
+  // liquid is actually being turned over
+  const spark = smoothstep(0.62, 0.96, churn.turbulence).mul(core);
+
+  // The body stays near the abyss's own value so the water belongs to the
+  // scene instead of floating on top of it as a bright teal carpet.
+  const body = color(0x0a2e2b).mul(smoothstep(0.25, 0.85, level))
+    .add(color(0x051917));
+  mat.colorNode = color(0x25c8a8).mul(core).mul(1.25)
+    .add(color(0x9fffe4).mul(spark).mul(1.5))
+    .add(body);
+  mat.opacityNode = fall.mul(0.9);
   return mat;
 }
 
@@ -153,8 +161,8 @@ function makeAbyssShoreMat(): THREE.MeshBasicNodeMaterial {
   const band = smoothstep(0.74, 0.87, r).mul(smoothstep(1.0, 0.94, r));
   // the shoreline rides the same current as the water it edges, so the two
   // never look like separate effects laid on top of each other
-  const wash = waterCaustics(0.16, 5, 4).mul(0.55).add(0.6);
-  mat.colorNode = color(0x3af2cf).mul(band).mul(wash).mul(3.4);
+  const wash = liquidChurn(0.13, 0.14, 2.2).value.mul(0.35).add(0.72);
+  mat.colorNode = color(0x3af2cf).mul(band).mul(wash).mul(2.8);
   mat.opacityNode = band.mul(0.9);
   return mat;
 }

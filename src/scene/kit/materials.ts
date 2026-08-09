@@ -133,24 +133,31 @@ let brushLoad: Promise<void> | null = null;
 // masonry is MeshLambert, diffuse only, and switching to Standard for a
 // roughness map would cost more per fragment than the look is worth here.
 type StoneMaps = { albedo: THREE.Texture; normal: THREE.Texture; ao: THREE.Texture };
+type StoneSet = "wall" | "floor";
 const stonePlaceholder = (rgb: number[]) => {
   const tex = new THREE.DataTexture(new Uint8Array([...rgb, 255]), 1, 1, THREE.RGBAFormat);
   tex.needsUpdate = true;
   return tex;
 };
-const stoneMaps: StoneMaps = {
-  albedo: stonePlaceholder([150, 150, 150]),
+const makeSet = (): StoneMaps => ({
+  albedo: stonePlaceholder([128, 128, 128]),
   normal: stonePlaceholder([128, 128, 255]),
-  ao: stonePlaceholder([255, 255, 255]),
-};
-const stoneMapNodes: Array<{ key: keyof StoneMaps; node: { value: THREE.Texture } }> = [];
+  ao: stonePlaceholder([128, 128, 128]),
+});
+// Walls and floors need different stone counts, not just different UVs. A wall
+// brick is 2.2 x 0.925 and reads as ONE face; a floor slab is 2.2 x 2.2 and
+// reads as flagstones. Sampling one texture for both stamps a 2x2 grid of
+// stones onto every floor tile, which is exactly what it looked like.
+const stoneSets: Record<StoneSet, StoneMaps> = { wall: makeSet(), floor: makeSet() };
+const stoneMapNodes: Array<{ set: StoneSet; key: keyof StoneMaps; node: { value: THREE.Texture } }> = [];
 let stoneSetLoad: Promise<void> | null = null;
 
 export function loadStoneSet(style = "ruined"): Promise<void> {
   if (stoneSetLoad) return stoneSetLoad;
   const loader = new THREE.TextureLoader();
-  const one = (map: keyof StoneMaps, srgb: boolean) => new Promise<void>((resolve) => {
-    loader.load(`/assets/textures/stone/${style}-${map}-1024.webp`, (tex) => {
+  const one = (set: StoneSet, map: keyof StoneMaps, srgb: boolean) => new Promise<void>((resolve) => {
+    const name = set === "floor" ? "floor" : style;
+    loader.load(`/assets/textures/stone/${name}-${map}-1024.webp`, (tex) => {
       // Only albedo is colour; normal and AO are data and must not be
       // gamma-decoded or the relief comes out wrong.
       tex.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
@@ -160,19 +167,23 @@ export function loadStoneSet(style = "ruined"): Promise<void> {
       tex.anisotropy = 4;
       tex.generateMipmaps = true;
       tex.needsUpdate = true;
-      stoneMaps[map] = tex;
-      for (const entry of stoneMapNodes) if (entry.key === map) entry.node.value = tex;
+      stoneSets[set][map] = tex;
+      for (const entry of stoneMapNodes) {
+        if (entry.set === set && entry.key === map) entry.node.value = tex;
+      }
       resolve();
     }, undefined, () => resolve());
   });
-  stoneSetLoad = Promise.all([one("albedo", true), one("normal", false), one("ao", false)])
-    .then(() => undefined);
+  const sets: StoneSet[] = ["wall", "floor"];
+  stoneSetLoad = Promise.all(sets.flatMap((set) => [
+    one(set, "albedo", true), one(set, "normal", false), one(set, "ao", false),
+  ])).then(() => undefined);
   return stoneSetLoad;
 }
 
-function sampleStone(map: keyof StoneMaps, uvNode: any): any {
-  const node = textureNode(stoneMaps[map], uvNode);
-  stoneMapNodes.push({ key: map, node: node as unknown as { value: THREE.Texture } });
+function sampleStone(set: StoneSet, map: keyof StoneMaps, uvNode: any): any {
+  const node = textureNode(stoneSets[set][map], uvNode);
+  stoneMapNodes.push({ set, key: map, node: node as unknown as { value: THREE.Texture } });
   return node;
 }
 
@@ -441,6 +452,7 @@ export interface StoneMaterialTransform {
 export function makeStoneMat(
   transform?: StoneMaterialTransform,
   stableInstanceId = instanceIndex.toFloat(),
+  set: StoneSet = "wall",
 ): THREE.MeshLambertNodeMaterial {
   // Lambert = diffuse-only lighting: matte stone doesn't need GGX, and it
   // halves the per-light fragment cost across the entire masonry fill.
@@ -557,8 +569,10 @@ export function makeStoneMat(
   //
   // One stone per brick face: each brick is already its own instance, so a
   // texture full of stones would put dozens on a single 2.2m face.
-  const stoneUv = paintedUv(idf, 0.42, 91);
-  const stoneNormal = sampleStone("normal", stoneUv).xyz.mul(2).sub(1);
+  // Floors show one slab per cell, walls one face per brick, so the projection
+  // scale differs even though the generator is the same.
+  const stoneUv = paintedUv(idf, set === "floor" ? 0.5 : 0.42, 91);
+  const stoneNormal = sampleStone(set, "normal", stoneUv).xyz.mul(2).sub(1);
   const reliefLocal = vec3(
     stoneNormal.x.mul(stoneStyle.paintedRelief),
     float(0),
@@ -598,8 +612,8 @@ export function makeStoneMat(
   // Modulate around 1.0, never below it on average. The maps are written
   // centred on 0.5, so (s - 0.5) * k + 1 keeps the mean at unity whatever the
   // style is, and the contrast is the only thing being chosen here.
-  const stoneAlbedo = sampleStone("albedo", stoneUv).rgb.sub(0.5).mul(stoneStyle.stoneDetail).add(1);
-  const stoneAo = sampleStone("ao", stoneUv).r.sub(0.5).mul(stoneStyle.stoneCavity).add(1);
+  const stoneAlbedo = sampleStone(set, "albedo", stoneUv).rgb.sub(0.5).mul(stoneStyle.stoneDetail).add(1);
+  const stoneAo = sampleStone(set, "ao", stoneUv).r.sub(0.5).mul(stoneStyle.stoneCavity).add(1);
   mat.colorNode = vec3(albedo)
     .mul(handPaintedStoneFactor(idf))
     .mul(stoneAlbedo)
@@ -607,6 +621,15 @@ export function makeStoneMat(
     .mul(crackFactor(idf, stoneStyle.damage))
     .add(warmEdge);
   return mat;
+}
+
+/** Floors and steps: same shader, flagstone-scaled stone set. */
+export function makeStoneFloorMat(
+  stableInstanceId = instanceIndex.toFloat(),
+): THREE.MeshLambertNodeMaterial {
+  const material = makeStoneMat(undefined, stableInstanceId, "floor");
+  material.name = "masonry-floor";
+  return material;
 }
 
 export function makeStoneLoMat(stableInstanceId = instanceIndex.toFloat()): THREE.MeshLambertNodeMaterial {
@@ -684,6 +707,7 @@ export interface MatKit {
   stoneFadeMat: THREE.MeshLambertNodeMaterial;
   stoneLoMat: THREE.MeshLambertNodeMaterial;
   stoneLoFadeMat: THREE.MeshLambertNodeMaterial;
+  stoneFloorMat: THREE.MeshLambertNodeMaterial;
   stairMat: THREE.MeshLambertNodeMaterial;
   stairFadeMat: THREE.MeshLambertNodeMaterial;
   redMat: THREE.MeshStandardNodeMaterial;
@@ -718,6 +742,7 @@ export interface MatKit {
 
 export function makeMaterials(): MatKit {
   const stoneMat = makeStoneMat();
+  const stoneFloorMat = makeStoneFloorMat();
   const stoneFadeMat = stoneMat.clone();
   applyLocalOcclusionWindow(stoneFadeMat);
   stoneFadeMat.name = "occluding-architecture-fade";
@@ -973,6 +998,7 @@ export function makeMaterials(): MatKit {
     stoneLoMat,
     stoneLoFadeMat,
     // spiral stair towers share the masonry face-shading via vertex colors
+    stoneFloorMat,
     stairMat,
     stairFadeMat,
     redMat,

@@ -1622,7 +1622,9 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   putInstanced(pool, "merlons", R.merlonGeo, R.stoneMat, merlons);
   putInstanced(pool, "architecturalBays", R.architecturalBayGeo, R.stoneMat, architecturalBays, false);
   putInstanced(pool, "towerRoofs", R.towerRoofGeo, R.stoneMat, towerRoofs, false);
-  putInstanced(pool, "tiles", R.tileGeo, R.stoneMat, tiles, true);
+  // Floors get the flagstone-scaled set; the wall set stamps a grid of
+  // stones onto every slab.
+  putInstanced(pool, "tiles", R.tileGeo, R.stoneFloorMat, tiles, true);
   putInstanced(pool, "tilesLo", R.tileGeoLo, R.stoneLoMat, tilesLow, farShadows);
   putInstancedTwin(pool, "tilesMidLo", "tiles", R.tileGeoLo, R.stoneLoMat, farShadows);
   // Every rebuilt slot starts in the cheap state. The main loop promotes at
@@ -1644,7 +1646,7 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
     tileLo.visible = tileLo.count > 0;
   }
   putInstanced(pool, "redTiles", R.tileGeo, R.redMat, redTiles, true);
-  putInstanced(pool, "steps", R.stepGeo, R.stoneMat, steps);
+  putInstanced(pool, "steps", R.stepGeo, R.stoneFloorMat, steps);
   putInstancedTwin(pool, "stepsLo", "steps", R.stepGeo, R.stoneLoMat, farShadows);
   pool.meshes.get("steps")!.count = 0;
   pool.meshes.get("steps")!.visible = false;

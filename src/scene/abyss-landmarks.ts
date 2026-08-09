@@ -1003,7 +1003,11 @@ const TRIPO_WARDEN_RENDER = "/assets/abyss/warden/warden-render-30k.glb";
 const TRIPO_WARDEN_RANK_RENDER = "/assets/abyss/warden/warden-rank-render-8k.glb";
 const TRIPO_WARDEN_DESTRUCTION_PROXY = "/assets/abyss/warden/warden-destruction-proxy-2500.glb";
 const TRIPO_DRAGON_RENDER = "/assets/abyss/dragon/dragon-render-45k-rigged-runtime.glb";
-const TRIPO_DRAGON_PERCH_RENDER = "/assets/abyss/dragon/dragon-slate-perch-qr1k.glb?v=adaptive100-scale70-contact-6";
+// The dragon stands on a titan skull now, not a slate spire. Tripo v3.1,
+// decimated to 30k with its UVs intact — zero boundary and zero non-manifold
+// edges at every LOD — and its textures resized to 1024, which is what keeps a
+// hero rock at 1.3MB.
+const TRIPO_DRAGON_PERCH_RENDER = "/assets/abyss/dragon/titan-skull-perch-30k.glb?v=titan-skull-1";
 
 // Neural landmark shells are Draco-compressed and streamed only after the
 // first visible frame. Keeping one shared decoder avoids three independent
@@ -1061,18 +1065,29 @@ tripoGltfLoader.setDRACOLoader(tripoDracoLoader);
 const dragonGltfLoader = traceStreams(new GLTFLoader(), "dragon");
 dragonGltfLoader.setDRACOLoader(tripoDracoLoader);
 
-function disposeLoadedGraph(group: THREE.Object3D): void {
+/** Free a streamed glTF graph.
+ *
+ *  `keep` exempts materials the caller has adopted onto a resident mesh. Without
+ *  it, adopting a loaded material and then disposing the graph frees that
+ *  material AND its textures out from under the mesh still using them, and the
+ *  asset renders untextured with nothing logged anywhere. */
+function disposeLoadedGraph(group: THREE.Object3D, keep?: ReadonlySet<THREE.Material>): void {
   const textures = new Set<THREE.Texture>();
+  const kept = new Set<THREE.Texture>();
   group.traverse((object) => {
     const mesh = object as THREE.Mesh;
     mesh.geometry?.dispose();
     const materials = mesh.material ? (Array.isArray(mesh.material) ? mesh.material : [mesh.material]) : [];
     for (const material of materials) {
-      for (const value of Object.values(material)) if (value instanceof THREE.Texture) textures.add(value);
-      material.dispose();
+      const retained = keep?.has(material) ?? false;
+      for (const value of Object.values(material)) {
+        if (value instanceof THREE.Texture) (retained ? kept : textures).add(value);
+      }
+      if (!retained) material.dispose();
     }
   });
-  for (const texture of textures) texture.dispose();
+  // A texture shared between a kept material and a discarded one must survive.
+  for (const texture of textures) if (!kept.has(texture)) texture.dispose();
 }
 
 interface PerchSurfaceHit {
@@ -1200,40 +1215,69 @@ function streamTripoDragonPerch(target: THREE.Mesh, onReady: () => void): () => 
       }
 
       const sourceMesh = source as THREE.Mesh;
-      let geometry = sourceMesh.geometry.clone();
+      const geometry = sourceMesh.geometry.clone();
       geometry.applyMatrix4(sourceMesh.matrixWorld);
+      // Keep the UVs. The old perch was a quad remesh with no usable UV layout,
+      // so this path stripped everything but position/normal and vertex-painted
+      // the rock instead. The skull arrives with its baked hand-painted albedo —
+      // the same Tripo lineage as the oracle and the dragon — and throwing that
+      // away is exactly what made the rock read as a different material from the
+      // statues standing on it.
       for (const attribute of Object.keys(geometry.attributes)) {
-        if (attribute !== "position" && attribute !== "normal") geometry.deleteAttribute(attribute);
+        if (attribute !== "position" && attribute !== "normal" && attribute !== "uv") {
+          geometry.deleteAttribute(attribute);
+        }
       }
       if (!geometry.getAttribute("normal")) geometry.computeVertexNormals();
-      // The shipped perch is a 986-quad remesh — about a thousand triangles
-      // holding up a spire 128 units tall, so its facets are ten units across.
-      // That is fine for a thing on the horizon and wrong for the one rock a
-      // dragon sits on, which the camera gets right up against. Subdividing
-      // twice and weathering the result gives it a surface; the silhouette the
-      // remesh was chosen for is untouched, because midpoint subdivision never
-      // leaves the original hull.
-      const before = geometry.getAttribute("position").count / 3;
-      geometry = erodeGeometry(subdivideGeometry(geometry, 3), {
-        seed: DRAGON_PERCH_STRATA.seed, amplitude: 0.8, frequency: 0.06, octaves: 4, strata: 0.7,
-      });
-      geometry.userData.weathered = { from: before, to: geometry.getAttribute("position").count / 3 };
+      geometry.computeBoundingBox();
+
+      // Normalise to the profile height instead of trusting the asset's own.
+      //
+      // blender-optimize-tripo.py normalises everything it emits to height 10,
+      // while the perch this replaces shipped at 145 units tall and the fit math
+      // divides by DRAGON_PERCH_STRATA.height (128). Dropping an optimised model
+      // in raw puts a 10-unit skull under a dragon expecting a 128-unit spire —
+      // roughly thirteen times too small, and nothing warns. Deriving the scale
+      // from the box means any future perch asset drops in at the right size
+      // whatever pipeline produced it.
+      const raw = geometry.boundingBox!;
+      const rawHeight = raw.max.y - raw.min.y;
+      if (rawHeight > 1e-6) {
+        const fit = DRAGON_PERCH_STRATA.height / rawHeight;
+        geometry.translate(
+          -(raw.min.x + raw.max.x) / 2,
+          -raw.min.y,
+          -(raw.min.z + raw.max.z) / 2,
+        );
+        geometry.scale(fit, fit, fit);
+        geometry.userData.fitScale = fit;
+      }
       geometry.computeBoundingBox();
       geometry.computeBoundingSphere();
-      paintPerchStone(geometry);
-      geometry.userData.source = "tripo-v3.1-quadremesher-1k";
-      geometry.userData.quadFaces = 986;
+      // No subdivide/erode either: those existed to rescue a thousand-triangle
+      // remesh. This is 30,000 triangles of sculpted skull and needs neither.
+      geometry.userData.source = "tripo-v3.1-titan-skull-direct-30k";
       geometry.userData.triangles = triangleCount(geometry);
 
       const fallbackGeometry = target.geometry;
       target.geometry = geometry;
       fallbackGeometry.dispose();
+      // Take the model's own material with it. Assigning the geometry alone
+      // leaves the skull wearing the procedural stone shader, which samples a
+      // triplanar projection and would ignore the UVs just preserved above.
+      const loadedMaterial = sourceMesh.material;
+      const adopted = new Set<THREE.Material>();
+      if (loadedMaterial) {
+        const material = Array.isArray(loadedMaterial) ? loadedMaterial[0] : loadedMaterial;
+        target.material = material;
+        adopted.add(material);
+      }
       target.userData.streamState = "ready";
       target.userData.renderUrl = TRIPO_DRAGON_PERCH_RENDER;
       target.userData.renderTriangles = triangleCount(geometry);
       target.userData.renderVertices = geometry.getAttribute("position").count;
       target.userData.surfaceSampler = "highest-upward-triangle-xz";
-      disposeLoadedGraph(gltf.scene);
+      disposeLoadedGraph(gltf.scene, adopted);
       onReady();
     }, undefined, (error) => {
       target.userData.streamState = "fallback";

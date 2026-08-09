@@ -1546,9 +1546,16 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   putInstancedTwin(pool, "blocksFade", "blocks", R.blockGeo, R.stoneFadeMat, false);
   putInstancedTwin(pool, "blocksMidLoFade", "blocksMidLo", R.blockGeoLo, R.stoneLoFadeMat, false);
   putInstancedTwin(pool, "blocksLoFade", "blocksLo", R.blockGeoLo, R.stoneLoFadeMat, false);
-  putInstancedTwin(pool, "blockMidsFade", "blockMids", R.blockMiddleGeo, R.stoneFadeMat, false);
+  // Closed geometry for the fade twins, not the open shells the opaque pools
+  // use. The open meshes drop their top and bottom caps to save 46 of 68
+  // triangles, which is sound while a column is opaque and fully stacked. The
+  // reveal window makes masonry 13% opaque with alphaHash and DoubleSide, so
+  // you see through the front face into a hollow course with no lid and no
+  // floor — the horizontal see-through banding. Only instances inside the
+  // aperture draw these twins, so the extra triangles are a rounding error.
+  putInstancedTwin(pool, "blockMidsFade", "blockMids", R.blockGeo, R.stoneFadeMat, false);
   putInstancedTwin(pool, "blockMidsLoFade", "blockMidsLo", R.blockGeoLo, R.stoneLoFadeMat, false);
-  putInstancedTwin(pool, "blockTopsFade", "blockTops", R.blockTopGeo, R.stoneFadeMat, false);
+  putInstancedTwin(pool, "blockTopsFade", "blockTops", R.blockGeo, R.stoneFadeMat, false);
   putInstancedTwin(pool, "blockTopsLoFade", "blockTopsLo", R.blockGeoLo, R.stoneLoFadeMat, false);
   pool.meshes.get("blocksFade")!.count = 0;
   pool.meshes.get("blocksMidLoFade")!.count = 0;

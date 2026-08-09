@@ -123,7 +123,11 @@ function makeAbyssBasinMat(): THREE.MeshBasicNodeMaterial {
   const mat = new THREE.MeshBasicNodeMaterial({
     transparent: true, depthWrite: false,
   });
-  const fall = smoothstep(1.0, 0.1, length(uv().sub(0.5)).mul(2));
+  // A contained lagoon, not an ocean. In the reference the lit water is a
+  // pocket that falls off hard into black; a sheet of even brightness to the
+  // horizon is what made this read as a patterned floor.
+  const radial = smoothstep(1.0, 0.05, length(uv().sub(0.5)).mul(2));
+  const fall = radial.pow(2.2);
   const churn = liquidChurn(0.019, 0.05, 3.4);
   const level = churn.value.mul(0.5).add(0.5);
 
@@ -133,21 +137,31 @@ function makeAbyssBasinMat(): THREE.MeshBasicNodeMaterial {
   //     alive at all — the rest is just black water;
   //  2. a high threshold inside those stretches, so within a lit stretch the
   //     glow still sits in cores rather than washing the whole area.
-  const alive = smoothstep(0.40, 0.78,
+  const alive = smoothstep(0.30, 0.82,
     mx_noise_float(positionWorld.xz.mul(0.0042)).mul(0.5).add(0.5));
-  const core = smoothstep(0.66, 0.93, level).mul(alive);
-  // the hottest specks follow the fold itself, so light sits where the
-  // liquid is actually being turned over
-  const spark = smoothstep(0.62, 0.96, churn.turbulence).mul(core);
 
-  // The body stays near the abyss's own value so the water belongs to the
-  // scene instead of floating on top of it as a bright teal carpet.
-  const body = color(0x0a2e2b).mul(smoothstep(0.25, 0.85, level))
+  // The churn MODULATES brightness; it does not draw a pattern. Thresholding
+  // it produced legible swirls — decorated lino, not water. In the reference
+  // the surface is a luminous gradient whose detail comes from bloom and from
+  // the silhouettes standing in it, so the light is driven by the radial
+  // falloff and the churn only breathes over the top of it.
+  const modulation = level.mul(0.55).add(0.62);
+  const pool = fall.mul(alive).mul(modulation);
+
+  // Discrete motes. The reference's water is dotted with tiny hard points,
+  // and they are what sells "alive" rather than merely "lit" — a very high
+  // threshold on high-frequency noise leaves only isolated specks.
+  const speckNoise = mx_noise_float(positionWorld.xz.mul(0.7)).mul(0.5).add(0.5);
+  const drift = mx_noise_float(positionWorld.xz.mul(0.06).add(time.mul(0.05)))
+    .mul(0.5).add(0.5);
+  const specks = smoothstep(0.88, 0.99, speckNoise).mul(smoothstep(0.4, 0.85, drift));
+
+  const body = color(0x0a2e2b).mul(radial.mul(modulation))
     .add(color(0x051917));
-  mat.colorNode = color(0x25c8a8).mul(core).mul(1.25)
-    .add(color(0x9fffe4).mul(spark).mul(1.5))
+  mat.colorNode = color(0x2ad6b2).mul(pool).mul(2.3)
+    .add(color(0xd6fff5).mul(specks).mul(alive).mul(radial).mul(4.0))
     .add(body);
-  mat.opacityNode = fall.mul(0.9);
+  mat.opacityNode = radial.mul(0.9);
   return mat;
 }
 
@@ -164,6 +178,30 @@ function makeAbyssShoreMat(): THREE.MeshBasicNodeMaterial {
   const wash = liquidChurn(0.13, 0.14, 2.2).value.mul(0.35).add(0.72);
   mat.colorNode = color(0x3af2cf).mul(band).mul(wash).mul(2.8);
   mat.opacityNode = band.mul(0.9);
+  return mat;
+}
+
+/** The light the water puts INTO the air above it.
+ *
+ *  This is the layer the reference has and a flat lit plane never can: the
+ *  lagoon's glow hangs in the air as a low bank of luminous haze, which is
+ *  what makes the light feel like it has a source in the world rather than
+ *  being a texture on the floor. A shallow dome over the water, additive and
+ *  soft, fading out both at its rim and toward its top. */
+function makeWaterHazeMat(): THREE.MeshBasicNodeMaterial {
+  const mat = new THREE.MeshBasicNodeMaterial({
+    transparent: true, depthWrite: false, side: THREE.BackSide,
+    blending: THREE.AdditiveBlending,
+  });
+  // v runs 0 at the dome's rim to 1 at its top: the haze is densest just
+  // above the surface and thins out with height, like real ground mist
+  const height = smoothstep(0.62, 0.0, uv().y);
+  const breath = mx_noise_float(positionWorld.xz.mul(0.02).add(time.mul(0.05)))
+    .mul(0.35).add(0.7);
+  const alive = smoothstep(0.34, 0.80,
+    mx_noise_float(positionWorld.xz.mul(0.0042)).mul(0.5).add(0.5));
+  mat.colorNode = color(0x1fbfa4).mul(height).mul(breath).mul(alive).mul(0.95);
+  mat.opacityNode = height.mul(alive).mul(0.62);
   return mat;
 }
 
@@ -1810,6 +1848,10 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
   abyssRingGeo.rotateX(-Math.PI / 2);
   const abyssShoreRing = new THREE.Mesh(abyssRingGeo, makeAbyssShoreMat());
   abyssShoreRing.name = "oracle-shoreline-glow-ring";
+  // shallow dome of luminous air over the basin — one draw, no lights
+  const hazeGeo = new THREE.SphereGeometry(1, 28, 10, 0, Math.PI * 2, 0, Math.PI / 2);
+  const abyssHaze = new THREE.Mesh(hazeGeo, makeWaterHazeMat());
+  abyssHaze.name = "basin-luminous-haze";
   const abyssDabGeo = new THREE.PlaneGeometry(1, 1);
   abyssDabGeo.rotateX(-Math.PI / 2);
   const abyssDabs = new THREE.InstancedMesh(abyssDabGeo, makeEyeGlowMat(), 16);
@@ -1820,6 +1862,7 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
   // with camera motion and reads as flicker
   const glowLayers: Array<[THREE.Object3D, number]> = [
     [abyssBasinPool, 1], [abyssPool, 2], [abyssShoreRing, 3], [abyssDabs, 4],
+    [abyssHaze, 5],
   ];
   for (const [glowMesh, order] of glowLayers) {
     glowMesh.castShadow = false;
@@ -2099,7 +2142,12 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
     // hovering, while bedrock relief still pierces it as shores
     abyssBasinPool.position.set(
       oracle.position.x * 0.3, floorY + 0.6, oracle.position.z * 0.3);
-    abyssBasinPool.scale.setScalar(Math.max(oracleScale * 40, half * 1.25));
+    const basinRadius = Math.max(oracleScale * 40, half * 1.25);
+    abyssBasinPool.scale.setScalar(basinRadius);
+    // the haze sits ON the water and is deliberately shallow: a tall dome
+    // reads as a bubble, a flat one as a layer of lit air
+    abyssHaze.position.copy(abyssBasinPool.position).add(new THREE.Vector3(0, -1, 0));
+    abyssHaze.scale.set(basinRadius * 0.92, basinRadius * 0.16, basinRadius * 0.92);
     abyssShoreRing.position.copy(oracle.position)
       .addScaledVector(oracleForward, oracleScale * 4)
       .add(new THREE.Vector3(0, 2.9, 0));

@@ -87,6 +87,18 @@ export const stoneStyle = {
   /** Strength of the atlas-derived surface relief. This is what separates
    *  hand-carved stone from a machined bevel. */
   paintedRelief: uniform(1.0),
+  /** Value match between the near and distant masonry shaders.
+   *
+   *  Measured, not derived. The near material perturbs its normals — mortar
+   *  bands, ripple, painted relief, worn arrises — and those perturbations
+   *  average out to a tilt away from the light, so it renders darker than the
+   *  flat-normal distant shader even with identical albedo. Matching the base
+   *  constant alone only took the switch from +16.0% to +14.3%.
+   *
+   *  0.875 is what closes the remainder, from one pinned camera over the
+   *  masonry. Retune with __df.stoneStyle.loMatch if the light rig changes,
+   *  and re-measure with scripts/ab-lod.mjs rather than by eye. */
+  loMatch: uniform(0.875),
   // Texture-sampled fracture, separate from the noise-based `crack` above.
   // Driven from the layout's decay so one material covers pristine to ruined.
   damage: uniform(0.5),
@@ -539,7 +551,23 @@ export function makeStoneMat(
 
 export function makeStoneLoMat(stableInstanceId = instanceIndex.toFloat()): THREE.MeshLambertNodeMaterial {
   const material = new THREE.MeshLambertNodeMaterial({ color: 0xe0ded8, vertexColors: true });
-  material.colorNode = handPaintedStoneFactor(stableInstanceId).mul(0.94);
+  // Match the high material's average value, or the LOD switch pops.
+  //
+  // Measured from one pinned camera: LOD 2 -> 1 was +16.0% mean luma, because
+  // the near shader builds its albedo from stoneStyle.base while this one used
+  // a hardcoded 0.94. 0.94 / 1.16 lands almost exactly on base, which is the
+  // tell — the near material's mortar, cavity, streak, wear and pit terms
+  // roughly cancel, so base alone is the value to match. Referencing the same
+  // uniform keeps them together when it is tuned.
+  //
+  // The fracture layer is near-only and darkens by roughly damage^2 * 0.12 on
+  // average, so it has to be approximated here too or the pop returns as decay
+  // rises.
+  const fractureMean = float(1).sub(stoneStyle.damage.mul(stoneStyle.damage).mul(0.12));
+  material.colorNode = handPaintedStoneFactor(stableInstanceId)
+    .mul(stoneStyle.base)
+    .mul(stoneStyle.loMatch)
+    .mul(fractureMean);
   material.name = "distant-masonry-painted";
   return material;
 }

@@ -18,8 +18,7 @@ import { GenPool } from "./gen/pool";
 import {
   pruneSlots, setSlotDetail, setSlotLodLevel, setDecorSuppressed, revealDecor,
   setOccludingSlots, areSlotsLodWarm, stageSlotLodWarmup,
-  type LodLevel,
-} from "./scene/slots";
+  type LodLevel, gpuSceneSlotPools } from "./scene/slots";
 import { buildEnvironment } from "./scene/env";
 import { setInteriorCull, getInteriorCull, setClosedCourses, getClosedCourses, setFarShadows, getFarShadows } from "./scene/build";
 import { flickerDamp, loadHandPaintedStoneTexture, setOcclusionWindow, stoneStyle, loadBrushAtlas } from "./scene/kit/materials";
@@ -1659,6 +1658,10 @@ void boot().catch((error) => {
     get farShadows() { return getFarShadows(); },
     /** Far-LOD masonry shadow casting. Re-forge after changing. */
     setFarShadows(on: boolean) { setFarShadows(on); },
+    /** Pin every slot to one LOD tier, to measure the value pop at a switch. */
+    forceLod(level: 0 | 1 | 2) {
+      for (const pool of gpuSceneSlotPools()) setSlotLodLevel(pool.slot, level);
+    },
   },
   gpuScene,
   destruction,

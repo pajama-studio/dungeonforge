@@ -84,6 +84,9 @@ export const stoneStyle = {
   pits: uniform(0.07),
   crack: uniform(0.50),
   warmEdge: uniform(0.31),
+  /** Strength of the atlas-derived surface relief. This is what separates
+   *  hand-carved stone from a machined bevel. */
+  paintedRelief: uniform(1.0),
   // Texture-sampled fracture, separate from the noise-based `crack` above.
   // Driven from the layout's decay so one material covers pristine to ruined.
   damage: uniform(0.5),
@@ -106,6 +109,41 @@ handPaintedStoneTexture.needsUpdate = true;
 let activeHandPaintedStoneTexture: THREE.Texture = handPaintedStoneTexture;
 const handPaintedStoneNodes: Array<{ value: THREE.Texture }> = [];
 let handPaintedStoneLoad: Promise<void> | null = null;
+
+// Brush atlas: 4x4 tiles of surface character lifted from the statue albedo,
+// high-passed so it carries brushwork rather than tentacles. Each instance
+// picks a tile, which is where the variation comes from — one image, no repeat
+// visible across a wall.
+const BRUSH_GRID = 4;
+const brushPlaceholder = new THREE.DataTexture(
+  new Uint8Array([128, 128, 128, 255]), 1, 1, THREE.RGBAFormat,
+);
+brushPlaceholder.colorSpace = THREE.SRGBColorSpace;
+brushPlaceholder.needsUpdate = true;
+let activeBrushTexture: THREE.Texture = brushPlaceholder;
+const brushNodes: Array<{ value: THREE.Texture }> = [];
+let brushLoad: Promise<void> | null = null;
+
+export function loadBrushAtlas(): Promise<void> {
+  if (brushLoad) return brushLoad;
+  brushLoad = new Promise((resolve, reject) => {
+    new THREE.TextureLoader().load("/assets/textures/hand-painted-brush-1024.webp", (loaded) => {
+      loaded.colorSpace = THREE.SRGBColorSpace;
+      // Clamp, not repeat: tiles are addressed by offset inside one image, so
+      // wrapping would bleed a neighbouring tile across the seam.
+      loaded.wrapS = loaded.wrapT = THREE.ClampToEdgeWrapping;
+      loaded.minFilter = THREE.LinearMipmapLinearFilter;
+      loaded.magFilter = THREE.LinearFilter;
+      loaded.anisotropy = 4;
+      loaded.generateMipmaps = true;
+      loaded.needsUpdate = true;
+      activeBrushTexture = loaded;
+      for (const node of brushNodes) node.value = loaded;
+      resolve();
+    }, undefined, reject);
+  });
+  return brushLoad;
+}
 
 export function loadHandPaintedStoneTexture(): Promise<void> {
   if (handPaintedStoneLoad) return handPaintedStoneLoad;
@@ -130,6 +168,83 @@ export function loadHandPaintedStoneTexture(): Promise<void> {
 /** Eight dihedral UV variants plus continuous scale/offset jitter make a
  * single texture read differently on adjacent instances. One texture sample
  * replaces adding an atlas, per-brick material, or extra draw call. */
+/** The per-instance projected UV every masonry sample shares.
+ *
+ *  Dominant-axis local projection: tops use XZ, X-facing sides ZY, Z-facing
+ *  sides XY. Works on blocks, rubble and columns with no UV attribute, and
+ *  costs one sample rather than full triplanar three. `salt` picks a different
+ *  hash family so grain, fracture and relief decorrelate. */
+function paintedUv(stableId: any, scale: number, salt: number): any {
+  const id = stableId;
+  const an = abs(normalLocal);
+  const useX = step(an.y, an.x).mul(step(an.z, an.x));
+  const useY = step(an.x, an.y).mul(step(an.z, an.y));
+  const xy = vec2(positionLocal.x, positionLocal.y);
+  const zy = vec2(positionLocal.z, positionLocal.y);
+  const xz = vec2(positionLocal.x, positionLocal.z);
+  const projected = mix(mix(xy, zy, useX), xz, useY).mul(scale);
+  const swap = step(0.5, hash(id.add(salt + 1.17)));
+  const swapped = mix(projected, vec2(projected.y, projected.x), swap);
+  const flipX = step(0.5, hash(id.add(salt + 11.71))).mul(2).sub(1);
+  const flipY = step(0.5, hash(id.add(salt + 27.03))).mul(2).sub(1);
+  const scaleJitter = hash(id.add(salt + 38.91)).mul(0.42).add(0.82);
+  const offset = vec2(hash(id.add(salt + 47.13)), hash(id.add(salt + 59.37)));
+  return swapped.mul(vec2(flipX, flipY)).mul(scaleJitter).add(offset);
+}
+
+function sampleAtlas(uvNode: any): any {
+  const sampled = textureNode(activeHandPaintedStoneTexture, uvNode);
+  handPaintedStoneNodes.push(sampled as unknown as { value: THREE.Texture });
+  return sampled;
+}
+
+/** Relief taken from the painted atlas rather than from analytic bands.
+ *
+ *  The masonry already had a normal — mortar joints and a ripple, both
+ *  analytic, which is exactly why it read as machined bevels next to the
+ *  statues. The statues look hand-carved because their normal map was baked
+ *  off a real sculpt: irregular, chunky, chiselled. Deriving a bump from the
+ *  same image that paints the albedo gives the bricks that character, and the
+ *  two agree because they are the same texture.
+ *
+ *  Two extra samples for a finite-difference gradient. Cheaper than a second
+ *  texture and it needs no tangents, which instanced masonry does not carry.
+ */
+function paintedRelief(stableId: any, strength: any): any {
+  // Wrap the projection into one tile, then offset to the instance's tile.
+  // fract keeps the sample inside its own cell so a brick never straddles two.
+  const raw = paintedUv(stableId, 0.55, 91);
+  const cell = float(1 / BRUSH_GRID);
+  const tile = hash(stableId.add(73.19)).mul(BRUSH_GRID * BRUSH_GRID).floor();
+  const tileX = tile.mod(BRUSH_GRID);
+  const tileY = tile.div(BRUSH_GRID).floor();
+  const uvBase = fract(raw).mul(cell).add(vec2(tileX, tileY).mul(cell));
+
+  const step0 = 0.0035;
+  const sampleBrush = (at: any) => {
+    const node = textureNode(activeBrushTexture, at);
+    brushNodes.push(node as unknown as { value: THREE.Texture });
+    return node;
+  };
+  const here = sampleBrush(uvBase);
+  const right = sampleBrush(uvBase.add(vec2(step0, 0)));
+  const down = sampleBrush(uvBase.add(vec2(0, step0)));
+  const luma = (n: any) => n.r.mul(0.34).add(n.g.mul(0.5)).add(n.b.mul(0.16));
+  const gain = float(0.0016 / step0);
+  const dx = luma(right).sub(luma(here)).mul(gain).mul(strength);
+  const dy = luma(down).sub(luma(here)).mul(gain).mul(strength);
+
+  // Rebuild the gradient in local space along whichever axes the projection
+  // used, so relief follows the painted planes on every face.
+  const an = abs(normalLocal);
+  const useX = step(an.y, an.x).mul(step(an.z, an.x));
+  const useY = step(an.x, an.y).mul(step(an.z, an.y));
+  const gXY = vec3(dx, dy, 0);
+  const gZY = vec3(0, dy, dx);
+  const gXZ = vec3(dx, 0, dy);
+  return mix(mix(gXY, gZY, useX), gXZ, useY);
+}
+
 function handPaintedStoneFactor(stableId = instanceIndex.toFloat()): any {
   const id = stableId;
   // Dominant-axis local projection: tops use XZ, X-facing sides use ZY and
@@ -384,7 +499,12 @@ export function makeStoneMat(
   const gT = g.sub(nl.mul(g.dot(nl)));
   // worn edges round toward the corner direction — under raking moonlight the
   // arris softens instead of staying a machine-crisp bevel
-  const carvedNormal = nl.sub(gT).add(pl.normalize().mul(wear.mul(0.55))).normalize();
+  // Painted relief on top of the analytic mortar bands: the bands give the
+  // masonry its courses, this gives each stone its chiselled surface.
+  const painted = paintedRelief(idf, stoneStyle.paintedRelief);
+  const paintedT = painted.sub(nl.mul(painted.dot(nl)));
+  const carvedNormal = nl.sub(gT).sub(paintedT)
+    .add(pl.normalize().mul(wear.mul(0.55))).normalize();
   mat.normalNode = transformNormalToView(
     transform?.normal ? transform.normal(carvedNormal).normalize() : carvedNormal,
   );

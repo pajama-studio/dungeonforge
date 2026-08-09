@@ -22,7 +22,7 @@ import {
 } from "./scene/slots";
 import { buildEnvironment } from "./scene/env";
 import { setInteriorCull, getInteriorCull, setClosedCourses, getClosedCourses, setFarShadows, getFarShadows } from "./scene/build";
-import { flickerDamp, loadHandPaintedStoneTexture, setOcclusionWindow, stoneStyle } from "./scene/kit/materials";
+import { flickerDamp, loadHandPaintedStoneTexture, setOcclusionWindow, stoneStyle, loadBrushAtlas } from "./scene/kit/materials";
 import { createPost } from "./render/post";
 import { GpuMasonryScene } from "./render/gpu-scene";
 import { Player } from "./player/player";
@@ -1326,7 +1326,7 @@ async function boot(): Promise<void> {
   // placeholder already compiled with the masonry shader, so swapping pixels
   // later neither blocks startup nor creates a new render pipeline.
   window.setTimeout(() => {
-    void loadHandPaintedStoneTexture()
+    void Promise.all([loadHandPaintedStoneTexture(), loadBrushAtlas()])
       .then(() => { startupTiming.stoneTextureReadyAt = performance.now(); })
       .catch((error) => console.warn("Hand-painted stone texture failed to stream", error));
   }, 1400);

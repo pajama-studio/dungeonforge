@@ -87,18 +87,6 @@ export const stoneStyle = {
   /** Strength of the atlas-derived surface relief. This is what separates
    *  hand-carved stone from a machined bevel. */
   paintedRelief: uniform(1.0),
-  /** Value match between the near and distant masonry shaders.
-   *
-   *  Measured, not derived. The near material perturbs its normals — mortar
-   *  bands, ripple, painted relief, worn arrises — and those perturbations
-   *  average out to a tilt away from the light, so it renders darker than the
-   *  flat-normal distant shader even with identical albedo. Matching the base
-   *  constant alone only took the switch from +16.0% to +14.3%.
-   *
-   *  0.875 is what closes the remainder, from one pinned camera over the
-   *  masonry. Retune with __df.stoneStyle.loMatch if the light rig changes,
-   *  and re-measure with scripts/ab-lod.mjs rather than by eye. */
-  loMatch: uniform(0.875),
   // Texture-sampled fracture, separate from the noise-based `crack` above.
   // Driven from the layout's decay so one material covers pristine to ruined.
   damage: uniform(0.5),
@@ -550,27 +538,26 @@ export function makeStoneMat(
 }
 
 export function makeStoneLoMat(stableInstanceId = instanceIndex.toFloat()): THREE.MeshLambertNodeMaterial {
-  const material = new THREE.MeshLambertNodeMaterial({ color: 0xe0ded8, vertexColors: true });
-  // Match the high material's average value, or the LOD switch pops.
+  // Same graph as the near shader, deliberately.
   //
-  // Measured from one pinned camera: LOD 2 -> 1 was +16.0% mean luma, because
-  // the near shader builds its albedo from stoneStyle.base while this one used
-  // a hardcoded 0.94. 0.94 / 1.16 lands almost exactly on base, which is the
-  // tell — the near material's mortar, cavity, streak, wear and pit terms
-  // roughly cancel, so base alone is the value to match. Referencing the same
-  // uniform keeps them together when it is tuned.
+  // The LOD system does two separable things: it collapses geometry, which
+  // saves real draw calls, and it swapped the shader, which bought nothing
+  // measurable and cost a visible value pop on every zoom — 16% at the
+  // high-to-middle switch before any of today's tuning.
   //
-  // The fracture layer is near-only and darkens by roughly damage^2 * 0.12 on
-  // average, so it has to be approximated here too or the pop returns as decay
-  // rises.
-  const fractureMean = float(1).sub(stoneStyle.damage.mul(stoneStyle.damage).mul(0.12));
-  material.colorNode = handPaintedStoneFactor(stableInstanceId)
-    .mul(stoneStyle.base)
-    .mul(stoneStyle.loMatch)
-    .mul(fractureMean);
+  // Measuring the shader alone is awkward because the frame is vsync-bound at
+  // 16.67ms in this scene, so frame time cannot see it either way. What is not
+  // in doubt is the pop, and no amount of matching constants fixes it properly:
+  // the two shaders perturb normals differently, so they respond to light
+  // differently, and only agreeing on the graph makes them agree.
+  //
+  // One graph also means one pipeline to compile rather than two, which was the
+  // original argument for keeping this material minimal.
+  const material = makeStoneMat(undefined, stableInstanceId);
   material.name = "distant-masonry-painted";
   return material;
 }
+
 
 /** ONE material for every teleport plaza — per-plaza identity rides in two
  *  constant geometry attributes ('color' + 'plazaSeed', see build.ts), so a
@@ -673,15 +660,21 @@ export function makeMaterials(): MatKit {
   const stoneLoFadeMat = stoneLoMat.clone();
   applyLocalOcclusionWindow(stoneLoFadeMat);
   stoneLoFadeMat.name = "distant-occluding-architecture-fade";
-  const stairMat = new THREE.MeshLambertNodeMaterial({ color: 0x8a7a62, vertexColors: true });
+  const stairMat = new THREE.MeshLambertNodeMaterial({ color: 0xffffff, vertexColors: true });
   // Stair towers are regular Meshes, so unlike the instanced masonry they do
   // not receive a per-instance tint. The former near-white multiplier also
   // replaced their material color, producing chalk-white debug-looking
   // spirals. Bake the face value back in and keep the same cool slate family.
   const stairFace = vec3(attribute("color", "vec3") as never);
+  // Stair towers are cut from the same rock as everything else. They used to
+  // carry their own base colour and a cool 0.34/0.405/0.52 multiplier, which
+  // read as a different material standing next to the walls. Sharing the
+  // masonry's base keeps the value in family; the baked face colour still
+  // supplies their own shading, since these are plain Meshes with no
+  // per-instance tint.
   stairMat.colorNode = handPaintedStoneFactor()
     .mul(stairFace)
-    .mul(vec3(0.34, 0.405, 0.52));
+    .mul(stoneStyle.base);
   const stairFadeMat = stairMat.clone();
   applyLocalOcclusionWindow(stairFadeMat);
   stairFadeMat.name = "occluding-stair-fade";

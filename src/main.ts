@@ -41,6 +41,7 @@ import { GpuDestruction } from "./world/destruction";
 import { RogueRun, type RelicKind, type RelicReward } from "./game/roguelike";
 import { playerInputFromKeys } from "./player/input";
 import { buildPanel } from "./ui/panel";
+import { CameraShots } from "./editor/shots";
 import { mulberry32 } from "./gen/rng";
 import {
   TH, CELL, PR_BASE, PR_LARGE,
@@ -739,6 +740,24 @@ async function toggleEditor(force?: boolean): Promise<void> {
 
 btnEditor.addEventListener("click", () => { void toggleEditor(); });
 
+// 📷 camera shots: fly, press C, keep the framing. Built eagerly — it is tiny
+// and the whole value is that capturing never makes you stop and open a panel.
+const btnShots = document.getElementById("btnShots") as HTMLButtonElement;
+const cameraShots = new CameraShots({
+  camera,
+  controls,
+  quiesce: () => {
+    if (walking) stopWalk();
+    if (rogueMode) stopRogueRun();
+    cine.stop();
+  },
+  toast: (message) => flashRunToast(message),
+});
+btnShots.addEventListener("click", () => {
+  cameraShots.toggle();
+  btnShots.classList.toggle("active", cameraShots.open);
+});
+
 // ---- skeleton route walker: the CC0 skeleton walks the whole route --------
 let walking = false;
 let walkU = 0, walkLen = 1, walkEndAt = 0;
@@ -1152,6 +1171,11 @@ addEventListener("keydown", (e: KeyboardEvent) => {
   }
   if (e.key.toLowerCase() === "e" && !editingText && !e.repeat && !e.metaKey && !e.ctrlKey) {
     void toggleEditor();
+    e.preventDefault();
+  }
+  if (e.key.toLowerCase() === "c" && !editingText && !e.repeat && !e.metaKey && !e.ctrlKey) {
+    cameraShots.capture();
+    btnShots.classList.add("active");
     e.preventDefault();
   }
   if (e.key === "Escape" && dragonGizmoActive) void setDragonGizmoActive(false);
@@ -1616,6 +1640,7 @@ void boot().catch((error) => {
   godrayStats,
   get editor() { return editor; },
   openEditor: (open?: boolean) => toggleEditor(open),
+  cameraShots,
   stoneStyle,
   gpuScene,
   destruction,

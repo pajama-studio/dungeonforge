@@ -55,11 +55,16 @@ export function createPost(
   let godraySteps = 0;
   if (options.godrayLight) {
     const rays = godrays(depthTex, camera, options.godrayLight);
-    rays.raymarchSteps.value = 12;
-    rays.density.value = 0.045;
-    rays.maxDensity.value = 0.1;
-    rays.distanceAttenuation.value = 1.5;
-    rays.resolutionScale = 0.34;
+    // The shaft is the hero of the reference frame, and it was reading thin
+    // and flat. More steps buy internal structure rather than a uniform cone;
+    // higher density and cap make it actually present in the air; weaker
+    // distance attenuation lets it stay strong all the way down to the water
+    // instead of dying halfway and leaving the beam hanging in the sky.
+    rays.raymarchSteps.value = 20;
+    rays.density.value = 0.075;
+    rays.maxDensity.value = 0.19;
+    rays.distanceAttenuation.value = 0.85;
+    rays.resolutionScale = 0.4;
     const rayTexture = rays.getTextureNode();
     // Minimal separable blur at the already-small ray resolution removes the
     // checker/dither pattern that otherwise becomes visible on near-black
@@ -68,11 +73,10 @@ export function createPost(
     const softenedRays = bilateralBlur(rayTexture, float(1), 1, 0.1);
     const softenedTexture = softenedRays.getTextureNode();
     scenePassLit = depthAwareBlend(scenePassColor, softenedTexture, depthTex, camera, {
-      // pale moon-cyan dust: the shaft must read a different hue than the
-      // indigo air around it, not just a brighter version of the same blue
-      // warm parchment-gold beam (painted reference): the shaft is the warm
-      // counterpoint to the teal air, so it must never share the air's hue
-      blendColor: color(0xd6c493),
+      // Warm parchment-gold: the shaft is the warm counterpoint to the teal
+      // air and must never share its hue, or it stops being a light source
+      // and becomes a brighter patch of the same fog.
+      blendColor: color(0xe4cf9c),
       edgeRadius: 1,
       edgeStrength: 1.25,
     });
@@ -149,7 +153,11 @@ export function createPost(
   // (iq's closed-form integral — no extra marching). This is the "one air" that
   // ties the diorama together: far blocks sink into the same moonlit blue
   // instead of standing clean against the abyss, and the horizon grades softly.
-  const HAZE_A = 0.0032; // density at y = 0
+  // Denser air, starting sooner. The reference separates near / mid / far
+  // into three clearly distinct value bands; ours had the mid-ground melting
+  // into the near-ground because the haze barely registered until 165 units
+  // out. Depth cueing is the cheapest read of scale a scene has.
+  const HAZE_A = 0.0036; // density at y = 0
   const HAZE_B = 0.028; // height falloff
   const dFar = distGeo.min(320);
   const dy = rd.y.sign().mul(rd.y.abs().max(0.02)); // guard the horizon singularity
@@ -172,7 +180,10 @@ export function createPost(
   const wpLow = smoothstep(5, 26, wp.y).oneMinus();
   const distF = smoothstep(120, 230, distGeo);
   const belowH = smoothstep(-0.03, 0.2, rd.y).oneMinus();
-  const hazeGate = smoothstep(28, 165, distGeo);
+  // Starts sooner than it did (28 → 20) so the mid-ground separates from the
+  // near-ground, but the far end has to stay where it was: pulling it in to
+  // 120 saturated everything past it and a wide shot went flat dark.
+  const hazeGate = smoothstep(20, 165, distGeo);
   const hazeAmt = float(1).sub(exp(od.negate())).mul(hazeGate)
     .max(wpLow.mul(distF).mul(belowH).mul(0.92))
     .clamp(0, 0.92);

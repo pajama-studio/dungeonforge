@@ -23,7 +23,10 @@ def main() -> None:
 
     bpy.ops.object.select_all(action="SELECT")
     bpy.ops.object.delete(use_global=False)
-    bpy.ops.import_scene.gltf(filepath=str(Path(args.input).resolve()))
+    # Weld on import for the same reason the optimizer does: an unwelded mesh
+    # carries a duplicate vertex at every UV seam, and re-exporting one costs
+    # both file size and any chance of a later geometry pass staying watertight.
+    bpy.ops.import_scene.gltf(filepath=str(Path(args.input).resolve()), merge_vertices=True)
     resized = []
     for image in bpy.data.images:
         width, height = image.size[:]

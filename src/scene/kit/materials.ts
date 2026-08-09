@@ -90,6 +90,11 @@ export const stoneStyle = {
   /** Contrast of the generated albedo and cavity, both centred on 1.0 so they
    *  add surface without changing overall value. */
   stoneDetail: uniform(0.85),
+  /** The per-instance tint stair towers never get, because they are plain
+   *  Meshes rather than instanced masonry. Matches build.ts's class-3 wall
+   *  colour, setHsl(0.60, 0.22, 0.405) — luma 0.380. Live via
+   *  __df.stoneStyle.stairTint.value. */
+  stairTint: uniform(new THREE.Color().setHSL(0.60, 0.22, 0.405)),
   /** How pale the worn band inside a flagstone's edge goes. The paving read
    *  lives here now rather than in a texture, so this is the dial that decides
    *  whether floors look laid or poured. */
@@ -845,15 +850,21 @@ export function makeMaterials(): MatKit {
   // not receive a per-instance tint. The former near-white multiplier also
   // replaced their material color, producing chalk-white debug-looking
   // spirals. Bake the face value back in and keep the same cool slate family.
-  const stairFace = vec3(attribute("color", "vec3") as never);
-  // Stair towers are cut from the same rock as everything else. They used to
-  // carry their own base colour and a cool 0.34/0.405/0.52 multiplier, which
-  // read as a different material standing next to the walls. Sharing the
-  // masonry's base keeps the value in family; the baked face colour still
-  // supplies their own shading, since these are plain Meshes with no
-  // per-instance tint.
+  // Stair towers are cut from the same rock as everything else, and two things
+  // were stopping them from looking it.
+  //
+  // First, the baked face colour was applied twice: NodeMaterial multiplies the
+  // geometry's vertex colour on top of colorNode whenever vertexColors is set,
+  // so the explicit .mul(stairFace) here was redundant.
+  //
+  // Second — and this is why the spiral read chalk-white against blue walls —
+  // a tower is a plain Mesh, so it never receives the per-instance tint that
+  // puts every masonry block in the cool slate family. It carried only the
+  // neutral shadeFaces value, mean 0.763 against the wall tint's 0.380 luma,
+  // and with no hue at all. stairTint is that missing tint, taken from the
+  // masonry's own class-3 wall colour rather than picked by eye.
   stairMat.colorNode = handPaintedStoneFactor()
-    .mul(stairFace)
+    .mul(stoneStyle.stairTint)
     .mul(stoneStyle.base);
   const stairFadeMat = stairMat.clone();
   applyLocalOcclusionWindow(stairFadeMat);

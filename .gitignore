@@ -2,6 +2,9 @@ node_modules/
 dist/
 rust/**/target/
 artifacts/
+# Raw Tripo generations: ~45MB per model before decimation. The shipped,
+# decimated assets live under public/assets and are versioned; these are not.
+tripo-out/
 .tripo/
 .img2threejs/
 scripts/__pycache__/

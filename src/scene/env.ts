@@ -12,6 +12,7 @@ import { hash2, valueNoise2 } from "../gen/rng";
 import { ABYSS } from "../gen/dungeon";
 import { TH } from "../config";
 import { buildAbyssLandmarks } from "./abyss-landmarks";
+import { buildHorizonRing } from "./horizon";
 import { buildAbyssCemetery } from "./abyss-cemetery";
 import type { CinematicLightSpec, LightSpec } from "./build";
 
@@ -413,14 +414,18 @@ export function buildEnvironment(
   if (atmosphereParticles.instanceColor) atmosphereParticles.instanceColor.needsUpdate = true;
   group.add(atmosphereParticles);
 
-  // -- The horizon is atmosphere now, not geometry. The canyon used to be 31
-  //    mesas and three ruin clusters built from raw BoxGeometry, which is what
-  //    they read as up close. The mist curtain and fog banks below carry the
-  //    enclosure instead, so the abyss ends in depth rather than in boxes.
+  // -- The horizon is generated rock now. It used to be 31 mesas and three ruin
+  //    clusters built from raw BoxGeometry, which is exactly what they read as
+  //    once a camera got near them. buildHorizonRing keeps the arc those had —
+  //    a horseshoe closed across the narrative back and open toward the default
+  //    approach — and hangs Tripo cliffs, spires and ruins on it instead, five
+  //    draw calls for the whole skyline.
   //    Everything ring-shaped lives in ringGroup so fit() can recentre/rescale
   //    it around a multi-block chain.
   const ringGroup = new THREE.Group();
   group.add(ringGroup);
+  const horizon = buildHorizonRing(seed);
+  ringGroup.add(horizon.group);
   const cemetery = buildAbyssCemetery(seed);
   ringGroup.add(cemetery.group);
   const landmarkGroup = buildAbyssLandmarks(seed);
@@ -678,6 +683,7 @@ export function buildEnvironment(
     },
     dispose() {
       (landmarkGroup.userData as { dispose?: () => void }).dispose?.();
+      horizon.dispose();
       cemetery.dispose();
       scene.remove(group);
       group.traverse((o) => {

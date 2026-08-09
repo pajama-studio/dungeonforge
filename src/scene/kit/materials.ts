@@ -90,6 +90,12 @@ export const stoneStyle = {
   /** Contrast of the generated albedo and cavity, both centred on 1.0 so they
    *  add surface without changing overall value. */
   stoneDetail: uniform(0.85),
+  /** Floor paving frequency, in texture repeats per world unit, applied per
+   *  edge. 0.88 puts a repeat every 1.14m, so a 2.2m cell spans just under two
+   *  repeats and the four-cell set lands at roughly 0.28m flagstones. Live —
+   *  __df.stoneStyle.floorScale.value — because paving density is a judgement
+   *  call that should not need a rebuild to try. */
+  floorScale: uniform(0.88),
   stoneCavity: uniform(0.55),
   // Texture-sampled fracture, separate from the noise-based `crack` above.
   // Driven from the layout's decay so one material covers pristine to ruined.
@@ -569,9 +575,18 @@ export function makeStoneMat(
   //
   // One stone per brick face: each brick is already its own instance, so a
   // texture full of stones would put dozens on a single 2.2m face.
-  // Floors show one slab per cell, walls one face per brick, so the projection
-  // scale differs even though the generator is the same.
-  const stoneUv = paintedUv(idf, set === "floor" ? 0.5 : 0.42, 91);
+  // Walls project per instance: a brick IS one stone, so every brick sampling
+  // the same UV range is correct and the per-instance transform breaks up the
+  // repeat.
+  //
+  // Floors must not. Paving runs continuously under your feet, and projecting
+  // per instance stamps an identical layout onto every tile — visible as the
+  // same brick pattern repeating slab after slab. World XZ makes the courses
+  // flow across the floor, and neighbouring tiles line up because they share
+  // the same coordinate frame rather than each restarting at zero.
+  const stoneUv = set === "floor"
+    ? vec2(positionWorld.x, positionWorld.z).mul(stoneStyle.floorScale)
+    : paintedUv(idf, 0.42, 91);
   const stoneNormal = sampleStone(set, "normal", stoneUv).xyz.mul(2).sub(1);
   const reliefLocal = vec3(
     stoneNormal.x.mul(stoneStyle.paintedRelief),

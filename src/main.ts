@@ -24,6 +24,7 @@ import {
   resetGodrayShape, loadGodrayShape, type GodrayShape,
 } from "./scene/env";
 import { setInteriorCull, getInteriorCull, setClosedCourses, getClosedCourses, setFarShadows, getFarShadows } from "./scene/build";
+import { landmarkStreamStatus } from "./scene/abyss-landmarks";
 import { flickerDamp, loadHandPaintedStoneTexture, setOcclusionWindow, stoneStyle, loadBrushAtlas, loadStoneSet } from "./scene/kit/materials";
 import { createPost } from "./render/post";
 import { GpuMasonryScene } from "./render/gpu-scene";
@@ -1655,6 +1656,8 @@ void boot().catch((error) => {
   openEditor: (open?: boolean) => toggleEditor(open),
   cameraShots,
   stoneStyle,
+  /** Landmark streaming, per request: requested / loaded / failed. */
+  landmarkStreams: () => landmarkStreamStatus(),
   godray: {
     get shape() { return getGodrayShape(); },
     /** Live — the aperture re-seats immediately, no re-forge. */

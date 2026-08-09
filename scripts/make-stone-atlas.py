@@ -51,6 +51,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bond", choices=["running", "irregular"], default="running")
     parser.add_argument("--cells", type=int, default=0,
                         help="override the style's stone count; 1 gives a single face for per-brick use")
+    parser.add_argument("--joint-depth", type=float, default=0.72,
+                        help="how much of the height the mortar recess owns; 0 bakes no joints at all, "
+                             "for sets whose joints are derived from the model's edges in the shader "
+                             "instead of painted in (which is the only way they land on the seam)")
     return parser.parse_args()
 
 
@@ -159,7 +163,11 @@ def build(args: argparse.Namespace) -> dict:
     fracture = 1 - np.abs(fbm(size, rng, octaves=4, base=8) * 2 - 1)   # ridged = cracks
     cracks = np.clip((fracture - 0.72) / 0.28, 0, 1) * style["crack"]
 
-    height = joint * 0.72 + surface * 0.22 + per_stone + 0.06
+    # Whatever weight the joint gives up goes to the surface grain, so a
+    # jointless set keeps the same height contrast instead of collapsing into a
+    # flat mid-grey. At the default 0.72 this is exactly the previous formula.
+    joint_w = args.joint_depth
+    height = joint * joint_w + surface * (0.22 + (0.72 - joint_w)) + per_stone + 0.06
     height = np.clip(height - cracks * 0.35, 0, 1)
 
     # --- everything else derives from it ------------------------------------

@@ -16,7 +16,10 @@ import { thumbnailFor } from "./thumbs";
 import type { AssetDef } from "./types";
 
 const draco = new DRACOLoader();
-draco.setDecoderPath("https://www.gstatic.com/draco/versioned/decoders/1.5.7/");
+// Same vendored decoder the scene landmarks use. It was a pinned gstatic build,
+// which meant the editor needed the network to open an asset and could drift
+// from the decoder three itself ships.
+draco.setDecoderPath("/draco/gltf/");
 const gltf = new GLTFLoader();
 gltf.setDRACOLoader(draco);
 

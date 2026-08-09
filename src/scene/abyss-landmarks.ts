@@ -1049,12 +1049,56 @@ const TRIPO_DRAGON_PERCH_RENDER = "/assets/abyss/dragon/dragon-slate-perch-qr1k.
 // first visible frame. Keeping one shared decoder avoids three independent
 // WASM compilations while preserving the no-I/O startup path.
 const tripoDracoLoader = new DRACOLoader();
-const tripoGltfLoader = new GLTFLoader();
+// The decoder path is not optional. DRACOLoader defaults to '', which resolves
+// against the site root, so it asked for /draco_wasm_wrapper.js — a path the SPA
+// answers with index.html. The loader then evaluates HTML as JavaScript, throws
+// "Unexpected token '<'" with no error callback anywhere to catch it, and every
+// Draco landmark silently never arrives: the oracle, the wardens and the dragon
+// all had their slots in the scene and nothing inside them.
+//
+// Vendored under public/draco rather than a CDN so the scene still forges with
+// no network, and so the decoder cannot drift from the bundled three version.
+tripoDracoLoader.setDecoderPath("/draco/gltf/");
+/** Every landmark stream, and what became of it.
+ *
+ *  None of the `load()` calls below passed an error callback, so three's
+ *  default did the only thing it can — nothing. A decoder that answered with
+ *  HTML took out the oracle, both warden ranks and the dragon at once, and the
+ *  scene reported no problem at all: the slots were in the graph, just empty.
+ *  Wrapping `load` once here means a failure can never be silent again, and
+ *  `__df.landmarkStreams()` says whether a request was even made. */
+const landmarkStreamLog: Array<{ label: string; url: string; state: string; detail?: string }> = [];
+
+export function landmarkStreamStatus(): Array<{ label: string; url: string; state: string; detail?: string }> {
+  return landmarkStreamLog.map((entry) => ({ ...entry }));
+}
+
+function traceStreams(loader: GLTFLoader, label: string): GLTFLoader {
+  const original = loader.load.bind(loader);
+  loader.load = (url, onLoad, onProgress, onError) => {
+    const entry = { label, url: String(url), state: "requested" as string, detail: undefined as string | undefined };
+    landmarkStreamLog.push(entry);
+    original(
+      url,
+      (gltf) => { entry.state = "loaded"; onLoad?.(gltf); },
+      onProgress,
+      (error) => {
+        entry.state = "failed";
+        entry.detail = String((error as Error)?.message ?? error);
+        console.error(`[landmark] ${label} failed to stream ${url}`, error);
+        onError?.(error);
+      },
+    );
+  };
+  return loader;
+}
+
+const tripoGltfLoader = traceStreams(new GLTFLoader(), "tripo");
 tripoGltfLoader.setDRACOLoader(tripoDracoLoader);
 // Dragon carries four leg chains plus a restrained neck-look chain.
 // A dedicated loader prevents the other streamed landmarks from starving its
 // decode or coupling their cancellation state.
-const dragonGltfLoader = new GLTFLoader();
+const dragonGltfLoader = traceStreams(new GLTFLoader(), "dragon");
 dragonGltfLoader.setDRACOLoader(tripoDracoLoader);
 
 function disposeLoadedGraph(group: THREE.Object3D): void {
@@ -1467,8 +1511,15 @@ function streamTripoOracle(
   // requestIdleCallback may fire while the GPU is still compiling the first
   // scene. Two painted frames plus a short delay make the stream provably
   // post-first-visible instead of competing with startup for CPU/GPU time.
+  // The stamps below are load-bearing diagnostics, not scaffolding: they are
+  // the difference between "the stream was never scheduled", "it is waiting out
+  // the delay" and "it was cancelled". Stuck on "deferred" means neither frame
+  // ever ran — which is what a hidden tab looks like, since requestAnimationFrame
+  // does not fire there at all.
   deferFrameId = requestAnimationFrame(() => {
+    slot.userData.streamState = "frame-1";
     deferFrameId = requestAnimationFrame(() => {
+      slot.userData.streamState = "waiting";
       timeoutId = window.setTimeout(start, 2200);
     });
   });

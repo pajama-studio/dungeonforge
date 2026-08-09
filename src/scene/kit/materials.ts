@@ -9,7 +9,7 @@
 import * as THREE from "three/webgpu";
 import {
   color, vec2, vec3, uv, time, sin, cos, positionLocal, positionWorld, positionView, normalLocal,
-  instanceIndex, hash, smoothstep, length, fract, abs, mix, float, atan, max, step,
+  instanceIndex, hash, smoothstep, length, fract, abs, mix, float, floor, atan, max, step,
   triNoise3D, transformNormalToView, attribute, uniform, texture as textureNode,
   varyingProperty,
 } from "three/tsl";
@@ -90,12 +90,22 @@ export const stoneStyle = {
   /** Contrast of the generated albedo and cavity, both centred on 1.0 so they
    *  add surface without changing overall value. */
   stoneDetail: uniform(0.85),
-  /** Floor paving frequency, in texture repeats per world unit, applied per
-   *  edge. 0.88 puts a repeat every 1.14m, so a 2.2m cell spans just under two
-   *  repeats and the four-cell set lands at roughly 0.28m flagstones. Live —
-   *  __df.stoneStyle.floorScale.value — because paving density is a judgement
-   *  call that should not need a rebuild to try. */
-  floorScale: uniform(0.88),
+  /** How pale the worn band inside a flagstone's edge goes. The paving read
+   *  lives here now rather than in a texture, so this is the dial that decides
+   *  whether floors look laid or poured. */
+  flagWear: uniform(0.30),
+  /** Depth of the tile-local brush strokes across the middle of a slab. */
+  flagBrush: uniform(0.22),
+  /** Floor grain frequency, in texture repeats per world unit.
+   *
+   *  This sets how coarse the stone *surface* reads, and nothing else. It used
+   *  to set paving density too, which is why every value was wrong: the flagstone
+   *  layout is not in the texture, it comes from the tile's own edges via
+   *  `ex`/`ez`, so one stone always fills one cell no matter what this is.
+   *
+   *  Free to dial for taste — a repeat every ~2.9m at 0.35. Live via
+   *  __df.stoneStyle.floorScale.value. */
+  floorScale: uniform(0.35),
   stoneCavity: uniform(0.55),
   // Texture-sampled fracture, separate from the noise-based `crack` above.
   // Driven from the layout's decay so one material covers pristine to ruined.
@@ -158,11 +168,39 @@ const stoneSets: Record<StoneSet, StoneMaps> = { wall: makeSet(), floor: makeSet
 const stoneMapNodes: Array<{ set: StoneSet; key: keyof StoneMaps; node: { value: THREE.Texture } }> = [];
 let stoneSetLoad: Promise<void> | null = null;
 
-export function loadStoneSet(style = "ruined"): Promise<void> {
+// Both sets are `face`: a JOINTLESS stone surface, generated with
+// --joint-depth 0.
+//
+// Painted joints cannot be made to land on the model's seams. The texture does
+// not know where the block ends, so every scale change slides its mortar to a
+// new wrong place — through the middle of a brick, or doubled up beside the
+// real edge. Chasing that alignment is what produced the cross through every
+// brick and the eight courses stamped on one 2.4m face.
+//
+// The joints are already derived from the geometry a few hundred lines below:
+// `ex`/`ez` fade in at the block's own half-extents and `line` follows the
+// world course grid, so they sit exactly on the seam by construction. The
+// texture only has to carry stone — grain and mineral mottle — and it can be
+// scaled freely because nothing about it needs to line up with anything.
+//
+// Generated from `clean`, not `ruined`:
+//
+//     python3 scripts/make-stone-atlas.py --style clean --seed 21 \
+//         --cells 1 --bond irregular --joint-depth 0 --out-dir ...
+//
+// With the joints gone, whatever is left owns the whole height field, and
+// ruined's crack=0.85 ridged noise turned into winding worm veins across every
+// wall — mean normal deviation 0.017 against clean's 0.008. The painted joints
+// had been hiding it.
+export function loadStoneSet(style = "face"): Promise<void> {
   if (stoneSetLoad) return stoneSetLoad;
   const loader = new THREE.TextureLoader();
   const one = (set: StoneSet, map: keyof StoneMaps, srgb: boolean) => new Promise<void>((resolve) => {
-    const name = set === "floor" ? "floor" : style;
+    // Both sets are the same jointless surface. This used to pick `floor-*`,
+    // a running-bond lattice, which is why the paving kept tiling wrong however
+    // the scale was dialled — the lattice is in the image, so no UV can put its
+    // joints on the tile seams.
+    const name = style;
     loader.load(`/assets/textures/stone/${name}-${map}-1024.webp`, (tex) => {
       // Only albedo is colour; normal and AO are data and must not be
       // gamma-decoded or the relief comes out wrong.
@@ -505,15 +543,43 @@ export function makeStoneMat(
   const fy = fract(positionWorld.y.div(COURSE));
   const dSeam = fy.min(float(1).sub(fy));
   const line = smoothstep(0.11, 0.02, dSeam).mul(sideMask);
-  // fake running-bond: an extra vertical seam at a per-instance offset
-  const off = hash(idf.add(0.13)).sub(0.5).mul(1.3);
-  const vseam = smoothstep(0.06, 0.015, abs(pl.x.sub(off)))
-    .add(smoothstep(0.06, 0.015, abs(pl.z.sub(off.mul(-0.7)))))
-    .mul(sideMask);
+  // No fake running-bond seam here. It drew a joint at a random offset across
+  // the middle of a brick, which is a seam the geometry does not have — the
+  // cross through the centre of a block. Bond variation is the layout's job.
+  // FLAGSTONE SURFACE, from the tile's own coordinates.
+  //
+  // Trying to map a paving image onto floors never worked: the texture does not
+  // know where a tile begins, so every scale slid its joints somewhere new. This
+  // takes the layout out of the image entirely — wear is a function of distance
+  // to the tile's own edge, and the middle is brushed with noise in tile-local
+  // space. Nothing repeats, so nothing can repeat wrongly.
+  //
+  const topMask = smoothstep(0.35, 0.62, abs(nl.y)); // 1 on tops and floors
+  // Distance in metres from this fragment to each of the tile's own borders.
+  const dEdgeX = float(hw).sub(abs(pl.x));
+  const dEdgeZ = float(hw).sub(abs(pl.z));
+  // Abraded arris: a worn band just inside the joint, doubled at the corners
+  // where two edges meet and traffic cuts the angle off. This is the paving
+  // read — a slab you can tell is a slab because its edges are rounded off,
+  // not because an image drew a line there.
+  const flagWear = smoothstep(0.34, 0.02, dEdgeX.min(dEdgeZ))
+    .add(smoothstep(0.52, 0.06, dEdgeX).mul(smoothstep(0.52, 0.06, dEdgeZ)).mul(0.8))
+    .clamp(0, 1)
+    .mul(topMask);
+  // Procedural brush for the middle: noise stretched hard along one axis makes
+  // strokes rather than clouds, and rotating that axis per instance gives every
+  // slab its own direction. Tile-local, so there is no repeat at all.
+  const brushAngle = hash(idf.add(3.77)).mul(Math.PI * 2);
+  const bc = cos(brushAngle), bs = sin(brushAngle);
+  const brushU = pl.x.mul(bc).sub(pl.z.mul(bs));
+  const brushV = pl.x.mul(bs).add(pl.z.mul(bc));
+  const flagBrush = triNoise3D(
+    vec3(brushU.mul(stoneStyle.floorScale.mul(9)), 0, brushV.mul(stoneStyle.floorScale.mul(1.5))), 0, 0,
+  ).sub(0.5).mul(topMask);
   // hand-cut seams: modulate the mortar so joints vary in depth along their run
   const cutRaw = triNoise3D(positionWorld.mul(2.2), 0, 0);
   const cut = cutRaw.mul(0.5).add(0.65);
-  const mortar = ex.add(ez).add(line).add(vseam).clamp(0, 1).mul(cut);
+  const mortar = ex.add(ez).add(line).clamp(0, 1).mul(cut);
   // weathered grain: three FINE scales only — a macro (low-frequency) term just
   // smears meaningless light/dark clouds across whole walls
   const g46 = triNoise3D(positionWorld.mul(4.6), 0, 0);
@@ -633,6 +699,8 @@ export function makeStoneMat(
     .mul(handPaintedStoneFactor(idf))
     .mul(stoneAlbedo)
     .mul(stoneAo)
+    .mul(float(1).add(flagWear.mul(stoneStyle.flagWear)))
+    .mul(float(1).add(flagBrush.mul(stoneStyle.flagBrush)))
     .mul(crackFactor(idf, stoneStyle.damage))
     .add(warmEdge);
   return mat;

@@ -18,6 +18,7 @@ import { ABYSS } from "../gen/dungeon";
 import { TH } from "../config";
 import { makeHandPaintedLandmarkStoneMaterial, makeBrambleMat } from "./kit/materials";
 import { brambleClumpGeometry, scatterBrambles } from "./brambles";
+import { erodeGeometry } from "./kit/erode";
 
 /** Layered ghost-fire for the oracle's eye sockets. The torch flame material
  *  reads fine at prop scale but falls apart on a hero close-up, so the gaze
@@ -601,10 +602,17 @@ function brokenArchGeometry(): THREE.BufferGeometry {
  * back penetrates stone, while staggered buttresses break the top/side outline
  * so it can merge into the environment's larger horseshoe wall. */
 function oracleBackingCliffGeometry(): THREE.BufferGeometry {
+  // Segment counts, not decoration: this wall is 335 world units across, and at
+  // one quad per box face its facets were tens of units wide — folded paper, at
+  // any range where you can see the oracle's hands. The masses stay authored
+  // (silhouette is the point), but each carries enough vertices for the erosion
+  // pass below to actually cut into it. ~14k triangles for the whole cliff, one
+  // mesh, one draw.
+  const SEG = 8;
   const geometry = mergedParts((add) => {
-    add(new THREE.BoxGeometry(86, 92, 26), [0, 44, 0]);
-    add(new THREE.BoxGeometry(62, 34, 34), [-12, 100, -2], [1, 1, 1], [0.02, 0.04, -0.04]);
-    add(new THREE.BoxGeometry(44, 28, 30), [25, 116, -3], [1, 1, 1], [-0.03, -0.08, 0.08]);
+    add(new THREE.BoxGeometry(86, 92, 26, SEG, SEG, SEG), [0, 44, 0]);
+    add(new THREE.BoxGeometry(62, 34, 34, SEG, SEG, SEG), [-12, 100, -2], [1, 1, 1], [0.02, 0.04, -0.04]);
+    add(new THREE.BoxGeometry(44, 28, 30, SEG, SEG, SEG), [25, 116, -3], [1, 1, 1], [-0.03, -0.08, 0.08]);
     const strata = [
       [-58, 20, 18, 43, 28], [-49, 61, 24, 78, 24], [-61, 99, 16, 45, 22],
       [58, 19, 20, 41, 30], [50, 60, 25, 75, 24], [62, 101, 17, 48, 22],
@@ -613,7 +621,7 @@ function oracleBackingCliffGeometry(): THREE.BufferGeometry {
     for (let i = 0; i < strata.length; i++) {
       const [x, y, w, h, d] = strata[i];
       add(
-        new THREE.BoxGeometry(w, h, d), [x, y, -2 - (i % 3) * 2],
+        new THREE.BoxGeometry(w, h, d, SEG, SEG, SEG), [x, y, -2 - (i % 3) * 2],
         [1, 1, 1], [(i % 2 ? 1 : -1) * 0.035, (i - 4) * 0.018, (i % 3 - 1) * 0.055],
       );
     }
@@ -622,9 +630,12 @@ function oracleBackingCliffGeometry(): THREE.BufferGeometry {
     for (let i = 0; i < 14; i++) {
       const x = -66 + i * 10.2;
       const h = 15 + (i * 13 % 19);
-      add(new THREE.IcosahedronGeometry(1, 1), [x, h * 0.42 - 4, 7 + (i % 4) * 2], [7 + (i % 3) * 2, h * 0.72, 8 + (i % 2) * 3], [i * 0.07, i * 0.19, (i % 3 - 1) * 0.12]);
+      add(new THREE.IcosahedronGeometry(1, 3), [x, h * 0.42 - 4, 7 + (i % 4) * 2], [7 + (i % 3) * 2, h * 0.72, 8 + (i % 2) * 3], [i * 0.07, i * 0.19, (i % 3 - 1) * 0.12]);
     }
   });
+  // Weathering comes last. It moves vertices, so it changes which way faces
+  // point — painting the face values before this would colour the old normals.
+  erodeGeometry(geometry, { seed: 419, amplitude: 2.1, frequency: 0.055, octaves: 4, strata: 0.6 });
   paintFacets(geometry, 0x111a2b, 0x34465f, 419);
   return geometry;
 }

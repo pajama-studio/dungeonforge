@@ -6,6 +6,7 @@ import { chromium } from "playwright";
 
 const OUT = process.argv[2];
 const LEVELS = process.argv.slice(3).map(Number);
+const CAM = JSON.parse(process.env.DF_CAM ?? "[8,-7,14,0,6,0]");
 
 // Dungeonforge renders through WebGPURenderer, and headless Chromium keeps
 // WebGPU behind flags — without these the page throws
@@ -30,19 +31,22 @@ await page.waitForTimeout(18_000); // decor + streamed landmarks
 // Fracture is a close-range surface feature; from the default wide camera it
 // contributes nothing and an A/B proves nothing. Park the camera against the
 // masonry and freeze it so both exposures share one viewpoint.
-const framed = await page.evaluate(() => {
+// Setting the camera once does not hold: the app's own update loop overwrites
+// it on the next frame. Re-apply every frame instead.
+const framed = await page.evaluate(([px, py, pz, tx, ty, tz]) => {
   const df = (window).__df;
   if (!df?.camera || !df?.controls) return false;
   df.controls.autoRotate = false;
   df.controls.enabled = false;
-  // Underside view: the failure only shows when looking up at a mass that
-  // overhangs the abyss.
-  df.camera.position.set(8.0, -6.5, 14.0);
-  df.controls.target.set(0.0, 6.0, 0.0);
-  df.camera.lookAt(df.controls.target);
-  df.controls.update?.();
+  const pin = () => {
+    df.camera.position.set(px, py, pz);
+    df.camera.lookAt(tx, ty, tz);
+    df.camera.updateMatrixWorld(true);
+    (window).__pin = requestAnimationFrame(pin);
+  };
+  pin();
   return true;
-});
+}, CAM);
 if (!framed) errors.push("camera/controls not exposed; using default view");
 await page.waitForTimeout(2500);
 

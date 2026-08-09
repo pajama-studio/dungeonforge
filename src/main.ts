@@ -21,6 +21,7 @@ import {
   type LodLevel,
 } from "./scene/slots";
 import { buildEnvironment } from "./scene/env";
+import { setInteriorCull, getInteriorCull } from "./scene/build";
 import { flickerDamp, loadHandPaintedStoneTexture, setOcclusionWindow, stoneStyle } from "./scene/kit/materials";
 import { createPost } from "./render/post";
 import { GpuMasonryScene } from "./render/gpu-scene";
@@ -1647,6 +1648,12 @@ void boot().catch((error) => {
   openEditor: (open?: boolean) => toggleEditor(open),
   cameraShots,
   stoneStyle,
+  masonry: {
+    get interiorCull() { return getInteriorCull(); },
+    /** Turn the interior-course cull off, then re-forge, to tell whether a
+     *  see-through wall is the cull or the geometry. */
+    setInteriorCull(on: boolean) { setInteriorCull(on); },
+  },
   gpuScene,
   destruction,
   dragonPlacement: {

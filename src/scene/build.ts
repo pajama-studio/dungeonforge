@@ -381,6 +381,15 @@ function makeRise(group: THREE.Group, delay = 0): (t: number) => void {
 // Per-layout build.
 // ---------------------------------------------------------------------------
 
+/** Runtime bisect for masonry see-through. The interior-course cull is a
+ *  purely horizontal test — it asks whether four neighbours hide a column's
+ *  flanks, and has no concept of being seen from below. Turning it off and
+ *  re-forging says definitively whether a reported hole is the cull or the
+ *  geometry. Exposed on __df.masonry. */
+let interiorCullEnabled = true;
+export function setInteriorCull(on: boolean): void { interiorCullEnabled = on; }
+export function getInteriorCull(): boolean { return interiorCullEnabled; }
+
 export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, rootScale = 1, riseDelay = 0): WorldHandle {
   worldLists.reset();
   const list = (capacity = 64) => worldLists.take(capacity);
@@ -510,11 +519,18 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
     const nCourses = Math.max(0, Math.round((topTier - baseTier) * TH / COURSE));
     const doorCell = l.doorMask[cell] === 1;
     const occlH = occlTier[cell] * TH;
+    // occlTier is a purely horizontal test — the minimum height at which all
+    // four neighbours hide this column's flanks. It has no concept of "below",
+    // so for a mass overhanging the abyss it happily culls the very course
+    // whose sealed underside is the only thing standing between the camera and
+    // the hollow inside of the column.
+    const bottomExposed = wallBase[cell] === ABYSS;
     for (let k = 0; k < nCourses; k++) {
       masonryPotential++;
       const y0 = baseTier * TH + k * COURSE;
       const yMid = y0 + COURSE / 2;
-      if (k < nCourses - 1 && y0 + COURSE <= occlH - 0.01) {
+      if (interiorCullEnabled && k < nCourses - 1 && !(bottomExposed && k === 0)
+          && y0 + COURSE <= occlH - 0.01) {
         masonryInteriorCulled++;
         continue; // fully hidden
       }
@@ -561,9 +577,7 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
       // the exposed top course needs a cap (and never a hidden bottom).
       const breachCourse = floorTier !== ABYSS
         && yMid > floorTier * TH && yMid < floorTier * TH + 2.65;
-      // The lowest course needs its underside when the column hangs over the
-      // void; wallBase is ABYSS exactly then.
-      const slot = courseTarget(k, nCourses, breachCourse, wallBase[cell] === ABYSS);
+      const slot = courseTarget(k, nCourses, breachCourse, bottomExposed);
       const target = slot === "full" ? blocks : slot === "top" ? blockTops : blockMids;
       const targetBreaches = slot === "full" ? breachByInstance
         : slot === "top" ? breachByTopInstance : breachByMiddleInstance;

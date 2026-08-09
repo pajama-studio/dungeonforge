@@ -413,9 +413,10 @@ export function buildEnvironment(
   if (atmosphereParticles.instanceColor) atmosphereParticles.instanceColor.needsUpdate = true;
   group.add(atmosphereParticles);
 
-  // -- Canyon walls: terraced rock mesas ringing the fortress. Each mesa is a
-  //    stack of shrinking, slightly rotated strata with per-stratum vertex
-  //    color (tops catch the sky) — silhouettes read as layered stone, not boxes.
+  // -- The horizon is atmosphere now, not geometry. The canyon used to be 31
+  //    mesas and three ruin clusters built from raw BoxGeometry, which is what
+  //    they read as up close. The mist curtain and fog banks below carry the
+  //    enclosure instead, so the abyss ends in depth rather than in boxes.
   //    Everything ring-shaped lives in ringGroup so fit() can recentre/rescale
   //    it around a multi-block chain.
   const ringGroup = new THREE.Group();
@@ -425,130 +426,6 @@ export function buildEnvironment(
   const landmarkGroup = buildAbyssLandmarks(seed);
   group.add(landmarkGroup);
   {
-    // A dominant horseshoe wall frames the dungeon without turning the scene
-    // into a uniform arena. It is tallest on the narrative back side (-Z),
-    // then loses height/density toward both ends and opens toward the default
-    // approach camera (+Z). The open mouth remains available for the dragon
-    // perch and long abyss sightlines.
-    const wallArcCenter = -Math.PI / 2;
-    const wallArcSpan = Math.PI * 1.34; // 241°: enclosure with one clear vista
-    const wallAngle = (k: number, count: number, salt: number) => {
-      const u = count <= 1 ? 0.5 : k / (count - 1);
-      return wallArcCenter - wallArcSpan / 2 + wallArcSpan * u
-        + (hash2(seed, k, salt) - 0.5) * 0.14;
-    };
-    const wallEnvelope = (k: number, count: number) => {
-      const u = count <= 1 ? 0.5 : k / (count - 1);
-      return Math.pow(Math.sin(u * Math.PI), 0.62);
-    };
-    const geos: THREE.BufferGeometry[] = [];
-    const tint = new THREE.Color();
-    // Each stratum is a CLUSTER of jittered rock chunks, not one big box —
-    // up close the cliffs read as craggy stone, not furniture.
-    const addMesa = (a: number, rad: number, baseW: number, baseD: number, nStrata: number, hMul: number, k: number, silhouette = false) => {
-      let w = baseW, d = baseD;
-      let yy = ABYSS * TH - 12;
-      for (let s = 0; s < nStrata; s++) {
-        const hS = (2.5 + hash2(seed, k * 7 + s, 11) * 4.5) * hMul;
-        const cx0 = Math.cos(a) * rad, cz0 = Math.sin(a) * rad;
-        const nChunks = silhouette ? 2 : 3 + Math.floor(hash2(seed, k * 7 + s, 40) * 3);
-        for (let c = 0; c < nChunks; c++) {
-          const q = k * 131 + s * 17 + c;
-          const cw = w * (0.45 + hash2(seed, q, 41) * 0.5);
-          const cd = d * (0.45 + hash2(seed, q, 42) * 0.5);
-          const ch = hS * (0.75 + hash2(seed, q, 43) * 0.55);
-          const g = new THREE.BoxGeometry(cw, ch, cd);
-          const lum = (silhouette ? 0.045 + s * 0.008 : 0.055 + s * 0.02) + hash2(seed, q, 44) * 0.02;
-          tint.setHSL(0.6 - s * 0.008, silhouette ? 0.38 : 0.32, lum);
-          const nVerts = g.getAttribute("position").count;
-          const colArr = new Float32Array(nVerts * 3);
-          const nrm = g.getAttribute("normal");
-          for (let i = 0; i < nVerts; i++) {
-            const topBoost = nrm.getY(i) > 0.5 ? (silhouette ? 1.12 : 1.38) : 1;
-            colArr[i * 3] = tint.r * topBoost;
-            colArr[i * 3 + 1] = tint.g * topBoost;
-            colArr[i * 3 + 2] = tint.b * topBoost;
-          }
-          g.setAttribute("color", new THREE.BufferAttribute(colArr, 3));
-          g.rotateY(a + (hash2(seed, q, 45) - 0.5) * 0.9);
-          g.translate(
-            cx0 + (hash2(seed, q, 46) - 0.5) * w * 0.55,
-            yy + ch / 2 - hS * 0.15,
-            cz0 + (hash2(seed, q, 47) - 0.5) * d * 0.55,
-          );
-          geos.push(g);
-        }
-        yy += hS * (0.8 + hash2(seed, k * 7 + s, 16) * 0.12);
-        w *= 0.7 + hash2(seed, k * 7 + s, 17) * 0.12;
-        d *= 0.7 + hash2(seed, k * 7 + s, 18) * 0.12;
-      }
-    };
-    // near ring: broad terraced mesas
-    for (let k = 0; k < 12; k++) {
-      const envelope = wallEnvelope(k, 12);
-      const a = wallAngle(k, 12, 1);
-      addMesa(
-        a, 64 + hash2(seed, k, 2) * 22,
-        13 + hash2(seed, k, 3) * 16, 10 + hash2(seed, k, 4) * 11,
-        2 + Math.floor(envelope * 3 + hash2(seed, k, 5) * 2),
-        0.85 + envelope * 1.55, k,
-      );
-    }
-    // Gaunt spires concentrate toward the back wall; the arc ends intentionally
-    // have gaps so the enclosure decays instead of ending like a cut cylinder.
-    for (let k = 12; k < 19; k++) {
-      const j = k - 12;
-      const envelope = wallEnvelope(j, 7);
-      const a = wallAngle(j, 7, 6) + (hash2(seed, k, 60) - 0.5) * 0.2;
-      addMesa(a, 58 + hash2(seed, k, 7) * 20, 5 + hash2(seed, k, 8) * 5, 5 + hash2(seed, k, 9) * 4, 3 + Math.floor(envelope * 4), 1.05 + envelope * 1.9, k);
-    }
-    // far ring: jagged dark silhouettes, wildly uneven heights — no shelf line
-    for (let k = 19; k < 31; k++) {
-      const j = k - 19;
-      const envelope = wallEnvelope(j, 12);
-      const a = wallAngle(j, 12, 19) + (hash2(seed, k, 61) - 0.5) * 0.18;
-      const hVar = 0.75 + envelope * (1.8 + hash2(seed, k, 23) * 2.4);
-      addMesa(a, 100 + hash2(seed, k, 20) * 45, 16 + hash2(seed, k, 21) * 22, 14 + hash2(seed, k, 22) * 12, 3 + Math.floor(hash2(seed, k, 24) * 3), hVar, k, true);
-    }
-    // distant sister ruins: dark tower clusters with one or two living lights —
-    // the labyrinth does not end at this canyon
-    {
-      const ruinMat = new THREE.MeshLambertNodeMaterial({ color: 0x0e1526 });
-      const lightMat = new THREE.MeshBasicNodeMaterial();
-      lightMat.colorNode = color(0xffb35c).mul(2.2);
-      for (let k = 0; k < 3; k++) {
-        const a = (k / 3) * Math.PI * 2 + 0.9 + hash2(seed, k, 25) * 0.6;
-        const rad = 92 + hash2(seed, k, 26) * 30;
-        const cx2 = Math.cos(a) * rad, cz2 = Math.sin(a) * rad;
-        const cluster = new THREE.Group();
-        const nT = 4 + Math.floor(hash2(seed, k, 27) * 4);
-        for (let t = 0; t < nT; t++) {
-          const hT = 6 + hash2(seed, k * 9 + t, 28) * 20;
-          const wT = 2.2 + hash2(seed, k * 9 + t, 29) * 4;
-          const tower = new THREE.Mesh(new THREE.BoxGeometry(wT, hT, wT), ruinMat);
-          tower.position.set(
-            cx2 + (hash2(seed, k * 9 + t, 30) - 0.5) * 16,
-            ABYSS * TH - 8 + hT / 2,
-            cz2 + (hash2(seed, k * 9 + t, 31) - 0.5) * 16,
-          );
-          tower.rotation.y = hash2(seed, k * 9 + t, 32) * 0.8;
-          cluster.add(tower);
-          // a lit window or two on the tallest towers
-          if (hT > 18 && hash2(seed, k * 9 + t, 35) < 0.8) {
-            const win = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.7), lightMat);
-            const wa = Math.atan2(-cz2, -cx2); // face roughly toward the fortress
-            win.position.set(
-              tower.position.x + Math.cos(wa) * (wT / 2 + 0.05),
-              tower.position.y + hT * 0.28,
-              tower.position.z + Math.sin(wa) * (wT / 2 + 0.05),
-            );
-            win.rotation.y = wa + Math.PI / 2;
-            cluster.add(win);
-          }
-        }
-        ringGroup.add(cluster);
-      }
-    }
     // mist curtain: a ring of broad fog banks that swallows the horizon seam
     {
       const mist = new THREE.SpriteNodeMaterial({ transparent: true, depthWrite: false });
@@ -603,12 +480,6 @@ export function buildEnvironment(
       fogIslands.computeBoundingSphere();
       ringGroup.add(fogIslands);
     }
-    const merged = BufferGeometryUtils.mergeGeometries(geos);
-    for (const g of geos) g.dispose();
-    const mat = new THREE.MeshLambertNodeMaterial({ vertexColors: true });
-    const cliffs = new THREE.Mesh(merged, mat);
-    cliffs.receiveShadow = false;
-    ringGroup.add(cliffs);
   }
 
   // -- Abyss bedrock far below. Broad low-frequency terraces establish the

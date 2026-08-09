@@ -711,6 +711,37 @@ export function makeStoneMat(
   return mat;
 }
 
+/** Drowned briar on the basin bed. */
+export const brambleStyle = {
+  /** Lateral drift at the crown, in world units. Standing water, not wind —
+   *  this is a slow lean, and anything springy reads as grass. */
+  sway: uniform(0.055),
+  swaySpeed: uniform(0.33),
+  /** Multiplies the baked cane ramp. Cold and desaturated so the briar stays a
+   *  silhouette against the teal water rather than competing with it. */
+  tint: uniform(new THREE.Color(0.46, 0.52, 0.50)),
+};
+
+/** Thorn thicket material: baked value ramp, drift in the vertex shader.
+ *
+ *  Amplitude squares with height above the root, so the base stays planted in
+ *  the silt and only the crown moves. A linear falloff lets the roots skate,
+ *  which is the tell that a plant is a shader trick. */
+export function makeBrambleMat(
+  stableInstanceId = instanceIndex.toFloat(),
+): THREE.MeshLambertNodeMaterial {
+  const mat = new THREE.MeshLambertNodeMaterial({ vertexColors: true });
+  const pl = positionLocal;
+  const phase = hash(stableInstanceId.add(5.19)).mul(Math.PI * 2);
+  const h = pl.y.max(0);
+  const amp = h.mul(h).mul(brambleStyle.sway);
+  const t = time.mul(brambleStyle.swaySpeed).add(phase);
+  mat.positionNode = pl.add(vec3(sin(t).mul(amp), float(0), cos(t.mul(0.77)).mul(amp)));
+  mat.colorNode = brambleStyle.tint;
+  mat.name = "drowned-briar";
+  return mat;
+}
+
 /** Floors and steps: same shader, flagstone-scaled stone set. */
 export function makeStoneFloorMat(
   stableInstanceId = instanceIndex.toFloat(),

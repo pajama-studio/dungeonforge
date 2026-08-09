@@ -16,7 +16,8 @@ import {
 import { hash2 } from "../gen/rng";
 import { ABYSS } from "../gen/dungeon";
 import { TH } from "../config";
-import { makeHandPaintedLandmarkStoneMaterial } from "./kit/materials";
+import { makeHandPaintedLandmarkStoneMaterial, makeBrambleMat } from "./kit/materials";
+import { brambleClumpGeometry, scatterBrambles } from "./brambles";
 
 /** Layered ghost-fire for the oracle's eye sockets. The torch flame material
  *  reads fine at prop scale but falls apart on a hero close-up, so the gaze
@@ -1892,6 +1893,21 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
   abyssPoolGeo.rotateX(-Math.PI / 2);
   const abyssPoolMat = makeAbyssPoolMat();
   const abyssPool = new THREE.Mesh(abyssPoolGeo, abyssPoolMat);
+  // Drowned briar carpeting the basin bed. Four clump variants keep the
+  // silhouette from repeating; one InstancedMesh keeps it to one draw call.
+  // Capacity is a hard cap, not a target — the scatter fills what the basin
+  // radius supports and the rest stay off-screen behind the bounding sphere.
+  const brambleGeos = [0, 1, 2, 3].map((v) => brambleClumpGeometry(seed, v));
+  const brambleGeo = BufferGeometryUtils.mergeGeometries(brambleGeos);
+  for (const g of brambleGeos) g.dispose();
+  const brambleMat = makeBrambleMat();
+  const brambles = new THREE.InstancedMesh(brambleGeo, brambleMat, 1500);
+  brambles.name = "basin-drowned-briar";
+  brambles.castShadow = false;      // a thicket of thin canes costs more in the
+  brambles.receiveShadow = false;   // shadow pass than it returns on screen
+  brambles.frustumCulled = true;
+  root.add(brambles);
+
   abyssPool.name = "oracle-bioluminescent-pool";
   const abyssBasinPool = new THREE.Mesh(abyssPoolGeo, makeAbyssBasinMat());
   abyssBasinPool.name = "maze-basin-bioluminescent-pool";
@@ -2229,6 +2245,14 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
     abyssBasinPool.scale.setScalar(basinRadius);
     // the haze sits ON the water and is deliberately shallow: a tall dome
     // reads as a bubble, a flat one as a layer of lit air
+    // Seat the briar on the bed, just under the water sheet — the basin sits at
+    // floorY + 0.6, so the canes break the surface at their crowns and stay
+    // rooted below it.
+    scatterBrambles(
+      brambles, seed,
+      new THREE.Vector3(abyssBasinPool.position.x, floorY, abyssBasinPool.position.z),
+      basinRadius * 0.85,
+    );
     abyssHaze.position.copy(abyssBasinPool.position).add(new THREE.Vector3(0, -1, 0));
     abyssHaze.scale.set(basinRadius * 0.92, basinRadius * 0.16, basinRadius * 0.92);
 

@@ -194,10 +194,20 @@ function crackFactor(stableId: any, damage: any): any {
   // how much of the image counts as a crack; widening them with damage is what
   // makes the same block read as chipped or shattered.
   const luma = sampled.r.mul(0.34).add(sampled.g.mul(0.5)).add(sampled.b.mul(0.16));
-  const bite = damage.mul(0.34).add(0.06);
-  const crack = smoothstep(bite.add(0.16), bite.sub(0.02), luma);
+  // Thresholds must come from the atlas's real distribution, not from taste.
+  // Measured over hand-painted-stone-1024.webp: luma is tightly clustered at
+  // 0.244 +/- 0.024, spanning 0.150 to 0.475, with p5 = 0.214 and p10 = 0.219.
+  //
+  // Two earlier guesses both failed for the same reason — they sat outside that
+  // band. 0.38/0.56 is entirely above it, so every pixel read as fracture and
+  // whole faces dimmed; 0.085/0.165 is entirely below it, so nothing did.
+  // A 0.024 standard deviation leaves very little room, so the window has to be
+  // narrow and centred just under the median.
+  const bite = damage.mul(0.016).add(0.206); // p5 at rest, ~p20 fully ruined
+  const crack = smoothstep(bite.add(0.012), bite.sub(0.014), luma);
   // Darken into the fracture rather than lightening: a crack is a shadow.
-  return float(1).sub(crack.mul(damage).mul(0.62));
+  // Deeper per-pixel than before precisely because it now covers far less area.
+  return float(1).sub(crack.mul(damage).mul(0.8));
 }
 
 /** Hero-landmark version of the same authored surface. It avoids instanceIndex

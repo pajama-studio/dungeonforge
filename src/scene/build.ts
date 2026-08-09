@@ -1624,9 +1624,18 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   putInstanced(pool, "towerRoofs", R.towerRoofGeo, R.stoneMat, towerRoofs, false);
   // Floors get the flagstone-scaled set; the wall set stamps a grid of
   // stones onto every slab.
+  // Floors keep the FLOOR material at every tier.
+  //
+  // These three used to be stoneFloorMat / stoneLoMat / stoneLoMat, so crossing
+  // an LOD boundary swapped a floor from the floor stone set and its world-XZ
+  // projection to the wall set and its per-instance projection — a different
+  // image, mapped differently, on the same slab. That is the texture pop: it is
+  // not a mip transition, it is a different material. makeStoneLoMat already
+  // exists only to be the same graph as the near shader for exactly this
+  // reason; the floors were simply never given their own.
   putInstanced(pool, "tiles", R.tileGeo, R.stoneFloorMat, tiles, true);
-  putInstanced(pool, "tilesLo", R.tileGeoLo, R.stoneLoMat, tilesLow, farShadows);
-  putInstancedTwin(pool, "tilesMidLo", "tiles", R.tileGeoLo, R.stoneLoMat, farShadows);
+  putInstanced(pool, "tilesLo", R.tileGeoLo, R.stoneFloorMat, tilesLow, farShadows);
+  putInstancedTwin(pool, "tilesMidLo", "tiles", R.tileGeoLo, R.stoneFloorMat, farShadows);
   // Every rebuilt slot starts in the cheap state. The main loop promotes at
   // most one nearby island per frame after the background high-detail compile.
   const blockHi = pool.meshes.get("blocks"), blockLo = pool.meshes.get("blocksLo");
@@ -1647,7 +1656,7 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   }
   putInstanced(pool, "redTiles", R.tileGeo, R.redMat, redTiles, true);
   putInstanced(pool, "steps", R.stepGeo, R.stoneFloorMat, steps);
-  putInstancedTwin(pool, "stepsLo", "steps", R.stepGeo, R.stoneLoMat, farShadows);
+  putInstancedTwin(pool, "stepsLo", "steps", R.stepGeo, R.stoneFloorMat, farShadows);
   pool.meshes.get("steps")!.count = 0;
   pool.meshes.get("steps")!.visible = false;
   putInstanced(pool, "cheeks", R.cheekGeo, R.stoneMat, cheeks, false);

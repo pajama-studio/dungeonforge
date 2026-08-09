@@ -21,7 +21,7 @@ import {
   type LodLevel,
 } from "./scene/slots";
 import { buildEnvironment } from "./scene/env";
-import { setInteriorCull, getInteriorCull } from "./scene/build";
+import { setInteriorCull, getInteriorCull, setClosedCourses, getClosedCourses } from "./scene/build";
 import { flickerDamp, loadHandPaintedStoneTexture, setOcclusionWindow, stoneStyle } from "./scene/kit/materials";
 import { createPost } from "./render/post";
 import { GpuMasonryScene } from "./render/gpu-scene";
@@ -1653,6 +1653,9 @@ void boot().catch((error) => {
     /** Turn the interior-course cull off, then re-forge, to tell whether a
      *  see-through wall is the cull or the geometry. */
     setInteriorCull(on: boolean) { setInteriorCull(on); },
+    get closedCourses() { return getClosedCourses(); },
+    /** Draw every course with the sealed box. Re-forge after changing. */
+    setClosedCourses(on: boolean) { setClosedCourses(on); },
   },
   gpuScene,
   destruction,

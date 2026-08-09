@@ -387,6 +387,11 @@ function makeRise(group: THREE.Group, delay = 0): (t: number) => void {
  *  re-forging says definitively whether a reported hole is the cull or the
  *  geometry. Exposed on __df.masonry. */
 let interiorCullEnabled = true;
+/** Experiment switch: draw every course with the sealed box. If see-through
+ *  banding disappears with this on, the open shells are the cause. */
+let DEBUG_CLOSED_COURSES = false;
+export function setClosedCourses(on: boolean): void { DEBUG_CLOSED_COURSES = on; }
+export function getClosedCourses(): boolean { return DEBUG_CLOSED_COURSES; }
 export function setInteriorCull(on: boolean): void { interiorCullEnabled = on; }
 export function getInteriorCull(): boolean { return interiorCullEnabled; }
 
@@ -1517,8 +1522,8 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   // ------------------------------------------------------- instanced meshes
   // created last so every section above could still contribute masonry/flames
   putInstanced(pool, "blocks", R.blockGeo, R.stoneMat, blocks);
-  putInstanced(pool, "blockMids", R.blockMiddleGeo, R.stoneMat, blockMids);
-  putInstanced(pool, "blockTops", R.blockTopGeo, R.stoneMat, blockTops);
+  putInstanced(pool, "blockMids", DEBUG_CLOSED_COURSES ? R.blockGeo : R.blockMiddleGeo, R.stoneMat, blockMids);
+  putInstanced(pool, "blockTops", DEBUG_CLOSED_COURSES ? R.blockGeo : R.blockTopGeo, R.stoneMat, blockTops);
   (pool.meshes.get("blocks")!.userData as {
     masonryCull?: { potential: number; interior: number; authoredGaps: number; emitted: number };
   }).masonryCull = {

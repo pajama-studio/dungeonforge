@@ -50,6 +50,13 @@ const framed = await page.evaluate(([px, py, pz, tx, ty, tz]) => {
 if (!framed) errors.push("camera/controls not exposed; using default view");
 await page.waitForTimeout(2500);
 
+if (process.env.DF_CLOSED === "1") {
+  await page.evaluate(() => (window).__df?.masonry?.setClosedCourses(true));
+  // Geometry choice happens at build time, so the switch needs a re-forge.
+  await page.evaluate(() => (document.querySelector("#btnForge") ?? document.querySelector("button"))?.click?.());
+  await page.waitForTimeout(14_000);
+}
+
 for (const level of LEVELS) {
   const applied = await page.evaluate((v) => {
     const s = (window).__df?.stoneStyle;

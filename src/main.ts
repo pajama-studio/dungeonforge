@@ -225,7 +225,11 @@ async function captureForgeSnapshot(): Promise<void> {
 
 // ---- world context ----------------------------------------------------------
 const lights = new LightPool(scene);
-const env = buildEnvironment(scene, 1, (specs) => lights.setCinematic(specs)); // seed-stable; kept across regens
+const env = buildEnvironment(
+  scene, 1,
+  (specs) => lights.setCinematic(specs),
+  (specs) => lights.setLandmarkSpecs(specs),
+); // seed-stable; kept across regens
 const { post: postProcessing, setBloom, godrays: godrayStats } = createPost(renderer, scene, camera, {
   ambientOcclusion: urlParams.get("ao") === "1",
   godrayLight: env.godrayLight,

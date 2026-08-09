@@ -13,7 +13,7 @@ import { ABYSS } from "../gen/dungeon";
 import { TH } from "../config";
 import { buildAbyssLandmarks } from "./abyss-landmarks";
 import { buildAbyssCemetery } from "./abyss-cemetery";
-import type { CinematicLightSpec } from "./build";
+import type { CinematicLightSpec, LightSpec } from "./build";
 
 export type Environment = ReturnType<typeof buildEnvironment>;
 
@@ -35,6 +35,7 @@ export function buildEnvironment(
   scene: THREE.Scene,
   seed: number,
   applyCinematicLights?: (specs: CinematicLightSpec[]) => void,
+  applyLandmarkLights?: (specs: LightSpec[]) => void,
 ): {
   godrayLight: THREE.DirectionalLight;
   fit: (half: number, centerX?: number, centerZ?: number, top?: number) => void;
@@ -682,6 +683,10 @@ export function buildEnvironment(
         z: light.z + centerZ,
         targetX: light.targetX === undefined ? undefined : light.targetX + centerX,
         targetZ: light.targetZ === undefined ? undefined : light.targetZ + centerZ,
+      })));
+      const bounce = (landmarkGroup.userData as { basinLights?: LightSpec[] }).basinLights ?? [];
+      applyLandmarkLights?.(bounce.map((light) => ({
+        ...light, x: light.x + centerX, z: light.z + centerZ,
       })));
       // longer sightlines need thinner air or the far blocks drown in haze
       hazeU.value = Math.min(0.008, Math.max(0.002, 0.5 / (half * 2.4)));

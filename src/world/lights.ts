@@ -11,6 +11,12 @@ import { LIGHT_POOL_SIZE } from "../config";
  *  and tick() — the flicker overwrites intensity every frame. */
 const EMBER_BOOST = 1.45;
 
+/** Torches in the painted reference light a whole terrace, not a saucer of
+ *  floor. The authored radii were tuned when the fill light was brighter;
+ *  now that the darks group properly, the pools need the extra reach to
+ *  carry any masonry at all. Radius only — intensity is EMBER_BOOST's job. */
+const TORCH_REACH = 1.45;
+
 export class LightPool {
   private pool: THREE.PointLight[] = [];
   private specs: LightSpec[] = [];
@@ -66,13 +72,25 @@ export class LightPool {
     this.assign(this.generatedSpecs);
   }
 
+  /** Lights the landmarks themselves ask for — the bounce off the luminous
+   *  basin, chiefly. Merged the same way as the editor's: a handful of the
+   *  pool's slots are worth more spent on the one light that shapes the
+   *  whole lower frame than on the 12th interchangeable torch. */
+  private landmarkSpecs: LightSpec[] = [];
+
+  setLandmarkSpecs(specs: LightSpec[]): void {
+    this.landmarkSpecs = specs;
+    this.assign(this.generatedSpecs);
+  }
+
   private generatedSpecs: LightSpec[] = [];
 
   assign(specs: LightSpec[]): void {
     this.generatedSpecs = specs;
-    if (this.editorSpecs.length > 0) {
-      const room = Math.max(0, this.dynamicSize - this.editorSpecs.length);
-      specs = [...specs.slice(0, room), ...this.editorSpecs];
+    const claimed = [...this.landmarkSpecs, ...this.editorSpecs];
+    if (claimed.length > 0) {
+      const room = Math.max(0, this.dynamicSize - claimed.length);
+      specs = [...specs.slice(0, room), ...claimed];
     }
     this.specs = specs.slice(0, this.dynamicSize);
     for (let i = 0; i < this.dynamicSize; i++) {
@@ -87,7 +105,7 @@ export class LightPool {
         const jitter = (((i + 1) * 2654435761) >>> 16) % 1000 / 1000;
         // slight red bias (-0.55 midpoint): embers over candles, per ref-C
         pl.color.offsetHSL((jitter - 0.55) * 0.05, 0.08, (jitter - 0.5) * 0.06);
-        pl.distance = s.dist;
+        pl.distance = s.dist * TORCH_REACH;
         pl.intensity = s.base * EMBER_BOOST;
       } else {
         pl.intensity = 0;

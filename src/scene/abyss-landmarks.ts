@@ -2148,6 +2148,23 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
     // reads as a bubble, a flat one as a layer of lit air
     abyssHaze.position.copy(abyssBasinPool.position).add(new THREE.Vector3(0, -1, 0));
     abyssHaze.scale.set(basinRadius * 0.92, basinRadius * 0.16, basinRadius * 0.92);
+
+    // The basin lights the world back. In the reference the statue's roots
+    // and the surrounding rock are visibly washed from BELOW by the water —
+    // an emissive plane can never do that on its own, because emission is not
+    // illumination. Two upward point lights, claimed from the shared pool so
+    // the scene's light count never changes.
+    root.userData.basinLights = [
+      {
+        x: abyssBasinPool.position.x, y: floorY + 12, z: abyssBasinPool.position.z,
+        color: 0x2fd8b4, dist: basinRadius * 1.15, base: 46, ph: 0.4,
+      },
+      {
+        x: oracle.position.x, y: floorY + 16,
+        z: oracle.position.z + oracleForward.z * oracleScale * 8,
+        color: 0x39e6c2, dist: oracleScale * 62, base: 34, ph: 2.1,
+      },
+    ];
     abyssShoreRing.position.copy(oracle.position)
       .addScaledVector(oracleForward, oracleScale * 4)
       .add(new THREE.Vector3(0, 2.9, 0));

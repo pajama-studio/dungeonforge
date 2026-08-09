@@ -71,7 +71,9 @@ def main() -> None:
     args = parse_args()
     bpy.ops.object.select_all(action="SELECT")
     bpy.ops.object.delete(use_global=False)
-    bpy.ops.import_scene.gltf(filepath=str(Path(args.input).resolve()))
+    # Weld on import: glTF splits vertices at every UV seam, and an unwelded
+# mesh cracks apart under any geometry operation downstream.
+    bpy.ops.import_scene.gltf(filepath=str(Path(args.input).resolve()), merge_vertices=True)
     meshes = [obj for obj in bpy.context.scene.objects if obj.type == "MESH"]
     if not meshes:
         raise RuntimeError("No mesh in input GLB")

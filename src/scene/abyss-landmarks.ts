@@ -4,6 +4,7 @@
 // pairs for the instanced wardens and distant oracle, plus the
 // shared arch, rubble and chain batches.
 
+import { assetUrl } from "../assets";
 import * as THREE from "three/webgpu";
 import * as BufferGeometryUtils from "three/addons/utils/BufferGeometryUtils.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
@@ -997,17 +998,21 @@ function triangleCount(geometry: THREE.BufferGeometry): number {
   return geometry.index ? geometry.index.count / 3 : geometry.getAttribute("position").count / 3;
 }
 
-const TRIPO_ORACLE_RENDER = "/assets/abyss/oracle/oracle-render-30k.glb";
-const TRIPO_ORACLE_DESTRUCTION_PROXY = "/assets/abyss/oracle/oracle-destruction-proxy-2500.glb";
-const TRIPO_WARDEN_RENDER = "/assets/abyss/warden/warden-render-30k.glb";
-const TRIPO_WARDEN_RANK_RENDER = "/assets/abyss/warden/warden-rank-render-8k.glb";
-const TRIPO_WARDEN_DESTRUCTION_PROXY = "/assets/abyss/warden/warden-destruction-proxy-2500.glb";
-const TRIPO_DRAGON_RENDER = "/assets/abyss/dragon/dragon-render-45k-rigged-runtime.glb";
+const TRIPO_ORACLE_RENDER = assetUrl("abyss/oracle/oracle-render-30k.glb");
+const TRIPO_ORACLE_DESTRUCTION_PROXY = assetUrl("abyss/oracle/oracle-destruction-proxy-2500.glb");
+const TRIPO_WARDEN_RENDER = assetUrl("abyss/warden/warden-render-30k.glb");
+const TRIPO_WARDEN_RANK_RENDER = assetUrl("abyss/warden/warden-rank-render-8k.glb");
+const TRIPO_WARDEN_DESTRUCTION_PROXY = assetUrl("abyss/warden/warden-destruction-proxy-2500.glb");
+const TRIPO_DRAGON_RENDER = assetUrl("abyss/dragon/dragon-render-45k-rigged-runtime.glb");
 // The dragon stands on a titan skull now, not a slate spire. Tripo v3.1,
 // decimated to 30k with its UVs intact — zero boundary and zero non-manifold
 // edges at every LOD — and its textures resized to 1024, which is what keeps a
 // hero rock at 1.3MB.
-const TRIPO_DRAGON_PERCH_RENDER = "/assets/abyss/dragon/titan-skull-perch-30k.glb?v=titan-skull-1";
+//
+// The "?v=titan-skull-1" this carried is gone: the URL is content-addressed
+// now, so re-exporting the skull changes the hash and nothing has to remember
+// to bump a query string.
+const TRIPO_DRAGON_PERCH_RENDER = assetUrl("abyss/dragon/titan-skull-perch-30k.glb");
 
 // Neural landmark shells are Draco-compressed and streamed only after the
 // first visible frame. Keeping one shared decoder avoids three independent

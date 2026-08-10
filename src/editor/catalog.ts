@@ -8,6 +8,7 @@
 //  - STREAMED assets pull the same Draco GLBs the landmarks use. They are
 //    cached per URL, then cloned, so placing five wardens is one download.
 
+import { assetUrl } from "../assets";
 import * as THREE from "three/webgpu";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
@@ -136,31 +137,31 @@ interface StreamEntry extends Omit<AssetDef, "build"> {
 const STREAM_ENTRIES: StreamEntry[] = [
   {
     id: "oracle", label: "Cephalopod oracle", group: "Landmarks", icon: "🐙",
-    url: "/assets/abyss/oracle/oracle-render-30k.glb", glbScale: 10.2, scale: 1,
+    url: assetUrl("abyss/oracle/oracle-render-30k.glb"), glbScale: 10.2, scale: 1,
   },
   {
     id: "warden", label: "Oathbound warden", group: "Landmarks", icon: "🗿",
-    url: "/assets/abyss/warden/warden-render-30k.glb", glbScale: 9.5, scale: 1,
+    url: assetUrl("abyss/warden/warden-render-30k.glb"), glbScale: 9.5, scale: 1,
   },
   {
     id: "warden-rank", label: "Warden (low)", group: "Landmarks", icon: "🪧",
-    url: "/assets/abyss/warden/warden-rank-render-8k.glb", glbScale: 6.4, scale: 1,
+    url: assetUrl("abyss/warden/warden-rank-render-8k.glb"), glbScale: 6.4, scale: 1,
   },
   {
     id: "dragon-perch", label: "Slate perch", group: "Landmarks", icon: "⛰",
-    url: "/assets/abyss/dragon/dragon-slate-perch-qr1k.glb", glbScale: 1, scale: 1,
+    url: assetUrl("abyss/dragon/dragon-slate-perch-qr1k.glb"), glbScale: 1, scale: 1,
   },
   {
     id: "dragon", label: "Colossal dragon", group: "Landmarks", icon: "🐉",
-    url: "/assets/abyss/dragon/dragon-render-45k-rigged-runtime.glb", glbScale: 8.4, scale: 1,
+    url: assetUrl("abyss/dragon/dragon-render-45k-rigged-runtime.glb"), glbScale: 8.4, scale: 1,
   },
   {
     id: "sentinel-spear", label: "Sentinel · spear", group: "Landmarks", icon: "🗡",
-    url: "/assets/abyss/sentinel/sentinel-spear-render-30k.glb", glbScale: 5.2, scale: 1,
+    url: assetUrl("abyss/sentinel/sentinel-spear-render-30k.glb"), glbScale: 5.2, scale: 1,
   },
   {
     id: "sentinel-sword", label: "Sentinel · sword", group: "Landmarks", icon: "⚔",
-    url: "/assets/abyss/sentinel/sentinel-sword-render-30k.glb", glbScale: 5.2, scale: 1,
+    url: assetUrl("abyss/sentinel/sentinel-sword-render-30k.glb"), glbScale: 5.2, scale: 1,
   },
 ];
 

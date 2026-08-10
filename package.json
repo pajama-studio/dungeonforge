@@ -12,7 +12,11 @@
     "bench:markov": "vite-node scripts/markov-benchmark.ts",
     "bench:wasm": "vite-node scripts/wasm-maze-benchmark.ts",
     "build:wasm": "wasm-pack build rust/dungeon-core --release --target web --out-dir ../../src/gen/wasm-pkg && node scripts/keep-wasm-package.mjs",
-    "bench:report": "node scripts/perf-report.mjs"
+    "bench:report": "node scripts/perf-report.mjs",
+    "assets:sync": "node scripts/sync-asset-urls.mjs",
+    "assets:check": "node scripts/sync-asset-urls.mjs --check",
+    "assets:pull": "node scripts/pull-assets.mjs",
+    "dev:offline": "VITE_ASSETS_LOCAL=1 vite"
   },
   "dependencies": {
     "three": "^0.185.1"

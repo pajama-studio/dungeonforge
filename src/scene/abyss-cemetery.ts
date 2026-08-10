@@ -3,6 +3,7 @@
 // runtime work is limited to instanced LOD draws plus one grave draw; only the
 // two tiers participating in a transition can be submitted per archetype.
 
+import { assetUrl } from "../assets";
 import * as THREE from "three/webgpu";
 import { cameraPosition, length, positionWorld, smoothstep } from "three/tsl";
 import { hash2 } from "../gen/rng";
@@ -26,7 +27,7 @@ const TREE_CAPACITY = 34;
 const TREE_VARIANT_CAPACITY = Math.ceil(TREE_CAPACITY / 3);
 const GRAVE_CAPACITY = 76;
 const FLOOR_Y = ABYSS * TH - 11.82;
-const TREE_ASSET = "/assets/abyss/cemetery/dead-tree-lods.json";
+const TREE_ASSET = assetUrl("abyss/cemetery/dead-tree-lods.json");
 
 function cemeteryAngle(seed: number, index: number, salt: number): number {
   // Two side chapels plus a decaying foreground crescent. The foreground is

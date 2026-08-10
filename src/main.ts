@@ -9,6 +9,7 @@
 //   ui/       forge-parameter panel
 //   player/   the skeleton (route walker)
 
+import { assetUrl } from "./assets";
 import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import type { TransformControls } from "three/addons/controls/TransformControls.js";
@@ -963,7 +964,7 @@ let playerReady: Promise<void> | null = null;
 function preloadPlayer(): Promise<void> {
   playerReady ??= (async () => {
     player = new Player();
-    try { await player.load("/assets/skeleton-game.glb"); } catch { /* placeholder-only */ }
+    try { await player.load(assetUrl("skeleton-game.glb")); } catch { /* placeholder-only */ }
     player.group.position.set(0, -600, 0);
     player.group.visible = false;
     scene.add(player.group);

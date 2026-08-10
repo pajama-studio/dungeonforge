@@ -6,6 +6,7 @@
 // MeshBasicNodeMaterial: they skip the whole light loop per fragment — crucial,
 // since additive quads are the overdraw.
 
+import { assetUrl } from "../../assets";
 import * as THREE from "three/webgpu";
 import {
   color, vec2, vec3, uv, time, sin, cos, positionLocal, positionWorld, positionView, normalLocal,
@@ -206,7 +207,7 @@ export function loadStoneSet(style = "face"): Promise<void> {
     // the scale was dialled — the lattice is in the image, so no UV can put its
     // joints on the tile seams.
     const name = style;
-    loader.load(`/assets/textures/stone/${name}-${map}-1024.webp`, (tex) => {
+    loader.load(assetUrl(`textures/stone/${name}-${map}-1024.webp`), (tex) => {
       // Only albedo is colour; normal and AO are data and must not be
       // gamma-decoded or the relief comes out wrong.
       tex.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
@@ -239,7 +240,7 @@ function sampleStone(set: StoneSet, map: keyof StoneMaps, uvNode: any): any {
 export function loadBrushAtlas(): Promise<void> {
   if (brushLoad) return brushLoad;
   brushLoad = new Promise((resolve, reject) => {
-    new THREE.TextureLoader().load("/assets/textures/hand-painted-brush-1024.webp", (loaded) => {
+    new THREE.TextureLoader().load(assetUrl("textures/hand-painted-brush-1024.webp"), (loaded) => {
       loaded.colorSpace = THREE.SRGBColorSpace;
       loaded.wrapS = loaded.wrapT = THREE.RepeatWrapping;
       loaded.minFilter = THREE.LinearMipmapLinearFilter;
@@ -258,7 +259,7 @@ export function loadBrushAtlas(): Promise<void> {
 export function loadHandPaintedStoneTexture(): Promise<void> {
   if (handPaintedStoneLoad) return handPaintedStoneLoad;
   handPaintedStoneLoad = new Promise((resolve, reject) => {
-    new THREE.TextureLoader().load("/assets/textures/hand-painted-stone-1024.webp", (loaded) => {
+    new THREE.TextureLoader().load(assetUrl("textures/hand-painted-stone-1024.webp"), (loaded) => {
       loaded.colorSpace = THREE.SRGBColorSpace;
       loaded.wrapS = THREE.RepeatWrapping;
       loaded.wrapT = THREE.RepeatWrapping;

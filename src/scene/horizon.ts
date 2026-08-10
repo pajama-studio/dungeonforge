@@ -15,6 +15,7 @@
 // Every piece is 8k triangles with a 512 albedo, because at 60-140 units behind
 // a mist curtain that is already more than the distance can resolve.
 
+import { assetUrl } from "../assets";
 import * as THREE from "three/webgpu";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
@@ -32,7 +33,7 @@ const ARC_SPAN = Math.PI * 1.34; // 241 degrees: enclosure with one clear vista
 export const ASSET_HEIGHT = 10;
 
 export interface HorizonPieceSpec {
-  /** File under /assets/abyss/horizon. */
+  /** File under abyss/horizon, resolved through assetUrl. */
   name: string;
   /** How many of it stand in the ring. */
   count: number;
@@ -141,7 +142,7 @@ export function buildHorizonRing(seed: number): HorizonRing {
   let disposed = false;
 
   const one = (spec: HorizonPieceSpec) => new Promise<void>((resolve) => {
-    loader.load(`/assets/abyss/horizon/${spec.name}.glb`, (gltf) => {
+    loader.load(assetUrl(`abyss/horizon/${spec.name}.glb`), (gltf) => {
       if (disposed) { resolve(); return; }
       let source: THREE.Mesh | null = null;
       gltf.scene.updateMatrixWorld(true);

@@ -53,6 +53,30 @@ npm run build      # static bundle in dist/
 
 Shareable URLs: `?seed=123&islands=8&size=13` pins a build.
 
+### Where the models come from
+
+The streamed models are not in this repository. They live on the studio shelf,
+[props.pajama.studio](https://props.pajama.studio), under content-addressed
+keys — a URL names exact bytes, so the immutable cache in front of them is
+correct and re-exporting a model changes its URL instead of needing a purge.
+
+`src/asset-urls.json` is the committed path → URL table the game reads, so the
+build stays offline and an asset change shows up in review as a changed hash.
+Everything resolves through `assetUrl()` in `src/assets.ts`, which throws on an
+unknown path rather than falling back to a 404.
+
+```sh
+npm run assets:sync    # regenerate the table from the props catalogue + API
+npm run assets:check   # fail if it is stale (CI)
+npm run assets:pull    # cache the models under public/assets …
+npm run dev:offline    # … and load them from there instead
+```
+
+Textures, the LOD descriptor and KayKit's CC0 skeleton stay in git: the shelf
+catalogues models, and third-party work stays beside its attribution in
+[LICENSES.md](LICENSES.md). The build ships exactly what git tracks — anything
+staged in `public/assets` by the decimation pipeline is left out of `dist/`.
+
 ## 🎮 Controls
 
 | Input | Action |

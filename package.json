@@ -16,7 +16,8 @@
     "assets:sync": "node scripts/sync-asset-urls.mjs",
     "assets:check": "node scripts/sync-asset-urls.mjs --check",
     "assets:pull": "node scripts/pull-assets.mjs",
-    "dev:offline": "VITE_ASSETS_LOCAL=1 vite"
+    "dev:offline": "VITE_ASSETS_LOCAL=1 vite",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "three": "^0.185.1"

@@ -8,7 +8,8 @@ import {
   uv, length, uniform, vec2, fract, atan,
 } from "three/tsl";
 import * as BufferGeometryUtils from "three/addons/utils/BufferGeometryUtils.js";
-import { hash2, valueNoise2 } from "../gen/rng";
+import { hash2 } from "../gen/rng";
+import { abyssFloorHeight, ABYSS_FLOOR, ABYSS_FLOOR_BASE_Y } from "./abyss-floor";
 import { ABYSS } from "../gen/dungeon";
 import { TH } from "../config";
 import { buildAbyssLandmarks } from "./abyss-landmarks";
@@ -492,21 +493,18 @@ export function buildEnvironment(
   //    restrained fBM pass weathers the otherwise mathematical steps.
   //    Lives in ringGroup so fit() recentres/rescales it with the chain.
   {
-    const terraceSteps = 7;
-    const terraceRamp = 0.2;
-    const terraced = (height: number) => {
-      const scaled = THREE.MathUtils.clamp(height, 0, 0.999999) * terraceSteps;
-      const level = Math.floor(scaled);
-      const local = scaled - level;
-      const ramp = THREE.MathUtils.clamp((local - (1 - terraceRamp)) / terraceRamp, 0, 1);
-      const easedRamp = ramp * ramp * (3 - 2 * ramp);
-      return (level + easedRamp) / terraceSteps;
-    };
-    // 900: the far edge must sit past the fog-band convergence distance even
-    // under big chains (ringGroup scales it further) — a visible edge reads
+    // The relief itself lives in abyss-floor.ts as a pure function, because the
+    // mesh is not the only thing that needs to know where the ground is — the
+    // entrance tower's footing, the bedrock piers and prop grounding all ask
+    // the same question, and a vertex buffer is not answerable.
+    //
+    // extent 900: the far edge must sit past the fog-band convergence distance
+    // even under big chains (ringGroup scales it further) — a visible edge reads
     // as a hard diagonal across the horizon. 72² cells are enough for the
     // slow terraces and remain one cheap, static 10,368-triangle draw.
-    const bedrockGeometry = new THREE.PlaneGeometry(900, 900, 72, 72);
+    const bedrockGeometry = new THREE.PlaneGeometry(
+      ABYSS_FLOOR.extent, ABYSS_FLOOR.extent, ABYSS_FLOOR.segments, ABYSS_FLOOR.segments,
+    );
     bedrockGeometry.rotateX(-Math.PI / 2);
     const bedrockPosition = bedrockGeometry.getAttribute("position");
     const bedrockColors = new Float32Array(bedrockPosition.count * 3);
@@ -518,11 +516,7 @@ export function buildEnvironment(
     for (let i = 0; i < bedrockPosition.count; i++) {
       const x = bedrockPosition.getX(i);
       const z = bedrockPosition.getZ(i);
-      const macro = valueNoise2(seed ^ 0x6f4a12d9, x / 155, z / 155);
-      const plateau = (terraced(macro) - 0.5) * 18;
-      const weather = (valueNoise2(seed ^ 0x2c1b3a57, x / 31, z / 31) - 0.5) * 3.6;
-      const micro = (valueNoise2(seed ^ 0x71e5b90d, x / 13, z / 13) - 0.5) * 0.85;
-      const relief = plateau + weather + micro;
+      const relief = abyssFloorHeight(seed, x, z);
       bedrockPosition.setY(i, relief);
       minRelief = Math.min(minRelief, relief);
       maxRelief = Math.max(maxRelief, relief);
@@ -541,15 +535,15 @@ export function buildEnvironment(
     const bedrockMaterial = new THREE.MeshLambertNodeMaterial({ vertexColors: true });
     const bedrock = new THREE.Mesh(bedrockGeometry, bedrockMaterial);
     bedrock.name = "terraced-weathered-abyss-bedrock";
-    bedrock.position.y = ABYSS * TH - 14;
+    bedrock.position.y = ABYSS_FLOOR_BASE_Y;
     bedrock.receiveShadow = false;
     bedrock.userData.terrain = {
       navigation: false,
       collision: false,
-      terraces: terraceSteps,
-      rampFraction: terraceRamp,
+      terraces: ABYSS_FLOOR.terraceSteps,
+      rampFraction: ABYSS_FLOOR.terraceRamp,
       relief: [minRelief, maxRelief],
-      triangles: 72 * 72 * 2,
+      triangles: ABYSS_FLOOR.segments * ABYSS_FLOOR.segments * 2,
       noise: "low-frequency-terraces-plus-weathered-fbm",
     };
     ringGroup.add(bedrock);

@@ -280,3 +280,99 @@ export function planVerticalAnchors(cells: readonly SpatialCell[], blockN: reado
   }
   return result;
 }
+
+/** Vertical anchors are identified by the child cell they join, so every id is a
+ *  real cell index. The ground shaft joins nothing above it — it is the bottom
+ *  of the world — so it takes an id no cell can have, and the parent/child
+ *  pairing lookups in world/helpers.ts simply never match it. */
+export const GROUND_ANCHOR_ID = -1;
+
+export interface GroundEntrance {
+  /** spatial cell index of the block that owns the way in */
+  block: number;
+  /** the shaft, in that block's grid space — reserved exactly like a stair court */
+  anchor: VerticalAnchor;
+  /** which way the doorway at the tower's foot faces, in that block's grid space */
+  doorDir: 0 | 1 | 2 | 3;
+}
+
+/**
+ * Site the one place a player enters the world.
+ *
+ * **Which block.** The plan's root: it is always cell 0, always `mk === 0`, and
+ * always carries the `threshold` role — measured across 80 seeds, no exceptions.
+ * The plan already calls its origin the threshold; this puts a door there.
+ *
+ * The TODO asks for the lowest block *nearest the Cthulhu monument*, which
+ * cannot be honoured here and should not be: the abyss landmarks are positioned
+ * by `fit()` against the finished chain's bounding circle, long after this runs.
+ * Ranking blocks by a distance that does not exist yet would be guesswork.
+ * The dependency is better the other way round — the entrance is structural, and
+ * the monument is aimed at it — which makes the establishing shot a construction
+ * rather than a coincidence.
+ *
+ * **Where in the block.** The same domain rule as a stair court, biased south and
+ * away from the block's north-centre temple, because the doorway wants open
+ * ground in front of it rather than a ziggurat terrace.
+ */
+export function planGroundEntrance(
+  cells: readonly SpatialCell[],
+  blockN: readonly number[],
+  seed: number,
+  verticalByBlock: readonly (readonly VerticalAnchor[])[],
+): GroundEntrance | null {
+  const block = cells.findIndex((cell) => cell.parent < 0 && cell.mk === 0);
+  if (block < 0) return null;
+
+  const N = blockN[block];
+  // Same margin a stair court needs: the 7x7 reservation has to stay inside the
+  // boundary wall, and the ring may not be trimmed away by the footprint.
+  const radius = Math.max(1, Math.floor((N - 1) / 2) - 5);
+  const taken = verticalByBlock[block] ?? [];
+  const centre = (N - 1) / 2;
+  const random = mulberry32(seed ^ 0x47524e44);
+
+  for (let separation = 6; separation >= 2; separation--) {
+    const candidates: { x: number; y: number; dockDir: 0 | 1 | 2 | 3; weight: number }[] = [];
+    for (let y = -radius; y <= radius; y++) for (let x = -radius; x <= radius; x++) {
+      const gx = centre + x, gy = centre + y;
+      const clash = taken.some((other) =>
+        Math.max(Math.abs(other.x - gx), Math.abs(other.y - gy)) < separation);
+      if (clash) continue;
+      // Hard exclusion: the temple platform runs [centre-5, centre+5] across
+      // rows 1..5 with its forecourt on row 6, and Stage 4 yields to a shaft
+      // reservation when they overlap (`if (shaftReserve[...]) continue`). So a
+      // shaft sited there does not fail — it punches a hole through the
+      // ziggurat, which is worse than failing. The 7x7 reserve must clear it.
+      if (Math.abs(gx - centre) <= 8 && gy - 3 <= 6) continue;
+      // South of centre, and off the centre spine: the temple platform runs
+      // across the north-centre and the spine carries the objective route.
+      const south = 1 + Math.max(0, y) / Math.max(1, radius) * 1.4;
+      const offSpine = 1 + Math.min(Math.abs(x), 4) * 0.12;
+      const interior = 1 + (radius - Math.max(Math.abs(x), Math.abs(y))) * 0.05;
+      for (let d = 0; d < 4; d++) {
+        // The foot's door faces the way the interior landing docks, so arriving
+        // from below and leaving on foot read as one axis.
+        const outward = d === 2 ? 1.7 : d === 3 ? 0.5 : 1;
+        candidates.push({
+          x: gx, y: gy, dockDir: d as 0 | 1 | 2 | 3,
+          weight: south * offSpine * interior * outward,
+        });
+      }
+    }
+    if (candidates.length === 0) continue;
+
+    let roll = random() * candidates.reduce((sum, c) => sum + c.weight, 0);
+    let chosen = candidates[candidates.length - 1];
+    for (const candidate of candidates) {
+      roll -= candidate.weight;
+      if (roll <= 0) { chosen = candidate; break; }
+    }
+    return {
+      block,
+      anchor: { id: GROUND_ANCHOR_ID, x: chosen.x, y: chosen.y, dockDir: chosen.dockDir },
+      doorDir: chosen.dockDir,
+    };
+  }
+  return null;
+}

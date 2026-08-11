@@ -195,33 +195,57 @@ its own.
 It is listed as a prerequisite rather than folded into the entrance work because
 it is independently useful and independently verifiable.
 
-## 5. The one genuinely new constraint
+## 5. The constraint I expected, and what is actually there
 
-Between two stacked blocks, a court's column is trivially clear: the parent is
-directly below the child by construction. The ground shaft has no such guarantee.
-It descends from `mk = 0` through open abyss to the terrain, and **that column
-must not intersect any other block's footprint**, on any layer, at any point.
+An earlier draft of this document called the descent column the one genuinely new
+constraint: the shaft falls from `mk = 0` through open abyss, so surely it must
+be proved not to pass through another block.
+
+**It is vacuous.** Measured over 60 seeds and 1,164 cells, `mk` runs `0..5` and
+never below — `mk = 0` *is* the floor of the plan, and stacked children are
+placed above their parent (`oy = parent.oy + 32 + jitter`), never below. Nothing
+can be under a ground block. The check would never fire once.
+
+That probe did turn up a real number for a different item. **239 of the (mi, mj)
+columns have no `mk = 0` cell at all** — blocks whose lowest member floats with
+nothing beneath it. That is the TODO's *"为没有下层投影承重的最低 maze block 求解
+3–5 个基岩支点"*, now with a magnitude attached. The entrance tower is one such
+pier, and the most legible one: a load path the player walks up. The pier solver
+should treat it as fixed and solve the remaining ones around it.
+
+So the constraints that actually bind are duller and block-local:
+
+| Constraint | Where it is checked |
+| --- | --- |
+| 7×7 reservation fits without fighting the temple, a plaza or the ravine | Stage 4, block-local |
+| Ring survives the footprint trim | Stage 4.5 |
+| Ring landing reachable from the main component | Stage 5 |
+| Climb height is comfortable | §5.1 — authored, not emergent |
+
+### 5.1 The climb is authored, not measured
+
+A ground block sits near `y = 0`; the bedrock plane's origin is
+`ABYSS * TH - 14 ≈ -27` with roughly ±11 of relief. So the natural drop is
+16–38 units and varies per seed — and worse, the bedrock lives in `ringGroup`,
+which `fit()` recentres and **rescales** with the chain. Deriving the tower's
+height from the terrain would tie generation to a presentation fit.
+
+Inverted instead: **the tower's foot sits at an authored depth below the block,
+and the ground is raised to meet it.** A local plinth blends the terrain up to
+the foot over a short radius. The climb becomes a constant the design owns rather
+than a number the seed hands out, `abyssFloorHeight()` is used to decide how much
+lift is needed rather than where the tower ends, and nothing about the tower
+moves when `fit()` rescales the horizon.
 
 ```
-   ok                        rejected
-   ┌────┐                    ┌────┐
-   │  ◎ │  mk=0              │  ◎ │  mk=0
-   └──╫─┘                    └──╫─┘
-      ║                    ┌────╫───┐   another block's
-      ║                    │    ║   │   footprint is in the way
-   ───╨───  terrain        └────╫───┘
-                           ─────╨──   terrain
+        ║ ║  climb: authored constant
+        ║ ║
+   ╔════╩═╩════╗  foot
+   ║           ║
+  ╱             ╲        plinth: terrain lifted to the foot,
+ ╱               ╲       blended out over ~2× the tower's width
+╱  ~~~~~~~~~~~~~  ╲~~~   natural abyssFloorHeight() beyond
 ```
-
-This is a macro-level fact, so it is decided in `spatial-plan.ts` where the full
-set of cells and their footprints is known — the same reason `planVerticalAnchors`
-lives there rather than in the block generator.
-
-It also pays a second debt. The TODO asks separately for *"为没有下层投影承重的
-最低 maze block 求解 3–5 个基岩支点"* — bedrock piers under lowest blocks that
-nothing supports. **The entrance tower is one of those piers**, and the most
-legible one: a load path the player walks up. The pier solver should treat it as
-a fixed, already-placed support and solve the remaining 2–4 around it.
 
 ## 6. Proposed types
 
@@ -329,16 +353,14 @@ rest is never built.
 Steps 3–5 need a real browser: this scene does not render headless
 (`docs/` sibling note, and the existing shot-based checks).
 
-## 11. Open questions
+## 11. Decisions
 
-1. **Ramp or lift?** The TODO says *"螺旋坡道/升降平台"*. A spiral reuses
-   `StairSpan` and costs nothing new; a lift is less climbing but needs new
-   interaction and animation. Recommend spiral for v1, on reuse grounds alone.
-2. **How tall?** The drop from the lowest floor to the terrain is currently
-   whatever the abyss terrain happens to be under that block. If that is 60+
-   units the climb is tedious. Options: clamp the block choice to a shallow
-   spot, or raise the terrain locally into a plinth under the tower. The plinth
-   is more controllable and reads as intentional.
-3. **One way in, or one per district?** One is a stronger read and less work.
-   Endless mode may want one per streamed window — deferred until endless mode
-   has a player in it.
+1. **Spiral ramp**, not a lift. It reuses `StairSpan` and the existing stair
+   tower renderer; a lift would need new interaction and animation for a moment
+   the player passes through once.
+2. **Authored climb + plinth** (§5.1). The alternative — restricting the block
+   choice to wherever the terrain happens to be shallow — lets the seed dictate a
+   pacing decision, and still varies with `fit()`.
+3. **One entrance for the world.** A single way in is the stronger read and the
+   smaller job. Endless mode may eventually want one per streamed window; that is
+   deferred until endless mode has a player in it at all.

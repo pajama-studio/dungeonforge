@@ -1,0 +1,63 @@
+[     476ms] [WARNING] [horizon] horizon-spire-needle failed to stream RangeError: Invalid typed array length: 4
+    at new Uint8Array (<anonymous>)
+    at GLTFLoader.parse (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:292:40)
+    at Object.onLoad (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:208:15)
+    at http://localhost:5173/node_modules/.vite/deps/chunk-Q5SERUGF.js?v=90b2e9ee:23490:39 @ http://localhost:5173/src/scene/horizon.ts:103
+[     476ms] [WARNING] [horizon] horizon-tower-ruin failed to stream RangeError: Invalid typed array length: 4
+    at new Uint8Array (<anonymous>)
+    at GLTFLoader.parse (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:292:40)
+    at Object.onLoad (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:208:15)
+    at http://localhost:5173/node_modules/.vite/deps/chunk-Q5SERUGF.js?v=90b2e9ee:23490:39 @ http://localhost:5173/src/scene/horizon.ts:103
+[     476ms] [WARNING] [horizon] horizon-ziggurat-ruin failed to stream RangeError: Invalid typed array length: 4
+    at new Uint8Array (<anonymous>)
+    at GLTFLoader.parse (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:292:40)
+    at Object.onLoad (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:208:15)
+    at http://localhost:5173/node_modules/.vite/deps/chunk-Q5SERUGF.js?v=90b2e9ee:23490:39 @ http://localhost:5173/src/scene/horizon.ts:103
+[     476ms] [WARNING] [horizon] horizon-arch-buttress failed to stream RangeError: Invalid typed array length: 4
+    at new Uint8Array (<anonymous>)
+    at GLTFLoader.parse (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:292:40)
+    at Object.onLoad (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:208:15)
+    at http://localhost:5173/node_modules/.vite/deps/chunk-Q5SERUGF.js?v=90b2e9ee:23490:39 @ http://localhost:5173/src/scene/horizon.ts:103
+[     918ms] [ERROR] [landmark] dragon failed to stream https://props.pajama.studio/r/pub/aa/aaa46ef3e404e79dd13360f2af9f85abf04973ce002a6cae26b36900e49ed64f.glb RangeError: Invalid typed array length: 4
+    at new Uint8Array (<anonymous>)
+    at GLTFLoader.parse (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:292:40)
+    at Object.onLoad (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:208:15)
+    at http://localhost:5173/node_modules/.vite/deps/chunk-Q5SERUGF.js?v=90b2e9ee:23490:39 @ http://localhost:5173/src/scene/abyss-landmarks.ts:781
+[     918ms] [WARNING] Deferred Tripo dragon load failed RangeError: Invalid typed array length: 4
+    at new Uint8Array (<anonymous>)
+    at GLTFLoader.parse (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:292:40)
+    at Object.onLoad (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:208:15)
+    at http://localhost:5173/node_modules/.vite/deps/chunk-Q5SERUGF.js?v=90b2e9ee:23490:39 @ http://localhost:5173/src/scene/abyss-landmarks.ts:1362
+[    3017ms] [LOG] [frame] pixelRatio → 1.25 (full pipeline rebuild) @ http://localhost:5173/src/main.ts:1134
+[    5752ms] [LOG] [frame] render() blocked 2734ms @ http://localhost:5173/src/main.ts:1408
+[    5781ms] [ERROR] [landmark] tripo failed to stream https://props.pajama.studio/r/pub/20/20f5622ad5665aba3dfd44defa0b3b0d6bb0c1ed27ee058506b88c0c6e294f08.glb RangeError: Invalid typed array length: 4
+    at new Uint8Array (<anonymous>)
+    at GLTFLoader.parse (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:292:40)
+    at Object.onLoad (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:208:15)
+    at http://localhost:5173/node_modules/.vite/deps/chunk-Q5SERUGF.js?v=90b2e9ee:23490:39 @ http://localhost:5173/src/scene/abyss-landmarks.ts:781
+[    5781ms] [WARNING] Deferred Tripo oracle load failed; retaining procedural fallback RangeError: Invalid typed array length: 4
+    at new Uint8Array (<anonymous>)
+    at GLTFLoader.parse (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:292:40)
+    at Object.onLoad (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:208:15)
+    at http://localhost:5173/node_modules/.vite/deps/chunk-Q5SERUGF.js?v=90b2e9ee:23490:39 @ http://localhost:5173/src/scene/abyss-landmarks.ts:1153
+[    9327ms] [LOG] [frame] render() blocked 2938ms @ http://localhost:5173/src/main.ts:1408
+[    9491ms] [LOG] [frame] render() blocked 138ms @ http://localhost:5173/src/main.ts:1408
+[    9508ms] [ERROR] [landmark] tripo failed to stream https://props.pajama.studio/r/pub/66/66e5bd8eac3347c67f32d7e87f3c414b9415759d9f29ab79f3749a7d7f517026.glb RangeError: Invalid typed array length: 4
+    at new Uint8Array (<anonymous>)
+    at GLTFLoader.parse (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:292:40)
+    at Object.onLoad (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:208:15)
+    at http://localhost:5173/node_modules/.vite/deps/chunk-Q5SERUGF.js?v=90b2e9ee:23490:39 @ http://localhost:5173/src/scene/abyss-landmarks.ts:781
+[    9508ms] [WARNING] Deferred Tripo warden load failed; leaving rejected procedural guards absent RangeError: Invalid typed array length: 4
+    at new Uint8Array (<anonymous>)
+    at GLTFLoader.parse (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:292:40)
+    at Object.onLoad (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:208:15)
+    at http://localhost:5173/node_modules/.vite/deps/chunk-Q5SERUGF.js?v=90b2e9ee:23490:39 @ http://localhost:5173/src/scene/abyss-landmarks.ts:1266
+[   42492ms] [LOG] [frame] render() blocked 236ms @ http://localhost:5173/src/main.ts:1408
+[   53077ms] [LOG] [frame] render() blocked 109ms @ http://localhost:5173/src/main.ts:1408
+[   53521ms] [LOG] [frame] render() blocked 426ms @ http://localhost:5173/src/main.ts:1408
+[   54390ms] [LOG] [frame] render() blocked 128ms @ http://localhost:5173/src/main.ts:1408
+[   54524ms] [LOG] [frame] render() blocked 133ms @ http://localhost:5173/src/main.ts:1408
+[   54889ms] [LOG] [frame] render() blocked 364ms @ http://localhost:5173/src/main.ts:1408
+[   73320ms] [LOG] [frame] render() blocked 381ms @ http://localhost:5173/src/main.ts:1408
+[   73487ms] [LOG] [frame] render() blocked 166ms @ http://localhost:5173/src/main.ts:1408
+[   74029ms] [LOG] [frame] render() blocked 337ms @ http://localhost:5173/src/main.ts:1408

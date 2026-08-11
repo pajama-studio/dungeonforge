@@ -1856,12 +1856,17 @@ export function buildEntranceDais(
     blockers.push({ x: dock.x, z: dock.z, y0: bottom, y1: top, radius: half * 1.02, slot });
   }
 
-  // The spawn stands off the dais on the door's axis, far enough out that the
-  // tower and the doorway are both in frame on the first look.
+  // The spawn stands out along the door's axis, far enough that the tower and
+  // its doorway are both in frame on the first look — but it has to land on the
+  // widest step, not past it. The first version stood 5.5 cells out from a dais
+  // whose broadest course reaches 4.0, which put the player in mid-air beside
+  // their own front door at exactly the height of the stone they were not on.
+  const outer = steps[steps.length - 1];
+  const reach = Math.min(CELL * 3.4, outer.half - CELL * 0.6);
   const spawn = {
-    x: dock.x + DX[doorDir] * CELL * 5.5,
-    y: dock.y0 - COURSE * 4,
-    z: dock.z + DY[doorDir] * CELL * 5.5,
+    x: dock.x + DX[doorDir] * reach,
+    y: outer.top,
+    z: dock.z + DY[doorDir] * reach,
   };
 
   putInstanced(pool, "blocks", R.blockGeo, R.stoneMat, bricks, true);

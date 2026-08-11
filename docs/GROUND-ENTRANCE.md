@@ -1,12 +1,18 @@
 # The ground entrance — design
 
-**Status:** design, not built. Implements the P0 TODO item
+**Status:** built through step 5 (§10), and unseen — the suite is green and the
+bundle builds, but nobody has looked at it. Implements the P0 TODO item
 *"将地面定义为真正的游戏起点"*.
 
-The world currently has no way in. Blocks float, the abyss floor is scenery, and
-`Layout.entrance` is a cell nothing arrives at. This designs the one place a
-player enters the world, and — more importantly — the order the generator has to
-solve in for that place to be real rather than decorated on afterwards.
+Before this, the world had no way in. Blocks floated, the abyss floor was
+scenery, and `Layout.entrance` was a cell nothing arrived at. This describes the
+one place a player enters the world, and — more importantly — the order the
+generator has to solve in for that place to be real rather than decorated on
+afterwards.
+
+Two claims in the original draft were wrong and are corrected in place rather
+than quietly deleted: the descent-column constraint of §5 turned out to be
+vacuous, and the plinth of §5.1 could not be terrain.
 
 ---
 

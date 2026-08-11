@@ -84,19 +84,34 @@ describe("ground entrance siting", () => {
     }
   });
 
-  it("never reserves into the temple platform", () => {
+  it("never reserves into the temple platform, at any rotation", () => {
     // Stage 4 lets a shaft reservation win over the ziggurat rather than
     // rejecting the layout, so an entrance sited here would quietly bore a hole
     // through the monument. This is the constraint that actually matters; the
     // southward lean below is only the preference that falls out of it.
+    //
+    // Anchors are requested in finished (world) space and unrotated inside the
+    // generator, while the temple is stamped in grid space — so the exclusion
+    // has to be judged after unrotating, which is exactly what an earlier
+    // version of this got wrong for every rot but 0.
+    const unrotate = (x: number, y: number, rot: number, N: number): [number, number] => {
+      for (let i = 0; i < (rot & 3); i++) [x, y] = [N - 1 - y, x];
+      return [x, y];
+    };
     for (const seed of SEEDS) {
-      const cells = generateSpatialPlan(seed, 20).cells;
-      const sizes = sizesFor(cells.length, seed);
-      const entrance = planGroundEntrance(cells, sizes, seed, planVerticalAnchors(cells, sizes, seed))!;
-      const centre = (sizes[entrance.block] - 1) / 2;
-      const reserveClearsTempleX = Math.abs(entrance.anchor.x - centre) > 8;
-      const reserveClearsTempleY = entrance.anchor.y - 3 > 6;
-      expect(reserveClearsTempleX || reserveClearsTempleY, `seed ${seed}`).toBe(true);
+      for (const rot of [0, 1, 2, 3]) {
+        const cells = generateSpatialPlan(seed, 20).cells;
+        const sizes = sizesFor(cells.length, seed);
+        const entrance = planGroundEntrance(
+          cells, sizes, seed, planVerticalAnchors(cells, sizes, seed), cells.map(() => rot),
+        )!;
+        const N = sizes[entrance.block];
+        const centre = (N - 1) / 2;
+        const [tx, ty] = unrotate(entrance.anchor.x, entrance.anchor.y, rot, N);
+        const clearsX = Math.abs(tx - centre) > 8;
+        const clearsY = ty - 3 > 6;
+        expect(clearsX || clearsY, `seed ${seed} rot ${rot}`).toBe(true);
+      }
     }
   });
 

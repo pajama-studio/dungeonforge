@@ -287,6 +287,13 @@ export function planVerticalAnchors(cells: readonly SpatialCell[], blockN: reado
  *  pairing lookups in world/helpers.ts simply never match it. */
 export const GROUND_ANCHOR_ID = -1;
 
+/** Same transform the generator applies to unrotate a world-space anchor
+ *  request back into grid space (`[x, y] = [N - 1 - y, x]`, rot times). */
+function toGrid(x: number, y: number, rot: number, N: number): [number, number] {
+  for (let i = 0; i < (rot & 3); i++) [x, y] = [N - 1 - y, x];
+  return [x, y];
+}
+
 export interface GroundEntrance {
   /** spatial cell index of the block that owns the way in */
   block: number;
@@ -320,6 +327,12 @@ export function planGroundEntrance(
   blockN: readonly number[],
   seed: number,
   verticalByBlock: readonly (readonly VerticalAnchor[])[],
+  /** the rot the forge will hand each block. Anchors are requested in finished
+   *  (world) space and unrotated inside the generator, but the temple is stamped
+   *  in grid space — so an exclusion tested in the wrong one of those two spaces
+   *  silently protects the wrong quarter of the block. Indexed by block, because
+   *  which block this is gets decided in here. */
+  rots: readonly number[] = [],
 ): GroundEntrance | null {
   const block = cells.findIndex((cell) => cell.parent < 0 && cell.mk === 0);
   if (block < 0) return null;
@@ -331,6 +344,7 @@ export function planGroundEntrance(
   const taken = verticalByBlock[block] ?? [];
   const centre = (N - 1) / 2;
   const random = mulberry32(seed ^ 0x47524e44);
+  const rot = rots[block] ?? 0;
 
   for (let separation = 6; separation >= 2; separation--) {
     const candidates: { x: number; y: number; dockDir: 0 | 1 | 2 | 3; weight: number }[] = [];
@@ -339,16 +353,22 @@ export function planGroundEntrance(
       const clash = taken.some((other) =>
         Math.max(Math.abs(other.x - gx), Math.abs(other.y - gy)) < separation);
       if (clash) continue;
+
+      // Everything below is about the temple and the centre spine, both of
+      // which live in grid space, so test the grid position rather than the
+      // requested one.
+      const [tx, ty] = toGrid(gx, gy, rot, N);
+
       // Hard exclusion: the temple platform runs [centre-5, centre+5] across
       // rows 1..5 with its forecourt on row 6, and Stage 4 yields to a shaft
       // reservation when they overlap (`if (shaftReserve[...]) continue`). So a
       // shaft sited there does not fail — it punches a hole through the
       // ziggurat, which is worse than failing. The 7x7 reserve must clear it.
-      if (Math.abs(gx - centre) <= 8 && gy - 3 <= 6) continue;
+      if (Math.abs(tx - centre) <= 8 && ty - 3 <= 6) continue;
       // South of centre, and off the centre spine: the temple platform runs
       // across the north-centre and the spine carries the objective route.
-      const south = 1 + Math.max(0, y) / Math.max(1, radius) * 1.4;
-      const offSpine = 1 + Math.min(Math.abs(x), 4) * 0.12;
+      const south = 1 + Math.max(0, ty - centre) / Math.max(1, radius) * 1.4;
+      const offSpine = 1 + Math.min(Math.abs(tx - centre), 4) * 0.12;
       const interior = 1 + (radius - Math.max(Math.abs(x), Math.abs(y))) * 0.05;
       for (let d = 0; d < 4; d++) {
         // The foot's door faces the way the interior landing docks, so arriving

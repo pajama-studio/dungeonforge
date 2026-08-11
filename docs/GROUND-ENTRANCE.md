@@ -238,14 +238,23 @@ lift is needed rather than where the tower ends, and nothing about the tower
 moves when `fit()` rescales the horizon.
 
 ```
-        ║ ║  climb: authored constant
+        ║ ║  climb: GROUND_CLIMB, 26 units
         ║ ║
    ╔════╩═╩════╗  foot
-   ║           ║
-  ╱             ╲        plinth: terrain lifted to the foot,
- ╱               ╲       blended out over ~2× the tower's width
-╱  ~~~~~~~~~~~~~  ╲~~~   natural abyssFloorHeight() beyond
+   ║  masonry  ║
+   ║   dais    ║        built, not sculpted — see below
+   ╚═══════════╝
+  ~~~~~~~~~~~~~~~~~~    abyssFloorHeight() somewhere under it
 ```
+
+**Amendment, from building it:** the plinth is a *built stone dais*, not a lift
+applied to the terrain. Raising the bedrock was the plan until the bedrock turned
+out to live in `ringGroup`, which `fit()` recentres and rescales with the chain —
+a plinth carved into those vertices would drift and resize with a camera fit.
+A dais is placed in world space beside the dungeon, holds still, and is anyway
+the more honest object: everything else the player stands on here is masonry.
+`abyssFloorHeight()` is still what tells it how deep to sink its base so it never
+reads as floating.
 
 ## 6. Proposed types
 
@@ -341,14 +350,16 @@ on (`CLAUDE.md` principle 7).
 Each step is independently verifiable, and the first two are useful even if the
 rest is never built.
 
-| # | Step | Verified by |
-| --- | --- | --- |
-| 0 | Extract `abyssFloorHeight()` (§4.5) | rebuilt bedrock mesh is vertex-identical |
-| 1 | `planGroundEntrance()` in `spatial-plan.ts`: choose the block, site the shaft, prove the descent is clear | unit test over many seeds — always exactly one entrance, column never intersects a footprint |
-| 2 | `Params.groundAnchorId` → reserve in Stage 4, fail rather than re-site | generator test: ring survives footprint trim and lands in the main component |
-| 3 | Extend the shaft below the block underside; spiral from `baseY` | visual — the tower reaches the floor and the spiral is climbable |
-| 4 | Apron flatten + spawn point | visual, plus the spawn is on the walkmap |
-| 5 | Point the 💀 route walker at the spawn | it walks in from outside |
+| # | Step | Verified by | Status |
+| --- | --- | --- | --- |
+| 0 | Extract `abyssFloorHeight()` (§4.5) | golden values sampled from the inline implementation before it moved | **done** |
+| 1 | `planGroundEntrance()` in `spatial-plan.ts`: choose the block, site the shaft | 8 tests over 40 seeds × 4 rotations | **done** |
+| 2 | `Params.groundAnchorId` → reserve in Stage 4, fail rather than re-site | generator tests + 120-seed end-to-end probe, 120/120 generate | **done** |
+| 3 | `groundStairDock()` → a tower from the landing down into the abyss | 5 tests; 157 suite green | **done** |
+| 4 | The dais at the foot, and the spawn on it | visual | not built |
+| 5 | Point the 💀 route walker at the spawn | it walks in from outside | not built |
+
+Steps 4–5 need a browser to judge, and this scene does not render headless.
 
 Steps 3–5 need a real browser: this scene does not render headless
 (`docs/` sibling note, and the existing shot-based checks).

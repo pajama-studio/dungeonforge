@@ -11,8 +11,8 @@ import {
 import { pruneSlots } from "../scene/slots";
 import { TH, CELL, DISTRICT_COURT_GAP, DISTRICT_GAP, ISLAND_GAP, PR_BASE, PR_LARGE } from "../config";
 import type { Ctx } from "./context";
-import { gateWorld, verticalStairDock, ensureGate, fuseDistrictBoundary, Pacer } from "./helpers";
-import { generateSpatialPlan, planVerticalAnchors } from "../markov/spatial-plan";
+import { gateWorld, verticalStairDock, groundStairDock, ensureGate, fuseDistrictBoundary, Pacer, type VerticalStairDock } from "./helpers";
+import { generateSpatialPlan, planVerticalAnchors, planGroundEntrance } from "../markov/spatial-plan";
 
 export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   if (ctx.state.endless) return; // roaming owns the world in endless mode
@@ -66,6 +66,18 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   // one propagates exclusions through both participating blocks before the
   // next vertical link is solved.
   const verticalByBlock: VerticalAnchor[][] = planVerticalAnchors(macro, blockN, seed);
+  // Orientation is decided here rather than inline in the generate() call,
+  // because the ground entrance has to be sited against the rotation its block
+  // will actually be built with — the temple it must avoid is stamped in grid
+  // space while the anchor is requested in world space.
+  const rots = macro.map((_, i) => h32(i, 61) % 4);
+  // The one way into the world. Reserved before any maze is solved, exactly
+  // like a stair court, and on failure the block re-rolls rather than moving it.
+  const groundEntrance = planGroundEntrance(macro, blockN, seed, verticalByBlock, rots);
+  /** Resolved once the owning block is placed — the spawn and the route walker
+   *  both start from here. */
+  let groundDock: VerticalStairDock | null = null;
+  if (groundEntrance) verticalByBlock[groundEntrance.block].push(groundEntrance.anchor);
   // per-block VARIATION: satellites differ in size, growth style and age.
   // Layouts are awaited ONE AT A TIME inside the build loop (parents come
   // first in BFS order), so generation and building pipeline instead of
@@ -81,6 +93,7 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
     return ctx.gen.generate(s, genParams, {
       gateSides,
       verticalAnchors: verticalByBlock[i],
+      groundAnchorId: groundEntrance?.block === i ? groundEntrance.anchor.id : undefined,
       narrativeRole: role,
       districtId: macro[i].district,
       storyLandmark: macro[i].landmark,
@@ -90,7 +103,7 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
       footprint: FOOTPRINT_KINDS[(h32(i, 170) + macro[i].mk) % FOOTPRINT_KINDS.length],
       // orientation & structure variety: each satellite faces its own way,
       // ~half go temple-less, a quarter go ravine-less
-      rot: h32(i, 61) % 4,
+      rot: rots[i],
       // One readable goal portal at the narrative summit. Other districts use
       // their own scene grammar instead of repeating the same temple stamp.
       templeOn: macro[i].landmark,
@@ -226,6 +239,17 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
     ctx.reportForgeStage?.("assembling", {
       token: tok, seed, mode: "chain", detail: "placing blocks, links and supports", completed: i + 1, total: nIsl,
     });
+
+    // The way in: a tower dropping from this block's shaft landing into the
+    // open abyss. Built like a stair court because it is one — the only
+    // difference is that its lower end is the ground rather than a parent.
+    if (groundEntrance?.block === i) {
+      const dock = groundStairDock({ l, ...positions[i] }, groundEntrance.anchor.id);
+      if (dock) {
+        ctx.stairs.build(dock.x, dock.z, dock.y0, dock.y1, dock);
+        groundDock = dock;
+      }
+    }
 
     // Generator-owned interior stair court joining this stacked pair.
     if (pIdx >= 0 && macro[i].dirFromParent === 4) {

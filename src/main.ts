@@ -255,6 +255,7 @@ const actors = new DungeonActors(scene, camera, renderer.domElement);
 
 const ctx: Ctx = {
   scene, camera, renderer, controls, env,
+  spawn: null,
   gen: new GenPool(),
   lights,
   walk: new WalkMap(stairs),
@@ -1064,8 +1065,11 @@ function placeRoguePlayer(): boolean {
   if (!player || ctx.walk.islands.length === 0) return false;
   const island = ctx.walk.islands[0];
   const l = island.l, center = (l.N - 1) / 2;
-  const x = island.ox + (l.entrance.x - center) * CELL;
-  const z = island.oz + (l.entrance.y - center) * CELL;
+  // Outside the entrance tower's door when the world has one. l.entrance is the
+  // old in-fortress cell — a label on a floor tile that nothing arrives at —
+  // and remains the fallback for modes that build no ground entrance.
+  const x = ctx.spawn ? ctx.spawn.x : island.ox + (l.entrance.x - center) * CELL;
+  const z = ctx.spawn ? ctx.spawn.z : island.oz + (l.entrance.y - center) * CELL;
   player.group.visible = true;
   player.setFirstPerson(false);
   player.place(x, z, ctx.walk.sample);

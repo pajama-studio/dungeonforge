@@ -5,13 +5,14 @@ import type * as THREE from "three/webgpu";
 import { Vector3 } from "three/webgpu";
 import { FOOTPRINT_KINDS, type Dir, type Layout, type VerticalAnchor } from "../gen/dungeon";
 import {
-  buildWorld, buildBridgeLink, buildSupportPiers, horizontalLinkArc, horizontalLinkWalkWidth,
+  buildWorld, buildBridgeLink, buildSupportPiers, buildEntranceDais,
+  horizontalLinkArc, horizontalLinkWalkWidth,
   type HorizontalLinkStyle, type LightSpec,
 } from "../scene/build";
 import { pruneSlots } from "../scene/slots";
 import { TH, CELL, DISTRICT_COURT_GAP, DISTRICT_GAP, ISLAND_GAP, PR_BASE, PR_LARGE } from "../config";
 import type { Ctx } from "./context";
-import { gateWorld, verticalStairDock, groundStairDock, ensureGate, fuseDistrictBoundary, Pacer, type VerticalStairDock } from "./helpers";
+import { gateWorld, verticalStairDock, groundStairDock, ensureGate, fuseDistrictBoundary, Pacer } from "./helpers";
 import { generateSpatialPlan, planVerticalAnchors, planGroundEntrance } from "../markov/spatial-plan";
 
 export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
@@ -74,9 +75,7 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   // The one way into the world. Reserved before any maze is solved, exactly
   // like a stair court, and on failure the block re-rolls rather than moving it.
   const groundEntrance = planGroundEntrance(macro, blockN, seed, verticalByBlock, rots);
-  /** Resolved once the owning block is placed — the spawn and the route walker
-   *  both start from here. */
-  let groundDock: VerticalStairDock | null = null;
+  ctx.spawn = null;
   if (groundEntrance) verticalByBlock[groundEntrance.block].push(groundEntrance.anchor);
   // per-block VARIATION: satellites differ in size, growth style and age.
   // Layouts are awaited ONE AT A TIME inside the build loop (parents come
@@ -132,6 +131,9 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   ctx.stairs.clear();
   ctx.actors.clear();
   const activeSlots = new Set<number>();
+  // Above the per-block pier slots (1000 + i, i < 24) so the one dais in the
+  // world never collides with them.
+  const GROUND_DAIS_SLOT = 2000;
 
   // tree layout: place blocks in BFS order along their parent edges, sliding
   // each child so the two facing gates line up; bridge every parent-child pair
@@ -247,7 +249,14 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
       const dock = groundStairDock({ l, ...positions[i] }, groundEntrance.anchor.id);
       if (dock) {
         ctx.stairs.build(dock.x, dock.z, dock.y0, dock.y1, dock);
-        groundDock = dock;
+        // The dais the tower stands on, and the apron the player starts on.
+        const dais = buildEntranceDais(
+          dock, groundEntrance.anchor.dockDir, GROUND_DAIS_SLOT, ctx.scene, i * 0.05,
+        );
+        ctx.worlds.push(dais);
+        for (const blocker of dais.blockers) ctx.walk.addBlocker(blocker);
+        activeSlots.add(GROUND_DAIS_SLOT);
+        ctx.spawn = dais.spawn;
       }
     }
 

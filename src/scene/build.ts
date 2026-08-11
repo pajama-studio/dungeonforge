@@ -14,6 +14,7 @@ import { hash2, hash3 } from "../gen/rng";
 import { TH, CELL, COURSE, linkArc, districtLinkArc } from "../config";
 import { setStoneDamage } from "./kit/materials";
 import { getKit } from "./kit";
+import { ABYSS_FLOOR, ABYSS_FLOOR_BASE_Y } from "./abyss-floor";
 import {
   getSlot, putInstanced, putInstancedCombined, putInstancedTwin,
   isDecorSuppressed, setSlotDetail, setSlotLodLevel,
@@ -1785,4 +1786,87 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
     },
     dispose() { /* slots persist — pruneSlots() hides unused ones */ },
   };
+}
+
+export interface EntranceDaisHandle extends SupportPierHandle {
+  /** where the player starts: on the apron, outside the door, facing it */
+  spawn: { x: number; y: number; z: number };
+}
+
+/**
+ * The dais the entrance tower stands on, and the apron the player spawns on.
+ *
+ * Masonry placed in world space rather than a lift applied to the bedrock. The
+ * bedrock lives in ringGroup, which fit() recentres and rescales with the chain,
+ * so terrain sculpted under the tower would drift and resize with a camera fit.
+ * A built dais holds still — and everything else the player stands on out here
+ * is masonry anyway, so it is the more honest object.
+ *
+ * Its base sinks past the deepest relief abyssFloorHeight() can produce, so it
+ * is founded rather than floating no matter what the seed does to the floor
+ * underneath or what fit() does to the scale.
+ */
+export function buildEntranceDais(
+  dock: { x: number; z: number; y0: number; side: number },
+  doorDir: Dir,
+  slot: number, sceneRoot: THREE.Object3D, riseDelay = 0,
+): EntranceDaisHandle {
+  const R = getKit();
+  const pool = getSlot(slot, sceneRoot);
+  pool.group.name = "entrance-dais";
+  const bricks = new InstList();
+  const blockers: WorldBlocker[] = [];
+  const c = new THREE.Color();
+  const seed = (slot * 0x27d4eb2d) >>> 0;
+
+  // Deepest the floor can be: the plane's origin less every amplitude at once,
+  // plus margin. Cheaper and steadier than sampling a field that fit() rescales.
+  const foundation = ABYSS_FLOOR_BASE_Y -
+    (ABYSS_FLOOR.plateauAmplitude + ABYSS_FLOOR.weatherAmplitude + ABYSS_FLOOR.microAmplitude) / 2 - 10;
+
+  // Three stepped courses, widest at the bottom: a plinth reads as built at a
+  // distance where a flat slab reads as a texture error.
+  const steps = [
+    { half: CELL * 2.1, top: dock.y0 },
+    { half: CELL * 3.0, top: dock.y0 - COURSE * 2 },
+    { half: CELL * 4.0, top: dock.y0 - COURSE * 4 },
+  ];
+  for (let s = 0; s < steps.length; s++) {
+    const { half, top } = steps[s];
+    const bottom = s === steps.length - 1 ? foundation : steps[s + 1].top;
+    const rows = Math.max(1, Math.ceil((top - bottom) / COURSE));
+    const cols = Math.max(2, Math.round((half * 2) / 1.05));
+    for (let k = 0; k < rows; k++) {
+      const y = top - (k + 0.5) * COURSE;
+      for (let a = 0; a < cols; a++) for (let b = 0; b < cols; b++) {
+        const px = dock.x - half + (a + 0.5) * (half * 2 / cols);
+        const pz = dock.z - half + (b + 0.5) * (half * 2 / cols);
+        // Hollow below the top course: only the shell is bricks, the inside is
+        // never seen and would triple the instance count for nothing.
+        const edge = a === 0 || b === 0 || a === cols - 1 || b === cols - 1;
+        if (!edge && k > 0) continue;
+        const h1 = hash3(seed, s * 97 + a, b, k);
+        setHsl(c, 0.60, 0.20, 0.29 + hash3(seed, a, b, k + 11) * 0.09);
+        bricks.pushY(
+          px + (h1 - 0.5) * 0.1, y, pz + (hash3(seed, b, a, k) - 0.5) * 0.1,
+          (h1 - 0.5) * 0.25, 1.02, 1.02, 1.02, c,
+        );
+      }
+    }
+    blockers.push({ x: dock.x, z: dock.z, y0: bottom, y1: top, radius: half * 1.02, slot });
+  }
+
+  // The spawn stands off the dais on the door's axis, far enough out that the
+  // tower and the doorway are both in frame on the first look.
+  const spawn = {
+    x: dock.x + DX[doorDir] * CELL * 5.5,
+    y: dock.y0 - COURSE * 4,
+    z: dock.z + DY[doorDir] * CELL * 5.5,
+  };
+
+  putInstanced(pool, "blocks", R.blockGeo, R.stoneMat, bricks, true);
+  putInstancedTwin(pool, "blocksLo", "blocks", R.blockGeoLo, R.stoneLoMat, farShadows);
+  setSlotDetail(slot, false);
+  const rise = makeRise(pool.group, riseDelay);
+  return { group: pool.group, lights: [], tick: rise, dispose() {}, blockers, spawn };
 }

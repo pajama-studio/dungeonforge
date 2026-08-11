@@ -356,10 +356,13 @@ rest is never built.
 | 1 | `planGroundEntrance()` in `spatial-plan.ts`: choose the block, site the shaft | 8 tests over 40 seeds × 4 rotations | **done** |
 | 2 | `Params.groundAnchorId` → reserve in Stage 4, fail rather than re-site | generator tests + 120-seed end-to-end probe, 120/120 generate | **done** |
 | 3 | `groundStairDock()` → a tower from the landing down into the abyss | 5 tests; 157 suite green | **done** |
-| 4 | The dais at the foot, and the spawn on it | visual | not built |
-| 5 | Point the 💀 route walker at the spawn | it walks in from outside | not built |
+| 4 | `buildEntranceDais()` — the dais at the foot, and the spawn on it | visual | **built, unseen** |
+| 5 | `ctx.spawn` → `placeRoguePlayer()` starts outside the door | visual | **built, unseen** |
 
-Steps 4–5 need a browser to judge, and this scene does not render headless.
+Steps 4–5 are written and type-check, the suite is green and the bundle builds,
+but none of that says whether they *look* right — the dais proportions, whether
+the spawn frames the tower, whether the climb reads as 26 units or as a chore.
+This scene does not render headless, so that judgement is still owed.
 
 Steps 3–5 need a real browser: this scene does not render headless
 (`docs/` sibling note, and the existing shot-based checks).

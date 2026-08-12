@@ -255,6 +255,10 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
         );
         ctx.worlds.push(dais);
         for (const blocker of dais.blockers) ctx.walk.addBlocker(blocker);
+        // Its own entry in the round-robin rather than folded into the block's:
+        // the first pass takes one light from every list, so the threshold is
+        // lit even when the fixed budget is smaller than the flames submitted.
+        allLightsByIsland.push(dais.lights);
         activeSlots.add(GROUND_DAIS_SLOT);
         ctx.spawn = dais.spawn;
       }

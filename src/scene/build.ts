@@ -1829,7 +1829,11 @@ export function buildEntranceDais(
   const steps = [
     { half: CELL * 2.1, top: dock.y0 },
     { half: CELL * 3.0, top: dock.y0 - COURSE * 2 },
-    { half: CELL * 4.0, top: dock.y0 - COURSE * 4 },
+    // Wide enough to hold an approach, not just to carry the tower. The gate
+    // has to stand against open abyss to read at all — squeezed between the
+    // spawn and the tower it is always silhouetted against the rising steps
+    // behind it, and no amount of resizing wins that fight.
+    { half: CELL * 5.6, top: dock.y0 - COURSE * 4 },
   ];
   for (let s = 0; s < steps.length; s++) {
     const { half, top } = steps[s];
@@ -1862,16 +1866,77 @@ export function buildEntranceDais(
   // whose broadest course reaches 4.0, which put the player in mid-air beside
   // their own front door at exactly the height of the stone they were not on.
   const outer = steps[steps.length - 1];
-  const reach = Math.min(CELL * 3.4, outer.half - CELL * 0.6);
+  const reach = outer.half - CELL * 0.75;
   const spawn = {
     x: dock.x + DX[doorDir] * reach,
     y: outer.top,
     z: dock.z + DY[doorDir] * reach,
   };
 
+  // A threshold to walk through.
+  //
+  // There is no door to put in the tower: the core is solid and the flight
+  // winds around the outside of it, so there is no inside to enter. What the
+  // arrival lacked was not a door but a THRESHOLD — something that says the
+  // climb starts here. Two jambs and a lintel astride the path from the spawn
+  // to the first step, lit, in the same masonry as everything else.
+  // Between the middle step's edge and the spawn. A fraction of `reach` put it
+  // at 4.6 — which is exactly where the top step's edge is (4.62), so the jambs
+  // were buried inside the dais and rendered as nothing at all. Site it against
+  // the stack it stands on, not against the walk.
+  // Just inside the spawn, so the player's first step forward passes through it
+  // with the abyss behind it rather than the dais.
+  const gateAt = reach - CELL * 1.15;
+  const gx = dock.x + DX[doorDir] * gateAt;
+  const gz = dock.z + DY[doorDir] * gateAt;
+  // Jambs sit across the walking axis, so they straddle the path rather than
+  // stand in it.
+  const acrossX = DX[doorDir] === 0 ? 1 : 0;
+  const acrossZ = DY[doorDir] === 0 ? 1 : 0;
+  // Scale was the whole problem, not placement. Three passes went into moving
+  // this gate and reproportioning it while it stayed invisible; raising it to
+  // 14 courses as a test showed it had been rendering correctly the entire
+  // time and was simply too small to see — 3.7 units of gate against a 12-unit
+  // dais under a 26-unit tower reads as another step edge.
+  //
+  // 8 courses is about 7.4: a quarter of the tower, which registers at the
+  // foot without competing with it. The opening is 4.8 across under that head,
+  // near 1:1.5, so it stays a way-through rather than closing into a pier as
+  // the approach arc swings around.
+  const halfGap = 2.4;
+  const jambCourses = 8;
+  const lights: LightSpec[] = [];
+  for (const sign of [-1, 1]) {
+    const jx = gx + acrossX * sign * halfGap;
+    const jz = gz + acrossZ * sign * halfGap;
+    for (let k = 0; k < jambCourses; k++) {
+      const h1 = hash3(seed, sign + 2, k, 31);
+      setHsl(c, 0.60, 0.21, 0.31 + hash3(seed, k, sign + 2, 47) * 0.08);
+      bricks.pushY(jx + (h1 - 0.5) * 0.07, outer.top + (k + 0.5) * COURSE,
+        jz + (hash3(seed, k, sign, 53) - 0.5) * 0.07, (h1 - 0.5) * 0.18, 1.02, 1.02, 1.02, c);
+    }
+    // Flame on top of each jamb. Warm, short-range: it should pick out the
+    // threshold and the first steps, not light the abyss.
+    lights.push({
+      x: jx, y: outer.top + jambCourses * COURSE + 0.5, z: jz,
+      color: 0xff9340, base: 58, dist: 17, ph: sign > 0 ? 0.7 : 3.9,
+    });
+  }
+  // Lintel across the two jambs.
+  const lintelY = outer.top + (jambCourses + 0.5) * COURSE;
+  for (let t = -4; t <= 4; t++) {
+    const lx = gx + acrossX * t * 0.72;
+    const lz = gz + acrossZ * t * 0.72;
+    setHsl(c, 0.60, 0.22, 0.33 + hash3(seed, t + 4, 9, 71) * 0.07);
+    bricks.pushY(lx, lintelY, lz, 0, 1.02, 0.9, 1.02, c);
+  }
+  blockers.push({ x: gx, z: gz, y0: outer.top, y1: lintelY, radius: 0.55, slot });
+
   putInstanced(pool, "blocks", R.blockGeo, R.stoneMat, bricks, true);
   putInstancedTwin(pool, "blocksLo", "blocks", R.blockGeoLo, R.stoneLoMat, farShadows);
   setSlotDetail(slot, false);
   const rise = makeRise(pool.group, riseDelay);
-  return { group: pool.group, lights: [], tick: rise, dispose() {}, blockers, spawn };
+  // World coords already — the dais is not an island and has no origin to be
+  // offset by, unlike the per-island specs the forge translates.
+  return { group: pool.group, lights, tick: rise, dispose() {}, blockers, spawn };
 }

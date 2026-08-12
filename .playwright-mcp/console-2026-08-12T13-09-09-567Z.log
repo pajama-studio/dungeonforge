@@ -1,52 +1,43 @@
-[     445ms] [WARNING] [horizon] horizon-spire-needle failed to stream RangeError: Invalid typed array length: 4
+[     710ms] [WARNING] [horizon] horizon-tower-ruin failed to stream RangeError: Invalid typed array length: 4
     at new Uint8Array (<anonymous>)
     at GLTFLoader.parse (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:292:40)
     at Object.onLoad (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:208:15)
     at http://localhost:5173/node_modules/.vite/deps/chunk-Q5SERUGF.js?v=90b2e9ee:23490:39 @ http://localhost:5173/src/scene/horizon.ts:103
-[     445ms] [WARNING] [horizon] horizon-tower-ruin failed to stream RangeError: Invalid typed array length: 4
+[     711ms] [WARNING] [horizon] horizon-ziggurat-ruin failed to stream RangeError: Invalid typed array length: 4
     at new Uint8Array (<anonymous>)
     at GLTFLoader.parse (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:292:40)
     at Object.onLoad (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:208:15)
     at http://localhost:5173/node_modules/.vite/deps/chunk-Q5SERUGF.js?v=90b2e9ee:23490:39 @ http://localhost:5173/src/scene/horizon.ts:103
-[     445ms] [WARNING] [horizon] horizon-ziggurat-ruin failed to stream RangeError: Invalid typed array length: 4
+[     711ms] [WARNING] [horizon] horizon-spire-needle failed to stream RangeError: Invalid typed array length: 4
     at new Uint8Array (<anonymous>)
     at GLTFLoader.parse (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:292:40)
     at Object.onLoad (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:208:15)
     at http://localhost:5173/node_modules/.vite/deps/chunk-Q5SERUGF.js?v=90b2e9ee:23490:39 @ http://localhost:5173/src/scene/horizon.ts:103
-[     445ms] [WARNING] [horizon] horizon-arch-buttress failed to stream RangeError: Invalid typed array length: 4
+[     711ms] [WARNING] [horizon] horizon-arch-buttress failed to stream RangeError: Invalid typed array length: 4
     at new Uint8Array (<anonymous>)
     at GLTFLoader.parse (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:292:40)
     at Object.onLoad (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:208:15)
     at http://localhost:5173/node_modules/.vite/deps/chunk-Q5SERUGF.js?v=90b2e9ee:23490:39 @ http://localhost:5173/src/scene/horizon.ts:103
-[   10780ms] [ERROR] [landmark] tripo failed to stream https://props.pajama.studio/r/pub/20/20f5622ad5665aba3dfd44defa0b3b0d6bb0c1ed27ee058506b88c0c6e294f08.glb RangeError: Invalid typed array length: 4
+[    3426ms] [ERROR] [landmark] tripo failed to stream https://props.pajama.studio/r/pub/20/20f5622ad5665aba3dfd44defa0b3b0d6bb0c1ed27ee058506b88c0c6e294f08.glb RangeError: Invalid typed array length: 4
     at new Uint8Array (<anonymous>)
     at GLTFLoader.parse (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:292:40)
     at Object.onLoad (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:208:15)
     at http://localhost:5173/node_modules/.vite/deps/chunk-Q5SERUGF.js?v=90b2e9ee:23490:39 @ http://localhost:5173/src/scene/abyss-landmarks.ts:781
-[   10780ms] [WARNING] Deferred Tripo oracle load failed; retaining procedural fallback RangeError: Invalid typed array length: 4
+[    3427ms] [WARNING] Deferred Tripo oracle load failed; retaining procedural fallback RangeError: Invalid typed array length: 4
     at new Uint8Array (<anonymous>)
     at GLTFLoader.parse (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:292:40)
     at Object.onLoad (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:208:15)
     at http://localhost:5173/node_modules/.vite/deps/chunk-Q5SERUGF.js?v=90b2e9ee:23490:39 @ http://localhost:5173/src/scene/abyss-landmarks.ts:1153
-[   10781ms] [ERROR] [landmark] tripo failed to stream https://props.pajama.studio/r/pub/66/66e5bd8eac3347c67f32d7e87f3c414b9415759d9f29ab79f3749a7d7f517026.glb RangeError: Invalid typed array length: 4
+[    4121ms] [LOG] [frame] pixelRatio → 1.25 (full pipeline rebuild) @ http://localhost:5173/src/main.ts:1134
+[    7147ms] [LOG] [frame] render() blocked 3024ms @ http://localhost:5173/src/main.ts:1408
+[    7255ms] [ERROR] [landmark] tripo failed to stream https://props.pajama.studio/r/pub/66/66e5bd8eac3347c67f32d7e87f3c414b9415759d9f29ab79f3749a7d7f517026.glb RangeError: Invalid typed array length: 4
     at new Uint8Array (<anonymous>)
     at GLTFLoader.parse (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:292:40)
     at Object.onLoad (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:208:15)
     at http://localhost:5173/node_modules/.vite/deps/chunk-Q5SERUGF.js?v=90b2e9ee:23490:39 @ http://localhost:5173/src/scene/abyss-landmarks.ts:781
-[   10781ms] [WARNING] Deferred Tripo warden load failed; leaving rejected procedural guards absent RangeError: Invalid typed array length: 4
+[    7255ms] [WARNING] Deferred Tripo warden load failed; leaving rejected procedural guards absent RangeError: Invalid typed array length: 4
     at new Uint8Array (<anonymous>)
     at GLTFLoader.parse (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:292:40)
     at Object.onLoad (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:208:15)
     at http://localhost:5173/node_modules/.vite/deps/chunk-Q5SERUGF.js?v=90b2e9ee:23490:39 @ http://localhost:5173/src/scene/abyss-landmarks.ts:1266
-[   12175ms] [LOG] [frame] pixelRatio → 1.25 (full pipeline rebuild) @ http://localhost:5173/src/main.ts?t=1786441004600:1134
-[   15083ms] [LOG] [frame] render() blocked 2907ms @ http://localhost:5173/src/main.ts?t=1786441004600:1408
-[   23920ms] [LOG] [frame] render() blocked 8793ms @ http://localhost:5173/src/main.ts?t=1786441004600:1408
-[   24221ms] [LOG] [frame] render() blocked 293ms @ http://localhost:5173/src/main.ts?t=1786441004600:1408
-[   24760ms] [LOG] [frame] render() blocked 538ms @ http://localhost:5173/src/main.ts?t=1786441004600:1408
-[   28225ms] [LOG] [frame] render() blocked 3026ms @ http://localhost:5173/src/main.ts?t=1786441004600:1408
-[   31350ms] [LOG] [frame] render() blocked 187ms @ http://localhost:5173/src/main.ts?t=1786441004600:1408
-[  108902ms] [LOG] [vite] server connection lost. Polling for restart... @ http://localhost:5173/@vite/client:963
-[  108903ms] [ERROR] WebSocket connection to 'ws://localhost:5173/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:5173/@vite/client:1034
-[  109905ms] [ERROR] WebSocket connection to 'ws://localhost:5173/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:5173/@vite/client:1034
-[  110906ms] [ERROR] WebSocket connection to 'ws://localhost:5173/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:5173/@vite/client:1034
-[  409920ms] [LOG] [vite] server connection lost. Polling for restart... @ http://localhost:5173/@vite/client:864
+[   11116ms] [LOG] [frame] render() blocked 3372ms @ http://localhost:5173/src/main.ts:1408

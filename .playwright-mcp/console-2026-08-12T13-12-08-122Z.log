@@ -1,0 +1,24 @@
+[     466ms] [WARNING] [horizon] horizon-spire-needle failed to stream RangeError: Invalid typed array length: 4
+    at new Uint8Array (<anonymous>)
+    at GLTFLoader.parse (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:292:40)
+    at Object.onLoad (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:208:15)
+    at http://localhost:5173/node_modules/.vite/deps/chunk-Q5SERUGF.js?v=90b2e9ee:23490:39 @ http://localhost:5173/src/scene/horizon.ts:103
+[     466ms] [WARNING] [horizon] horizon-tower-ruin failed to stream RangeError: Invalid typed array length: 4
+    at new Uint8Array (<anonymous>)
+    at GLTFLoader.parse (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:292:40)
+    at Object.onLoad (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:208:15)
+    at http://localhost:5173/node_modules/.vite/deps/chunk-Q5SERUGF.js?v=90b2e9ee:23490:39 @ http://localhost:5173/src/scene/horizon.ts:103
+[     466ms] [WARNING] [horizon] horizon-ziggurat-ruin failed to stream RangeError: Invalid typed array length: 4
+    at new Uint8Array (<anonymous>)
+    at GLTFLoader.parse (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:292:40)
+    at Object.onLoad (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:208:15)
+    at http://localhost:5173/node_modules/.vite/deps/chunk-Q5SERUGF.js?v=90b2e9ee:23490:39 @ http://localhost:5173/src/scene/horizon.ts:103
+[     466ms] [WARNING] [horizon] horizon-arch-buttress failed to stream RangeError: Invalid typed array length: 4
+    at new Uint8Array (<anonymous>)
+    at GLTFLoader.parse (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:292:40)
+    at Object.onLoad (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:208:15)
+    at http://localhost:5173/node_modules/.vite/deps/chunk-Q5SERUGF.js?v=90b2e9ee:23490:39 @ http://localhost:5173/src/scene/horizon.ts:103
+[    3132ms] [LOG] [frame] pixelRatio → 1.25 (full pipeline rebuild) @ http://localhost:5173/src/main.ts?t=1786540311881:1134
+[    6064ms] [LOG] [frame] render() blocked 2931ms @ http://localhost:5173/src/main.ts?t=1786540311881:1408
+[    6261ms] [LOG] [frame] render() blocked 167ms @ http://localhost:5173/src/main.ts?t=1786540311881:1408
+[    9990ms] [LOG] [frame] render() blocked 3168ms @ http://localhost:5173/src/main.ts?t=1786540311881:1408

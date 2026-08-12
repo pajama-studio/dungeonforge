@@ -1,0 +1,48 @@
+[     603ms] [WARNING] [horizon] horizon-spire-needle failed to stream RangeError: Invalid typed array length: 4
+    at new Uint8Array (<anonymous>)
+    at GLTFLoader.parse (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:292:40)
+    at Object.onLoad (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:208:15)
+    at http://localhost:5173/node_modules/.vite/deps/chunk-Q5SERUGF.js?v=90b2e9ee:23490:39 @ http://localhost:5173/src/scene/horizon.ts:103
+[     603ms] [WARNING] [horizon] horizon-tower-ruin failed to stream RangeError: Invalid typed array length: 4
+    at new Uint8Array (<anonymous>)
+    at GLTFLoader.parse (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:292:40)
+    at Object.onLoad (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:208:15)
+    at http://localhost:5173/node_modules/.vite/deps/chunk-Q5SERUGF.js?v=90b2e9ee:23490:39 @ http://localhost:5173/src/scene/horizon.ts:103
+[     603ms] [WARNING] [horizon] horizon-ziggurat-ruin failed to stream RangeError: Invalid typed array length: 4
+    at new Uint8Array (<anonymous>)
+    at GLTFLoader.parse (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:292:40)
+    at Object.onLoad (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:208:15)
+    at http://localhost:5173/node_modules/.vite/deps/chunk-Q5SERUGF.js?v=90b2e9ee:23490:39 @ http://localhost:5173/src/scene/horizon.ts:103
+[     603ms] [WARNING] [horizon] horizon-arch-buttress failed to stream RangeError: Invalid typed array length: 4
+    at new Uint8Array (<anonymous>)
+    at GLTFLoader.parse (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:292:40)
+    at Object.onLoad (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:208:15)
+    at http://localhost:5173/node_modules/.vite/deps/chunk-Q5SERUGF.js?v=90b2e9ee:23490:39 @ http://localhost:5173/src/scene/horizon.ts:103
+[    3293ms] [LOG] [frame] pixelRatio → 1.25 (full pipeline rebuild) @ http://localhost:5173/src/main.ts:1134
+[    6264ms] [LOG] [frame] render() blocked 2970ms @ http://localhost:5173/src/main.ts:1408
+[    6581ms] [LOG] [frame] render() blocked 279ms @ http://localhost:5173/src/main.ts:1408
+[   10494ms] [LOG] [frame] render() blocked 3328ms @ http://localhost:5173/src/main.ts:1408
+[   80115ms] [WARNING] [horizon] horizon-spire-needle failed to stream RangeError: Invalid typed array length: 4
+    at new Uint8Array (<anonymous>)
+    at GLTFLoader.parse (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:292:40)
+    at Object.onLoad (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:208:15)
+    at http://localhost:5173/node_modules/.vite/deps/chunk-Q5SERUGF.js?v=90b2e9ee:23490:39 @ http://localhost:5173/src/scene/horizon.ts:103
+[   80115ms] [WARNING] [horizon] horizon-tower-ruin failed to stream RangeError: Invalid typed array length: 4
+    at new Uint8Array (<anonymous>)
+    at GLTFLoader.parse (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:292:40)
+    at Object.onLoad (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:208:15)
+    at http://localhost:5173/node_modules/.vite/deps/chunk-Q5SERUGF.js?v=90b2e9ee:23490:39 @ http://localhost:5173/src/scene/horizon.ts:103
+[   80115ms] [WARNING] [horizon] horizon-ziggurat-ruin failed to stream RangeError: Invalid typed array length: 4
+    at new Uint8Array (<anonymous>)
+    at GLTFLoader.parse (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:292:40)
+    at Object.onLoad (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:208:15)
+    at http://localhost:5173/node_modules/.vite/deps/chunk-Q5SERUGF.js?v=90b2e9ee:23490:39 @ http://localhost:5173/src/scene/horizon.ts:103
+[   80115ms] [WARNING] [horizon] horizon-arch-buttress failed to stream RangeError: Invalid typed array length: 4
+    at new Uint8Array (<anonymous>)
+    at GLTFLoader.parse (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:292:40)
+    at Object.onLoad (http://localhost:5173/node_modules/.vite/deps/three_addons_loaders_GLTFLoader__js.js?v=90b2e9ee:208:15)
+    at http://localhost:5173/node_modules/.vite/deps/chunk-Q5SERUGF.js?v=90b2e9ee:23490:39 @ http://localhost:5173/src/scene/horizon.ts:103
+[   82625ms] [LOG] [frame] pixelRatio → 1.25 (full pipeline rebuild) @ http://localhost:5173/src/main.ts?t=1786540311881:1134
+[   85707ms] [LOG] [frame] render() blocked 3081ms @ http://localhost:5173/src/main.ts?t=1786540311881:1408
+[   90330ms] [LOG] [frame] render() blocked 3776ms @ http://localhost:5173/src/main.ts?t=1786540311881:1408
+[   90518ms] [LOG] [frame] render() blocked 152ms @ http://localhost:5173/src/main.ts?t=1786540311881:1408

@@ -131,9 +131,19 @@ export class StairTowers {
     // solid square core the flights wind around; tall towers get a heavier
     // core with a capstone so the silhouette varies with the variant
     const core2 = core * 2;
-    const coreGeo = new THREE.BoxGeometry(core2, y1 - y0 + 2.2, core2);
-    coreGeo.translate(0, (y1 - y0) / 2 + 0.4, 0);
-    parts.push(coreGeo);
+    // Coursed, not one tall box. A single extrusion reads as a painted slab the
+    // moment a tower is seen in the open rather than between fortress walls —
+    // which the entrance tower is, standing alone on its dais out in the abyss.
+    // Courses cost ~12 triangles each and make it masonry.
+    const courseH = 0.94;
+    const courses = Math.max(1, Math.round((y1 - y0 + 2.2) / courseH));
+    for (let k = 0; k < courses; k++) {
+      const wobble = (h(30 + k) - 0.5) * 0.09;
+      const brick = new THREE.BoxGeometry(core2 + wobble, courseH * 0.94, core2 + wobble);
+      // Alternate the course inset so the joint line reads at a distance.
+      brick.translate((k & 1) * 0.02, (k + 0.5) * courseH - 0.7, 0);
+      parts.push(brick);
+    }
     if (h(5) > 0.45) {
       const cap = new THREE.BoxGeometry(core2 + 0.5, 0.5, core2 + 0.5);
       cap.translate(0, y1 - y0 + 1.7, 0);

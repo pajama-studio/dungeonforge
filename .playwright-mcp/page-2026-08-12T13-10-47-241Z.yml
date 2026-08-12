@@ -1,0 +1,101 @@
+- generic [active] [ref=f5e1]:
+  - generic:
+    - generic:
+      - generic: Depth 1
+      - generic: 100 / 100
+      - generic: ⚔ 1
+      - generic: ◆ 0
+    - generic: WASD move · Space attack · E interact
+  - generic:
+    - generic: Depth Cleansed
+    - heading [level=2]: Bind one oath to this run
+  - generic [ref=f5e4]:
+    - button "⚄ New dungeon" [ref=f5e21] [cursor=pointer]
+    - generic [ref=f5e6]:
+      - textbox "seed…" [ref=f5e7]
+      - button "Forge" [ref=f5e8] [cursor=pointer]
+  - generic [ref=f5e9]:
+    - button "⚔" [ref=f5e10] [cursor=pointer]
+    - button "🎬" [ref=f5e11] [cursor=pointer]
+    - button "🧭" [ref=f5e12] [cursor=pointer]
+    - button "🕸" [ref=f5e13] [cursor=pointer]
+    - button "💀" [ref=f5e14] [cursor=pointer]
+    - button "💥" [ref=f5e15] [cursor=pointer]
+    - button "🐉" [ref=f5e16] [cursor=pointer]
+    - button "🛠" [ref=f5e17] [cursor=pointer]
+    - button "📷" [ref=f5e18] [cursor=pointer]
+    - button "⚙" [ref=f5e19] [cursor=pointer]
+  - generic:
+    - generic: Dragon + rock · X 0 · Y 0 · Z 0
+    - button: Reset
+  - generic:
+    - generic:
+      - heading "Forge parameters" [level=2]
+      - button "✕"
+    - generic:
+      - heading "Layout" [level=3]
+      - generic:
+        - text: linked blocks
+        - generic: "20"
+      - slider: "20"
+      - generic:
+        - text: dungeon size
+        - generic: "15"
+      - slider: "15"
+      - generic:
+        - text: teleport plazas
+        - generic: "2"
+      - slider: "2"
+      - generic:
+        - text: brazier totems
+        - generic: "4"
+      - slider: "4"
+      - heading "Terrain" [level=3]
+      - generic:
+        - text: terrain relief
+        - generic: "3"
+      - slider: "3"
+      - generic:
+        - text: temple mound
+        - generic: "3.7"
+      - slider: "3.7"
+      - heading "Maze" [level=3]
+      - generic:
+        - text: open dead ends
+        - generic: "0.45"
+      - slider: "0.45"
+      - generic:
+        - text: extra loops
+        - generic: "0.08"
+      - slider: "0.08"
+      - generic:
+        - text: branchy ↔ river
+        - generic: "0.7"
+      - slider: "0.7"
+      - heading "Dressing" [level=3]
+      - generic:
+        - text: torch spacing
+        - generic: "5"
+      - slider: "5"
+      - generic:
+        - text: wall thickness
+        - generic: "0.35"
+      - slider: "0.35"
+      - generic:
+        - text: age & decay
+        - generic: "0.5"
+      - slider: "0.5"
+  - generic [ref=f5e20]: drag to orbit · scroll to zoom · Esc stops
+  - status:
+    - generic: Dungeon ready
+    - generic: 20/20 · 2702ms · 20 blocks playable · detail streaming
+    - progressbar "Dungeon generation progress"
+  - complementary:
+    - generic:
+      - strong: Camera shots
+    - generic:
+      - button: ✛ Capture
+      - button: ⧉ Copy
+      - button: ✕
+    - generic:
+      - paragraph: Fly somewhere, then press C.

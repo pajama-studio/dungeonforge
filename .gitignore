@@ -21,3 +21,6 @@ scripts/__pycache__/
 public/assets/**/*.glb
 !public/assets/skeleton.glb
 !public/assets/skeleton-game.glb
+
+# Playwright MCP scratch output — snapshots, console logs, screenshots.
+.playwright-mcp/

@@ -162,6 +162,49 @@ export interface ColumnSpec {
   bottomExposed?: boolean;
 }
 
+/** Allocation-free form of CoursePlan for the hot masonry builder. */
+export const COURSE_CULLED = 0;
+export const COURSE_OPEN = 1;
+export const COURSE_TOP = 2;
+export const COURSE_BASE = 3;
+export const COURSE_FULL = 4;
+export type CourseCode = 0 | 1 | 2 | 3 | 4;
+
+/** Resolve already-sampled column flags into compact shell codes.
+ *
+ * buildWorld calls this thousands of times per forge. Keeping its scratch
+ * buffers outside the function avoids one boolean array, one CoursePlan array,
+ * and one object per course without changing planColumn's convenient public
+ * API. `boundaryVisible` has courseCount + 1 entries: entry k describes the
+ * horizontal boundary immediately below course k. */
+export function writeColumnCodes(
+  rendered: ArrayLike<number>,
+  sealed: ArrayLike<number>,
+  boundaryVisible: ArrayLike<number>,
+  courseCount: number,
+  bottomExposed: boolean,
+  out: Uint8Array,
+): void {
+  if (out.length < courseCount) throw new RangeError("column code buffer is too small");
+  for (let k = 0; k < courseCount; k++) {
+    if (!rendered[k]) {
+      out[k] = COURSE_CULLED;
+      continue;
+    }
+    if (sealed[k]) {
+      out[k] = COURSE_FULL;
+      continue;
+    }
+    const aboveMissing = k + 1 >= courseCount || !rendered[k + 1];
+    const belowMissing = k === 0 ? bottomExposed : !rendered[k - 1];
+    const needCap = aboveMissing && boundaryVisible[k + 1] !== 0;
+    const needFloor = belowMissing && (k === 0 ? bottomExposed : boundaryVisible[k] !== 0);
+    out[k] = needCap && needFloor ? COURSE_FULL
+      : needCap ? COURSE_TOP
+        : needFloor ? COURSE_BASE : COURSE_OPEN;
+  }
+}
+
 /** Decide render and shell for every course in one column.
  *
  *  Pure and total: same spec in, same plan out, and every rendered course is

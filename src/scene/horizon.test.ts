@@ -9,11 +9,9 @@ const BASE_Y = -100;
 
 describe("horizon arc", () => {
   it("leaves a clear vista toward +Z", () => {
-    // The vista is the whole point of a horseshoe: the default camera comes in
-    // over +Z and the dragon perch needs the sightline. The invariant is the
-    // WIDTH of that gap, not how far the arc ends happen to creep — a 241
-    // degree span already puts its ends past 30 degrees, so thresholding on
-    // sin(angle) only measures where the ends landed.
+    // The default camera comes in over +Z and the dragon perch needs the
+    // sightline. None of the detached back-country clusters may leak into that
+    // approach wedge.
     const angles = HORIZON_PIECES.flatMap((spec) =>
       Array.from({ length: spec.count }, (_, k) => arcAngle(SEED, k, spec.count, spec.salt)));
     const towardCamera = Math.PI / 2; // +Z
@@ -26,6 +24,16 @@ describe("horizon arc", () => {
       Math.abs(((a - towardCamera + Math.PI * 3) % (Math.PI * 2)) - Math.PI)));
     // The gap spans both sides of the approach, so the vista is twice that.
     expect(nearest * 2).toBeGreaterThan(Math.PI / 2); // at least 90 degrees clear
+  });
+
+  it("has real gaps between the back-country clusters", () => {
+    const angles = HORIZON_PIECES.flatMap((spec) =>
+      Array.from({ length: spec.count }, (_, k) => arcAngle(SEED, k, spec.count, spec.salt)))
+      .sort((a, b) => a - b);
+    const gaps = angles.slice(1).map((angle, index) => angle - angles[index]);
+    // Two large internal gaps distinguish three geological masses from a
+    // thinned-out horseshoe. Instance jitter must never close either one.
+    expect(gaps.filter((gap) => gap > 0.65)).toHaveLength(2);
   });
 
   it("is tallest in the middle and thins to nothing at both ends", () => {
@@ -46,6 +54,13 @@ describe("horizon arc", () => {
 });
 
 describe("horizon placement", () => {
+  it("stays a sparse distant backdrop instead of closing into a rock ring", () => {
+    const total = HORIZON_PIECES.reduce((sum, spec) => sum + spec.count, 0);
+    expect(total).toBeLessThanOrEqual(12);
+    expect(Math.min(...HORIZON_PIECES.map((spec) => spec.radius[0]))).toBeGreaterThanOrEqual(140);
+    expect(Math.max(...HORIZON_PIECES.map((spec) => spec.height[1]))).toBeLessThanOrEqual(60);
+  });
+
   it("is deterministic for a seed", () => {
     const once = HORIZON_PIECES.flatMap((s) =>
       Array.from({ length: s.count }, (_, k) => JSON.stringify(placeHorizonPiece(SEED, s, k, BASE_Y))));

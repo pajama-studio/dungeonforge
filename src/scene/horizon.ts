@@ -5,29 +5,31 @@
 // came near, which is what got it cut. This puts generated stone back in the
 // same arc.
 //
-// The arc itself is worth keeping from the old version, because it was doing
-// real work: a horseshoe centred on -Z, tallest across the narrative back, its
-// density and height falling off toward both ends, and open toward +Z where the
-// default camera approaches and the dragon perch needs a sightline. A closed
-// ring reads as an arena; this reads as a canyon that happens to be enclosed.
+// The old arc idea was doing useful enclosure work, but even a sparse, evenly
+// sampled horseshoe still reads from high orbit as a redundant rim around the
+// level. The replacement is three detached back-country clusters centred on
+// -Z and fully open toward +Z where the default camera approaches. Large gaps
+// between them keep the cavern feeling vast and stop the skyline competing
+// with the titan skull/oracle landmarks.
 //
 // Cost is five draw calls — one InstancedMesh per model — for the whole horizon.
-// Every piece is 8k triangles with a 512 albedo, because at 60-140 units behind
+// Every piece is 8k triangles with a 512 albedo, because at 150-260 units behind
 // a mist curtain that is already more than the distance can resolve.
 
 import { assetUrl } from "../assets";
 import * as THREE from "three/webgpu";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
-import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
 
 import { hash2 } from "../gen/rng";
 import { ABYSS } from "../gen/dungeon";
 import { TH } from "../config";
+import { createGltfDracoLoader } from "./gltf-draco";
 
-/** Where the arc sits and how it opens. Shared with the old mesa ring so the
- *  enclosure keeps the shape the lighting and camera work were tuned against. */
-const ARC_CENTER = -Math.PI / 2;
-const ARC_SPAN = Math.PI * 1.34; // 241 degrees: enclosure with one clear vista
+/** Three detached masses across the narrative back. Do not turn this back into
+ *  evenly sampled arc endpoints: those endpoints are what looked like a rock
+ *  ring from the overhead/editor camera. */
+const CLUSTER_ANGLES = [-2.7, -1.62, -0.54] as const;
+const CLUSTER_JITTER = 0.34;
 
 /** blender-optimize-tripo.py normalises everything it emits to this height. */
 export const ASSET_HEIGHT = 10;
@@ -35,32 +37,34 @@ export const ASSET_HEIGHT = 10;
 export interface HorizonPieceSpec {
   /** File under abyss/horizon, resolved through assetUrl. */
   name: string;
-  /** How many of it stand in the ring. */
+  /** How many of it stand among the detached clusters. */
   count: number;
   /** World height range. Assets are normalised to 10 by the optimiser, so this
    *  is what actually decides their scale. */
   height: [number, number];
   /** Distance from the fortress centre. */
   radius: [number, number];
-  /** Salt, so two pieces with the same count do not land on the same angles. */
+  /** Salt, so two piece types with the same count do not land alike. */
   salt: number;
 }
 
 export const HORIZON_PIECES: readonly HorizonPieceSpec[] = [
-  // Broad terraced cliffs carry the near wall and most of the enclosure.
-  { name: "horizon-cliff-terrace", count: 10, height: [46, 104], radius: [62, 92], salt: 11 },
-  // Gaunt spires break the skyline where the cliffs would otherwise flatten.
-  { name: "horizon-spire-needle", count: 8, height: [38, 96], radius: [56, 86], salt: 23 },
-  // Ruins sit further out and read as another city that did not survive either.
-  { name: "horizon-tower-ruin", count: 5, height: [30, 62], radius: [104, 148], salt: 37 },
-  { name: "horizon-ziggurat-ruin", count: 4, height: [26, 50], radius: [98, 140], salt: 53 },
-  { name: "horizon-arch-buttress", count: 4, height: [24, 46], radius: [88, 132], salt: 71 },
+  // Eleven pieces across three clusters imply geology without rebuilding a
+  // continuous arena wall. Everything also sits farther out and lower than
+  // the former 16-piece arc.
+  { name: "horizon-cliff-terrace", count: 3, height: [22, 48], radius: [148, 196], salt: 11 },
+  { name: "horizon-spire-needle", count: 3, height: [28, 58], radius: [158, 216], salt: 23 },
+  // Ruins sit farther still and read as isolated remnants in fog, not a fence.
+  { name: "horizon-tower-ruin", count: 2, height: [20, 38], radius: [190, 245], salt: 37 },
+  { name: "horizon-ziggurat-ruin", count: 1, height: [18, 30], radius: [205, 258], salt: 53 },
+  { name: "horizon-arch-buttress", count: 2, height: [15, 29], radius: [180, 238], salt: 71 },
 ];
 
-/** Angle for the k-th of n pieces along the horseshoe, jittered per salt. */
-export function arcAngle(seed: number, k: number, count: number, salt: number): number {
-  const u = count <= 1 ? 0.5 : k / (count - 1);
-  return ARC_CENTER - ARC_SPAN / 2 + ARC_SPAN * u + (hash2(seed, k, salt) - 0.5) * 0.22;
+/** Angle for the k-th piece among three separated clusters, jittered per salt. */
+export function arcAngle(seed: number, k: number, _count: number, salt: number): number {
+  const cluster = (k + salt) % CLUSTER_ANGLES.length;
+  return CLUSTER_ANGLES[cluster]
+    + (hash2(seed, k, salt) - 0.5) * CLUSTER_JITTER;
 }
 
 /** Height envelope: 1 across the back, falling to 0 at both open ends.
@@ -94,7 +98,8 @@ export function placeHorizonPiece(
   const angle = arcAngle(seed, k, spec.count, spec.salt);
   const radius = spec.radius[0] + hash2(seed, k, spec.salt + 1) * (spec.radius[1] - spec.radius[0]);
   const [lo, hi] = spec.height;
-  // Envelope drives height, so the wall is tallest across the closed back.
+  // Envelope still varies repeated assets by height; the separated angle
+  // clusters, rather than this envelope, now define the overall silhouette.
   const height = lo + (hi - lo) * (envelope * 0.75 + hash2(seed, k, spec.salt + 2) * 0.25);
   return {
     x: Math.cos(angle) * radius,
@@ -104,7 +109,10 @@ export function placeHorizonPiece(
     scale: height / ASSET_HEIGHT,
     // Face roughly inward, then wander — a ring of pieces all square to the
     // centre reads as a fence.
-    yaw: angle + Math.PI / 2 + (hash2(seed, k, spec.salt + 3) - 0.5) * 1.5,
+    // With only a handful of distant remnants, each repeated inward-facing
+    // silhouette is conspicuous. Give the isolated clusters a wider yaw range
+    // so they read as collapsed geology rather than surviving fence posts.
+    yaw: angle + Math.PI / 2 + (hash2(seed, k, spec.salt + 3) - 0.5) * 2.2,
     tilt: (hash2(seed, k, spec.salt + 4) - 0.5) * 0.09,
   };
 }
@@ -126,9 +134,14 @@ export interface HorizonRing {
 export function buildHorizonRing(seed: number): HorizonRing {
   const group = new THREE.Group();
   group.name = "horizon-ring";
+  group.userData.streamState = "loading";
+  // Driver/visual comparison escape hatch. The production path below is the
+  // lean distant material; `?horizonPbr=1` restores the imported materials so
+  // cold-start A/B runs can compare the exact same geometry and placement.
+  const useImportedPbr = typeof window !== "undefined"
+    && new URLSearchParams(window.location.search).get("horizonPbr") === "1";
 
-  const draco = new DRACOLoader();
-  draco.setDecoderPath("/draco/gltf/");
+  const draco = createGltfDracoLoader();
   const loader = new GLTFLoader();
   loader.setDRACOLoader(draco);
 
@@ -161,7 +174,25 @@ export function buildHorizonRing(seed: number): HorizonRing {
       geometry.translate(-(box.min.x + box.max.x) / 2, -box.min.y, -(box.min.z + box.max.z) / 2);
       geometry.computeBoundingSphere();
 
-      const material = Array.isArray(sourceMesh.material) ? sourceMesh.material[0] : sourceMesh.material;
+      const authoredMaterial = (Array.isArray(sourceMesh.material)
+        ? sourceMesh.material[0]
+        : sourceMesh.material) as THREE.MeshStandardMaterial;
+      // These pieces live 150–260 units behind the fog curtain. Their imported
+      // PBR materials still made the cold ScenePass build five Standard-node
+      // graphs (metalness/roughness included) even though the screen cannot
+      // resolve that response. Preserve each authored albedo and tint, but put
+      // it on the already-resident Lambert path used by the dungeon stone.
+      // This keeps the detached silhouettes textured and moon-lit while
+      // removing five unnecessary PBR realizations from complete-scene boot.
+      const material = useImportedPbr
+        ? authoredMaterial
+        : new THREE.MeshLambertNodeMaterial({
+          color: authoredMaterial.color?.clone() ?? new THREE.Color(0x435565),
+          map: authoredMaterial.map ?? null,
+          vertexColors: geometry.hasAttribute("color"),
+          flatShading: true,
+        });
+      if (!useImportedPbr) material.name = `distant-horizon-painted-${spec.name}`;
       const mesh = new THREE.InstancedMesh(geometry, material, spec.count);
       mesh.name = `horizon-${spec.name}`;
       // Nothing this far out should cost a shadow pass; the sun never resolves
@@ -188,7 +219,10 @@ export function buildHorizonRing(seed: number): HorizonRing {
     });
   });
 
-  const ready = Promise.all(HORIZON_PIECES.map(one)).then(() => undefined);
+  const ready = Promise.all(HORIZON_PIECES.map(one)).then(() => {
+    group.userData.streamState = "ready";
+    group.userData.streamReadyAt = performance.now();
+  });
 
   return {
     group,

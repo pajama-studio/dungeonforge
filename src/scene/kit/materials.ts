@@ -123,15 +123,31 @@ export function setStoneDamage(decay: number): void {
   stoneStyle.damage.value = Math.max(0, Math.min(1, decay));
 }
 
-// One 76 KB hand-painted albedo is shared by every masonry material. A neutral
-// 1×1 placeholder keeps startup I/O off the first-visible critical path; the
-// real image swaps into the same texture object after first paint, so no TSL
-// pipeline recompilation is required.
-const handPaintedStoneTexture = new THREE.DataTexture(
-  new Uint8Array([154, 154, 154, 255]), 1, 1, THREE.RGBAFormat,
-);
-handPaintedStoneTexture.colorSpace = THREE.SRGBColorSpace;
-handPaintedStoneTexture.needsUpdate = true;
+// Compact 512px painted maps remain available to explicit review tools. The
+// live scene starts on neutral 1×1 residents: swapping a shared texture after
+// WebGPU has realized the level invalidates every concrete masonry object.
+const STREAMED_TEXTURE_SIZE = 1;
+const streamedPlaceholder = (rgb: readonly [number, number, number], colorSpace: THREE.ColorSpace) => {
+  const data = new Uint8Array(STREAMED_TEXTURE_SIZE * STREAMED_TEXTURE_SIZE * 4);
+  for (let i = 0; i < data.length; i += 4) {
+    data[i] = rgb[0];
+    data[i + 1] = rgb[1];
+    data[i + 2] = rgb[2];
+    data[i + 3] = 255;
+  }
+  const texture = new THREE.DataTexture(
+    data, STREAMED_TEXTURE_SIZE, STREAMED_TEXTURE_SIZE, THREE.RGBAFormat,
+  );
+  texture.colorSpace = colorSpace;
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.anisotropy = 1;
+  texture.generateMipmaps = false;
+  texture.needsUpdate = true;
+  return texture;
+};
+const handPaintedStoneTexture = streamedPlaceholder([154, 154, 154], THREE.SRGBColorSpace);
 let activeHandPaintedStoneTexture: THREE.Texture = handPaintedStoneTexture;
 const handPaintedStoneNodes: Array<{ value: THREE.Texture }> = [];
 let handPaintedStoneLoad: Promise<void> | null = null;
@@ -140,11 +156,7 @@ let handPaintedStoneLoad: Promise<void> | null = null;
 // so it carries brushwork rather than tentacles, and made seamless so it can
 // wrap in hardware. Variation comes from the per-instance UV transform, not
 // from atlas tiles — an atlas addressed by fract draws mip seams.
-const brushPlaceholder = new THREE.DataTexture(
-  new Uint8Array([128, 128, 128, 255]), 1, 1, THREE.RGBAFormat,
-);
-brushPlaceholder.colorSpace = THREE.SRGBColorSpace;
-brushPlaceholder.needsUpdate = true;
+const brushPlaceholder = streamedPlaceholder([128, 128, 128], THREE.SRGBColorSpace);
 let activeBrushTexture: THREE.Texture = brushPlaceholder;
 const brushNodes: Array<{ value: THREE.Texture }> = [];
 let brushLoad: Promise<void> | null = null;
@@ -156,21 +168,20 @@ let brushLoad: Promise<void> | null = null;
 // roughness map would cost more per fragment than the look is worth here.
 type StoneMaps = { albedo: THREE.Texture; normal: THREE.Texture; ao: THREE.Texture };
 type StoneSet = "wall" | "floor";
-const stonePlaceholder = (rgb: number[]) => {
-  const tex = new THREE.DataTexture(new Uint8Array([...rgb, 255]), 1, 1, THREE.RGBAFormat);
-  tex.needsUpdate = true;
-  return tex;
-};
 const makeSet = (): StoneMaps => ({
-  albedo: stonePlaceholder([128, 128, 128]),
-  normal: stonePlaceholder([128, 128, 255]),
-  ao: stonePlaceholder([128, 128, 128]),
+  albedo: streamedPlaceholder([128, 128, 128], THREE.SRGBColorSpace),
+  normal: streamedPlaceholder([128, 128, 255], THREE.NoColorSpace),
+  ao: streamedPlaceholder([128, 128, 128], THREE.NoColorSpace),
 });
 // Walls and floors need different stone counts, not just different UVs. A wall
 // brick is 2.2 x 0.925 and reads as ONE face; a floor slab is 2.2 x 2.2 and
 // reads as flagstones. Sampling one texture for both stamps a 2x2 grid of
 // stones onto every floor tile, which is exactly what it looked like.
-const stoneSets: Record<StoneSet, StoneMaps> = { wall: makeSet(), floor: makeSet() };
+// Wall and floor projections deliberately use the same jointless image set;
+// only their procedural UV scales differ. Share the three GPU textures rather
+// than uploading identical copies under separate bindings.
+const sharedStoneSet = makeSet();
+const stoneSets: Record<StoneSet, StoneMaps> = { wall: sharedStoneSet, floor: sharedStoneSet };
 const stoneMapNodes: Array<{ set: StoneSet; key: keyof StoneMaps; node: { value: THREE.Texture } }> = [];
 let stoneSetLoad: Promise<void> | null = null;
 
@@ -207,7 +218,7 @@ export function loadStoneSet(style = "face"): Promise<void> {
     // the scale was dialled — the lattice is in the image, so no UV can put its
     // joints on the tile seams.
     const name = style;
-    loader.load(assetUrl(`textures/stone/${name}-${map}-1024.webp`), (tex) => {
+    loader.load(assetUrl(`textures/stone/${name}-${map}-512.webp`), (tex) => {
       // Only albedo is colour; normal and AO are data and must not be
       // gamma-decoded or the relief comes out wrong.
       tex.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
@@ -224,7 +235,7 @@ export function loadStoneSet(style = "face"): Promise<void> {
       resolve();
     }, undefined, () => resolve());
   });
-  const sets: StoneSet[] = ["wall", "floor"];
+  const sets: StoneSet[] = ["wall"];
   stoneSetLoad = Promise.all(sets.flatMap((set) => [
     one(set, "albedo", true), one(set, "normal", false), one(set, "ao", false),
   ])).then(() => undefined);
@@ -240,7 +251,7 @@ function sampleStone(set: StoneSet, map: keyof StoneMaps, uvNode: any): any {
 export function loadBrushAtlas(): Promise<void> {
   if (brushLoad) return brushLoad;
   brushLoad = new Promise((resolve, reject) => {
-    new THREE.TextureLoader().load(assetUrl("textures/hand-painted-brush-1024.webp"), (loaded) => {
+    new THREE.TextureLoader().load(assetUrl("textures/hand-painted-brush-512.webp"), (loaded) => {
       loaded.colorSpace = THREE.SRGBColorSpace;
       loaded.wrapS = loaded.wrapT = THREE.RepeatWrapping;
       loaded.minFilter = THREE.LinearMipmapLinearFilter;
@@ -259,7 +270,7 @@ export function loadBrushAtlas(): Promise<void> {
 export function loadHandPaintedStoneTexture(): Promise<void> {
   if (handPaintedStoneLoad) return handPaintedStoneLoad;
   handPaintedStoneLoad = new Promise((resolve, reject) => {
-    new THREE.TextureLoader().load(assetUrl("textures/hand-painted-stone-1024.webp"), (loaded) => {
+    new THREE.TextureLoader().load(assetUrl("textures/hand-painted-stone-512.webp"), (loaded) => {
       loaded.colorSpace = THREE.SRGBColorSpace;
       loaded.wrapS = THREE.RepeatWrapping;
       loaded.wrapT = THREE.RepeatWrapping;
@@ -422,7 +433,7 @@ function crackFactor(stableId: any, damage: any): any {
   // makes the same block read as chipped or shattered.
   const luma = sampled.r.mul(0.34).add(sampled.g.mul(0.5)).add(sampled.b.mul(0.16));
   // Thresholds must come from the atlas's real distribution, not from taste.
-  // Measured over hand-painted-stone-1024.webp: luma is tightly clustered at
+  // Measured over the hand-painted stone source: luma is tightly clustered at
   // 0.244 +/- 0.024, spanning 0.150 to 0.475, with p5 = 0.214 and p10 = 0.219.
   //
   // Two earlier guesses both failed for the same reason — they sat outside that
@@ -466,7 +477,11 @@ export function makeHandPaintedLandmarkStoneMaterial(): THREE.MeshStandardNodeMa
   // it: the two together put the rock near saturation 0.2 while both streamed
   // statues are painted at 0.05-0.165. With the ramp now taken from the statue
   // albedo, this only has to carry the last hint of cold.
-  const stoneColor = painted.rgb.mul(1.48).add(0.22).mul(vec3(0.96, 0.98, 1.0));
+  // Hero shells sit against the darkest part of the sky and need a slightly
+  // higher diffuse floor than masonry. This is albedo lift, not emission: the
+  // authored key/rim lights still shape the form, but the planted dragon legs
+  // no longer collapse into the skull as a single black value.
+  const stoneColor = painted.rgb.mul(1.62).add(0.3).mul(vec3(0.96, 0.98, 1.0));
   material.colorNode = stoneColor;
   return material;
 }

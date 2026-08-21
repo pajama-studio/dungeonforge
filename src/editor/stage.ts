@@ -10,7 +10,7 @@ import { NO_VARIANCE, sampleVariance, type VarianceSettings } from "./variance";
 
 /** Generated content the editor refuses to adopt: moving these breaks the
  *  frame rather than the art. Everything else in the world is fair game. */
-const NOT_SELECTABLE = /^(editor-|.*transform-gizmo|dragon-placement-transform-anchor|gpu-scene-masonry|gpu-masonry-debris)/;
+const NOT_SELECTABLE = /^(editor-|.*transform-gizmo|dragon-placement-transform-anchor|gpu-scene-.*(?:masonry|surface|global-decor)|gpu-masonry-debris)/;
 
 /** A node broad enough to be a bag rather than a thing: the scene, the
  *  environment group, or anything holding 8+ children. */

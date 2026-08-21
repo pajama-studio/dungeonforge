@@ -19,7 +19,22 @@ import {
   getSlot, putInstanced, putInstancedCombined, putInstancedTwin,
   isDecorSuppressed, setSlotDetail, setSlotLodLevel,
 } from "./slots";
-import { InstArena, InstList, planColumn, type CourseShell } from "./instances";
+import {
+  COURSE_BASE, COURSE_CULLED, COURSE_FULL, COURSE_OPEN, COURSE_TOP,
+  InstArena, InstList, planColumn, writeColumnCodes, type CourseShell,
+} from "./instances";
+
+// Repeated façade/roof shells are a review layer, not part of the default
+// silhouette. One concrete InstancedMesh per island made the distant ring look
+// overbuilt and forced the cold WebGPU post graph to realize hundreds of
+// render-object-specific programs. Keep them available for A/B art review.
+const ARCHITECTURAL_SHELLS_ENABLED = typeof window !== "undefined"
+  && new URLSearchParams(window.location.search).get("facades") === "1";
+// Exact-output A/B for the allocation-free column planner and slow-walk hash
+// cache below. This stays at module scope so thousands of columns do not parse
+// location.search independently.
+const OPTIMIZED_MASONRY_BUILD = typeof window === "undefined"
+  || new URLSearchParams(window.location.search).get("masonryBuild") !== "legacy";
 
 export interface LightSpec { x: number; y: number; z: number; color: number; base: number; dist: number; ph: number }
 
@@ -404,6 +419,7 @@ export function setInteriorCull(on: boolean): void { interiorCullEnabled = on; }
 export function getInteriorCull(): boolean { return interiorCullEnabled; }
 
 export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, rootScale = 1, riseDelay = 0): WorldHandle {
+  const buildStartedAt = performance.now();
   worldLists.reset();
   const list = (capacity = 64) => worldLists.take(capacity);
   const R = getKit();
@@ -501,6 +517,25 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   let masonryPotential = 0;
   let masonryInteriorCulled = 0;
   let masonryDoorCulled = 0;
+  // One reusable column workspace per island. The old path allocated a boolean
+  // array, a CoursePlan array and an object for every course of every column.
+  let courseRendered = new Uint8Array(64);
+  let courseSealed = new Uint8Array(64);
+  let courseDoorGap = new Uint8Array(64);
+  let courseBreach = new Uint8Array(64);
+  let courseBoundaryVisible = new Uint8Array(65);
+  let courseCodes = new Uint8Array(64);
+  const ensureCourseCapacity = (count: number) => {
+    if (courseCodes.length >= count) return;
+    let capacity = courseCodes.length;
+    while (capacity < count) capacity *= 2;
+    courseRendered = new Uint8Array(capacity);
+    courseSealed = new Uint8Array(capacity);
+    courseDoorGap = new Uint8Array(capacity);
+    courseBreach = new Uint8Array(capacity);
+    courseBoundaryVisible = new Uint8Array(capacity + 1);
+    courseCodes = new Uint8Array(capacity);
+  };
 
   // Occlusion tier: the height below which every side of a column is hidden by
   // its 4 neighbors — those courses never rasterize (topmost course always kept
@@ -552,7 +587,7 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
     };
     // One decision for the whole column, so a course can never be left with a
     // missing face because something else removed its neighbour.
-    const column = planColumn({
+    const column = OPTIMIZED_MASONRY_BUILD ? null : planColumn({
       courseCount: nCourses,
       removed: (k) => {
         if (inDoorGap(k)) return true;
@@ -567,13 +602,45 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
       boundaryVisible: (k) => courseY0(k) > occlH - 0.01,
       bottomExposed,
     });
+    if (OPTIMIZED_MASONRY_BUILD) {
+      ensureCourseCapacity(nCourses);
+      const floorTier = breachTier[cell];
+      const doorFloor = doorCell && l.door ? l.door.tier * TH : 0;
+      const breachFloor = floorTier !== ABYSS ? floorTier * TH : 0;
+      for (let k = 0; k <= nCourses; k++) {
+        const y0 = baseTier * TH + k * COURSE;
+        courseBoundaryVisible[k] = y0 > occlH - 0.01 ? 1 : 0;
+        if (k === nCourses) continue;
+        const yMid = y0 + COURSE / 2;
+        const doorGap = Boolean(doorCell && l.door && yMid > doorFloor && yMid < doorFloor + 2.6);
+        const breach = floorTier !== ABYSS && yMid > breachFloor && yMid < breachFloor + 2.65;
+        const hidden = interiorCullEnabled && !breach && !(bottomExposed && k === 0)
+          && k < nCourses - 1 && y0 + COURSE <= occlH - 0.01;
+        courseDoorGap[k] = doorGap ? 1 : 0;
+        courseBreach[k] = breach ? 1 : 0;
+        courseRendered[k] = doorGap || hidden ? 0 : 1;
+        courseSealed[k] = breach || DEBUG_CLOSED_COURSES ? 1 : 0;
+      }
+      writeColumnCodes(
+        courseRendered, courseSealed, courseBoundaryVisible,
+        nCourses, bottomExposed, courseCodes,
+      );
+    }
+    let slowWalkCell = -1;
+    let slowX0 = 0, slowX1 = 0, slowZ0 = 0, slowZ1 = 0;
     for (let k = 0; k < nCourses; k++) {
       masonryPotential++;
       const y0 = baseTier * TH + k * COURSE;
       const yMid = y0 + COURSE / 2;
-      const planned = column[k];
-      if (!planned.render) {
-        if (inDoorGap(k)) masonryDoorCulled++;
+      const courseCode = OPTIMIZED_MASONRY_BUILD
+        ? courseCodes[k]
+        : (column![k].render
+          ? column![k].shell === "full" ? COURSE_FULL
+            : column![k].shell === "top" ? COURSE_TOP
+              : column![k].shell === "base" ? COURSE_BASE : COURSE_OPEN
+          : COURSE_CULLED);
+      if (courseCode === COURSE_CULLED) {
+        if (OPTIMIZED_MASONRY_BUILD ? courseDoorGap[k] : inDoorGap(k)) masonryDoorCulled++;
         else masonryInteriorCulled++;
         continue;
       }
@@ -609,26 +676,46 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
       // face is what builds the ledge. And the random part is now a slow walk
       // rather than an independent draw, so the column still wanders its full
       // range over several courses while consecutive courses stay close.
-      const walk = (salt: number) => {
-        const period = 6;
-        const cell0 = Math.floor(k / period);
-        const t = (k % period) / period;
-        const a = hash3(seed, x * 131 + y, cell0, salt);
-        const b = hash3(seed, x * 131 + y, cell0 + 1, salt);
-        const smooth = t * t * (3 - 2 * t);
-        return a + (b - a) * smooth - 0.5;
-      };
       const stagger = (k % 2 ? 1 : -1) * 0.015;
-      const jx = walk(2) * 0.12 + stagger;
-      const jz = walk(3) * 0.12 - stagger;
+      let walkX: number, walkZ: number;
+      if (OPTIMIZED_MASONRY_BUILD) {
+        const cell0 = Math.floor(k / 6);
+        if (cell0 !== slowWalkCell) {
+          slowWalkCell = cell0;
+          slowX0 = hash3(seed, x * 131 + y, cell0, 2);
+          slowX1 = hash3(seed, x * 131 + y, cell0 + 1, 2);
+          slowZ0 = hash3(seed, x * 131 + y, cell0, 3);
+          slowZ1 = hash3(seed, x * 131 + y, cell0 + 1, 3);
+        }
+        const t = (k % 6) / 6;
+        const smooth = t * t * (3 - 2 * t);
+        walkX = slowX0 + (slowX1 - slowX0) * smooth - 0.5;
+        walkZ = slowZ0 + (slowZ1 - slowZ0) * smooth - 0.5;
+      } else {
+        const walk = (salt: number) => {
+          const period = 6;
+          const cell0 = Math.floor(k / period);
+          const t = (k % period) / period;
+          const a = hash3(seed, x * 131 + y, cell0, salt);
+          const b = hash3(seed, x * 131 + y, cell0 + 1, salt);
+          const smooth = t * t * (3 - 2 * t);
+          return a + (b - a) * smooth - 0.5;
+        };
+        walkX = walk(2);
+        walkZ = walk(3);
+      }
+      const jx = walkX * 0.12 + stagger;
+      const jz = walkZ * 0.12 - stagger;
       // cornice ring every 5th course on towers — segmented silhouette
       const cornice = scaleXZ > 1.2 && k % 5 === 4 ? 1.14 : 1;
       const s = scaleXZ * cornice;
       const handSx = 0.965 + h1 * 0.07;
       const handSz = 0.965 + h3v * 0.07;
-      const breachCourse = breachAt(k);
+      const breachCourse = OPTIMIZED_MASONRY_BUILD ? courseBreach[k] !== 0 : breachAt(k);
       const floorTier = breachTier[cell];
-      const shell: CourseShell = planned.shell;
+      const shell: CourseShell = courseCode === COURSE_FULL ? "full"
+        : courseCode === COURSE_TOP ? "top"
+          : courseCode === COURSE_BASE ? "base" : "open";
       const target = shell === "full" ? blocks
         : shell === "top" ? blockTops
         : shell === "base" ? blockBases : blockMids;
@@ -1287,7 +1374,7 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
             ha * 6.28, sc, 1, sc, stoneColor,
           );
         }
-        // brambles (荆棘): thorny tangles sprawling over the castle's skin —
+        // brambles: thorny tangles sprawling over the castle's skin —
         // dense on the outer ramparts and ravine cliffs, sparse inside
         if (kind[c] === WALL && !l.doorMask[c]) {
           for (let d = 0 as Dir; d < 4; d++) {
@@ -1318,7 +1405,7 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
             );
           }
         }
-        // creeper patches (爬山虎) climbing the wall faces from the floor
+        // creeper patches climbing the wall faces from the floor
         if (kind[c] === WALL && !l.doorMask[c]) {
           for (let d = 0 as Dir; d < 4; d++) {
             const n = gi(x + DX[d], y + DY[d]);
@@ -1582,7 +1669,7 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
     authoredGaps: masonryDoorCulled,
     emitted: masonryPotential - masonryInteriorCulled - masonryDoorCulled,
   };
-  putInstanced(pool, "blocksLo", R.blockGeoLo, R.stoneLoMat, blocksLow);
+  putInstanced(pool, "blocksLo", R.blockGeoLo, R.stoneLoMat, blocksLow, farShadows);
   // Middle LOD keeps the exact authored transform/color of every visible
   // course. Only bevel topology and the expensive near material disappear;
   // the vertically collapsed blocksLo representation is reserved for far.
@@ -1621,8 +1708,13 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   pool.meshes.get("blockTopsFade")!.count = 0;
   pool.meshes.get("blockTopsLoFade")!.count = 0;
   putInstanced(pool, "merlons", R.merlonGeo, R.stoneMat, merlons);
-  putInstanced(pool, "architecturalBays", R.architecturalBayGeo, R.stoneMat, architecturalBays, false);
-  putInstanced(pool, "towerRoofs", R.towerRoofGeo, R.stoneMat, towerRoofs, false);
+  if (ARCHITECTURAL_SHELLS_ENABLED) {
+    // Opt-in comparison only: the base masonry already carries the readable
+    // skyline, while these dense overlays are useful when inspecting the
+    // façade asset itself via ?facades=1.
+    putInstanced(pool, "architecturalBays", R.architecturalBayGeo, R.stoneLoMat, architecturalBays, false);
+    putInstanced(pool, "towerRoofs", R.towerRoofGeo, R.stoneLoMat, towerRoofs, false);
+  }
   // Floors get the flagstone-scaled set; the wall set stamps a grid of
   // stones onto every slab.
   // Floors keep the FLOOR material at every tier.
@@ -1774,6 +1866,11 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   // in one unambiguous far state after all three-tier twins exist.
   setSlotLodLevel(slot, 0);
   const rise = makeRise(group, riseDelay);
+  // Retained on the stable slot for browser A/B. Aggregate forge timing also
+  // includes scheduler waits, links and GPU uploads, so it cannot isolate this
+  // synchronous CPU builder on its own.
+  group.userData.buildMs = performance.now() - buildStartedAt;
+  group.userData.masonryBuild = OPTIMIZED_MASONRY_BUILD ? "compact" : "legacy";
   return {
     group,
     lights,

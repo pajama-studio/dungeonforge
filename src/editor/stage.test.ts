@@ -57,6 +57,9 @@ describe("selectableEntity", () => {
       "editor-transform-gizmo",
       "dragon-placement-transform-anchor",
       "gpu-scene-masonry",
+      "gpu-scene-low-masonry",
+      "gpu-scene-low-surface-tiles",
+      "gpu-scene-global-decor-banners",
     ]) {
       const mesh = new THREE.Mesh();
       mesh.name = name;

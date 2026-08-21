@@ -44,7 +44,8 @@ ws.addEventListener("message", (event) => {
     const line = message.params.entry.text;
     if (/GPUValidationError|Invalid CommandBuffer|Instance range|binding size/i.test(line)) gpuErrors.push(line);
   } else if (message.method === "Runtime.exceptionThrown") {
-    failures.push(message.params.exceptionDetails.text);
+    const details = message.params.exceptionDetails;
+    failures.push(details.exception?.description ?? details.exception?.value ?? details.text);
   }
   if (!message.id) return;
   const job = pending.get(message.id);
@@ -62,6 +63,13 @@ const call = (method, params = {}) => new Promise((resolve, reject) => {
 await call("Runtime.enable");
 await call("Log.enable");
 await call("Page.enable");
+await call("Page.bringToFront");
+// Fix the backing size before application modules create WebGPU targets.
+// Resizing after load invalidates every render object and makes the harness,
+// rather than destruction, responsible for the measured frame blocks.
+await call("Emulation.setDeviceMetricsOverride", {
+  width: 1280, height: 720, deviceScaleFactor: 1, mobile: false,
+});
 const pageLoaded = new Promise((resolve) => { pageLoadResolve = resolve; });
 await call("Page.reload", { ignoreCache: true });
 await Promise.race([
@@ -69,9 +77,6 @@ await Promise.race([
   new Promise((_, reject) => setTimeout(() => reject(new Error("Page reload timed out")), 15000)),
 ]);
 pageLoadResolve = null;
-await call("Emulation.setDeviceMetricsOverride", {
-  width: 1280, height: 720, deviceScaleFactor: 1, mobile: false,
-});
 
 const evaluated = await call("Runtime.evaluate", {
   expression: `(async () => {
@@ -81,7 +86,7 @@ const evaluated = await call("Runtime.evaluate", {
     if (!window.__df?.decorReady) throw new Error("Dungeonforge did not become render-ready");
     console.log("[destruction-regression] start");
     window.__df.controls.autoRotate = false;
-    const destruction = window.__df.destruction;
+    const destruction = await window.__df.ensureDestruction();
     const warmupStarted = performance.now();
     await destruction.warmup();
     const warmupMs = performance.now() - warmupStarted;
@@ -167,6 +172,49 @@ const evaluated = await call("Runtime.evaluate", {
         }
       }
     }
+    // The hero landmarks can legitimately cover most of the old fixed click
+    // grid. Keep the first pass user-like, then deliberately project authored
+    // breach bands into screen space so this regression always exercises the
+    // topology mutation instead of depending on an accidental camera angle.
+    let breachProbeAttempts = 0;
+    if (${!closeup} && destruction.stats.breaches === 0) {
+      const candidates = [];
+      const breachSources = [];
+      window.__df.ctx.scene.traverse((object) => {
+        if (object.isInstancedMesh && object.userData?.masonry?.byInstance?.size) breachSources.push(object);
+      });
+      for (const mesh of breachSources) {
+        const structure = mesh.userData?.masonry;
+        if (!structure?.byInstance?.size) continue;
+        mesh.updateWorldMatrix(true, false);
+        const local = mesh.matrixWorld.clone();
+        const world = mesh.matrixWorld.clone();
+        const seen = new Set();
+        for (const [instanceId, breach] of structure.byInstance) {
+          if (seen.has(breach) || breach.opened) continue;
+          seen.add(breach);
+          mesh.getMatrixAt(instanceId, local);
+          world.multiplyMatrices(mesh.matrixWorld, local);
+          const point = mesh.position.clone().setFromMatrixPosition(world);
+          const distance = point.distanceTo(window.__df.camera.position);
+          const ndc = point.clone().project(window.__df.camera);
+          if (ndc.z < -1 || ndc.z > 1 || Math.abs(ndc.x) > 0.94 || Math.abs(ndc.y) > 0.9) continue;
+          candidates.push({ ndc, distance });
+        }
+      }
+      candidates.sort((a, b) => a.distance - b.distance);
+      for (const candidate of candidates.slice(0, 48)) {
+        const x = rect.left + (candidate.ndc.x + 1) * 0.5 * rect.width;
+        const y = rect.top + (1 - candidate.ndc.y) * 0.5 * rect.height;
+        // Up to four layers may overlap the selected band in this cinematic
+        // camera. Each click still goes through the public raycast path.
+        for (let layer = 0; layer < 4 && destruction.stats.breaches === 0; layer++) {
+          breachProbeAttempts++;
+          destruction.blastClientPoint(x, y);
+        }
+        if (destruction.stats.breaches > 0) break;
+      }
+    }
     await sleep(1400);
     const queue = window.__df.ctx.renderer.backend?.device?.queue;
     await (queue?.onSubmittedWorkDone?.() ?? Promise.resolve());
@@ -197,6 +245,7 @@ const evaluated = await call("Runtime.evaluate", {
     }
     return {
       requested: ${wanted}, impacts: impacts.length,
+      breachProbeAttempts,
       fragments: destruction.stats.spawned,
       inheritedColors: destruction.stats.inheritedColors,
       commandCommits: destruction.stats.commandCommits,
@@ -235,7 +284,13 @@ const evaluated = await call("Runtime.evaluate", {
   timeout: 180000,
 });
 
-if (evaluated.exceptionDetails) failures.push(evaluated.exceptionDetails.text);
+if (evaluated.exceptionDetails) {
+  failures.push(
+    evaluated.exceptionDetails.exception?.description ??
+    evaluated.exceptionDetails.exception?.value ??
+    evaluated.exceptionDetails.text,
+  );
+}
 const result = evaluated.result?.value ?? null;
 if (screenshot) {
   const captured = await call("Page.captureScreenshot", { format: "png" });

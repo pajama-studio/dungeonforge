@@ -155,17 +155,32 @@ export const nextFrame = (): Promise<void> => new Promise((resolve) => {
   requestAnimationFrame(() => { clearTimeout(t); settle(); });
 });
 
+/** Resume after the browser has had a chance to present the requested frame,
+ * not in the microtask checkpoint between two RAF callbacks. Used for the
+ * first-island handoff: resuming forge work inside that checkpoint delayed the
+ * renderer's own callback by the whole assembly budget. */
+const afterNextFrame = (): Promise<void> => new Promise((resolve) => {
+  let done = false;
+  const settle = () => { if (!done) { done = true; resolve(); } };
+  const fallback = setTimeout(settle, 60);
+  requestAnimationFrame(() => {
+    clearTimeout(fallback);
+    setTimeout(settle, 0);
+  });
+});
+
 /** Frame-budget pacer. Generation is subdivided into SMALL steps (one island
  *  build, one gate repair, one bridge, one pier set…) and `tick()` is awaited
  *  between them: once the budget is spent the rest of the frame goes back to
- *  the renderer. 6ms of a 16.7ms frame leaves render + browser overhead a
- *  full 10ms, so a forge reads as the rise animation, never as a hitch. */
+ *  the renderer. The active mode chooses the budget that leaves enough room
+ *  for its render path, so a forge reads as a rise animation, never a hitch. */
 export class Pacer {
   private used = performance.now();
   constructor(private budgetMs = 6) {}
-  async tick(): Promise<void> {
-    if (performance.now() - this.used > this.budgetMs) {
-      await nextFrame();
+  async tick(force = false): Promise<void> {
+    const elapsed = performance.now() - this.used;
+    if (force || elapsed > this.budgetMs) {
+      await (force ? afterNextFrame() : nextFrame());
       this.used = performance.now();
     }
   }

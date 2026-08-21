@@ -203,6 +203,20 @@ export class DungeonActors {
 
   get enemyCount(): number { return this.enemies.length; }
 
+  /** Fixed render-object inventory used by startup pacing. Returning the
+   * meshes rather than their mutable actor data lets the boot stream hide and
+   * reveal one shared batch at a time; gameplay updates keep writing the same
+   * instance buffers while a batch is temporarily invisible. */
+  startupRenderables(): readonly THREE.Object3D[] {
+    return [
+      this.chestBase,
+      this.chestLid,
+      this.chestBands,
+      this.enemyBodies,
+      this.enemyEyes,
+    ];
+  }
+
   get eliteCount(): number {
     let n = 0;
     for (const e of this.enemies) if (e.active && e.elite) n++;

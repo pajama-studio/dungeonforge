@@ -216,8 +216,20 @@ src/
 | ![layers](docs/shot-v20-layers.jpeg) | ![cube](docs/shot-v22-cube.jpeg) | ![endless](docs/shot-v19-endless.jpeg) |
 | stacked sky layers | the 3×3×3 Cube | endless streaming |
 
+## 🤝 Contributing
+
+Patches welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers the house rules that
+are load-bearing rather than stylistic, which parts of `scripts/` you can
+actually run without Blender or a Tripo account, and — importantly — how to
+verify rendering changes, because **headless browsers cannot draw this scene**
+and CI therefore checks only types, tests and the build.
+
+See also [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) and
+[SECURITY.md](SECURITY.md).
+
 ## 📄 License
 
-Code is [MIT](LICENSE). The adventurer is the CC0
-[KayKit Adventurers](https://kaylousberg.com) Knight — see
-[LICENSES.md](LICENSES.md) for asset credits.
+Code is [MIT](LICENSE). The 💀 walker is the CC0
+[KayKit Skeletons](https://kaylousberg.com) Skeleton Minion, and the Draco
+decoder under `public/draco/` is Google's, Apache-2.0 — see
+[LICENSES.md](LICENSES.md) for the full credits.

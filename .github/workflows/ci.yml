@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# The rendering is not checked here. Dungeonforge draws through
+# WebGPURenderer, and headless Chromium has no working WebGPU backend for it —
+# it throws `createIndirectStorageAttribute is not a function` and returns an
+# empty frame, which looks like a camera bug rather than a backend one. So CI
+# checks what a machine can honestly check: types, generator invariants, and
+# that the bundle builds. Visual and startup-timing work happens against a real
+# GPU browser through the CDP harnesses in scripts/.
+#
+# `npm run assets:check` is deliberately absent: it needs a clone of the
+# private props catalogue beside this repo and cannot run here.
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build

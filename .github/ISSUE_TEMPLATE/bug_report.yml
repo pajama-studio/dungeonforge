@@ -1,0 +1,59 @@
+name: Bug report
+description: Something renders wrong, generates wrong, or does not run.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A seed that misbehaves is a complete bug report on its own — every
+        world is reproducible from its URL, so `?seed=…` lets us see exactly
+        what you saw.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: input
+    id: url
+    attributes:
+      label: URL that reproduces it
+      description: Copy the address bar. `?seed=123&islands=8&size=13` pins a build exactly.
+      placeholder: https://dungeonforge.pajama.studio/?seed=123&islands=8
+    validations:
+      required: true
+
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and version
+      placeholder: Chrome 151 / Safari 26.1 / Edge 150
+    validations:
+      required: true
+
+  - type: textarea
+    id: gpu
+    attributes:
+      label: GPU
+      description: >
+        Open `chrome://gpu` (or the equivalent) and paste the graphics card and
+        driver lines. WebGPU backend differences cause a real share of these
+        bugs, so this is worth the copy-paste.
+    validations:
+      required: true
+
+  - type: textarea
+    id: console
+    attributes:
+      label: Console output
+      description: Any errors or warnings from the browser console.
+      render: text
+
+  - type: textarea
+    id: screenshot
+    attributes:
+      label: Screenshot
+      description: Drag an image in, if it is a visual problem.

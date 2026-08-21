@@ -63,6 +63,33 @@ describe("abyss floor height field", () => {
     expect(differences).toBeGreaterThan(30);
   });
 
+  it("steps further in one mesh cell than the mesh can draw", () => {
+    // Documents the constraint the water has to work around rather than a
+    // property to preserve. The terrace risers are narrower than a grid cell,
+    // so the bedrock mesh renders them as straight one-quad cliffs; anything
+    // that clips against the bedrock near the waterline will show those cliffs
+    // as ruler-straight edges. Refusing to draw into them is `poolDepthFade`'s
+    // job. If this ever starts passing the grid got fine enough to drop it.
+    const cell = ABYSS_FLOOR.extent / ABYSS_FLOOR.segments;
+    const half = ABYSS_FLOOR.extent / 2;
+    let worst = 0;
+    for (const seed of [1, 808, 20260811]) {
+      for (let iz = 0; iz < ABYSS_FLOOR.segments; iz++) {
+        for (let ix = 0; ix < ABYSS_FLOOR.segments; ix++) {
+          const x = ix * cell - half;
+          const z = iz * cell - half;
+          const here = abyssFloorHeight(seed, x, z);
+          worst = Math.max(
+            worst,
+            Math.abs(abyssFloorHeight(seed, x + cell, z) - here),
+            Math.abs(abyssFloorHeight(seed, x, z + cell) - here),
+          );
+        }
+      }
+    }
+    expect(worst).toBeGreaterThan(1.5);
+  });
+
   it("stays inside the amplitude the terrain budget assumes", () => {
     const limit = ABYSS_FLOOR.plateauAmplitude / 2 +
       ABYSS_FLOOR.weatherAmplitude / 2 + ABYSS_FLOOR.microAmplitude / 2;

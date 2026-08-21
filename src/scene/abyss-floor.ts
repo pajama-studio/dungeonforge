@@ -37,13 +37,41 @@ export const ABYSS_FLOOR = {
   microAmplitude: 0.85,
   /** the plane is 900 units square, so it stays past the fog convergence */
   extent: 900,
-  /** 72² cells: enough for the slow terraces, one static 10,368-triangle draw */
+  /**
+   * 72² cells: enough for the slow terraces, one static 10,368-triangle draw.
+   *
+   * Deliberately NOT raised to resolve the terrace risers. A 2.57-unit riser
+   * crossed in 0.2 of a step is only 2-3 units wide, so it collapses onto a
+   * single grid edge here and renders as a straight one-quad cliff; that cliff
+   * is what used to clip the basin water sheets into a crack across the pool.
+   * Measured, 5-unit cells still leave a 3.2-unit step, and actually resolving
+   * the ramp needs sub-unit cells — 800k triangles to hide an artefact the
+   * water can simply stop drawing into. The pool fades out by depth instead;
+   * see `poolDepthFade()` in abyss-landmarks.ts.
+   */
   segments: 72,
 } as const;
 
 /** World Y the bedrock mesh's own origin sits at. Height queries return relief
  *  about this plane, not about zero. */
 export const ABYSS_FLOOR_BASE_Y = ABYSS * TH - 14;
+
+/** The island radius the mesa/mist/ruin ring was authored around. */
+const RING_AUTHORED_RADIUS = 72;
+
+/**
+ * Horizontal scale fit() gives the ring group so the authored ring still
+ * clears a big chain. The bedrock plane rides in that group, so this is also
+ * the factor between world/landmark x-z and the bedrock-local x-z these
+ * height queries take: divide by it before asking.
+ *
+ * Lives here rather than inline in the environment because the landmark layer
+ * needs the same number to sample the floor under the basin water, and two
+ * copies of it would drift.
+ */
+export function abyssFloorRingScale(half: number): number {
+  return Math.max(1, (half + 26) / RING_AUTHORED_RADIUS);
+}
 
 const clamp = (value: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, value));
 

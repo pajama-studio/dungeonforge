@@ -24,3 +24,29 @@ public/assets/**/*.glb
 
 # Playwright MCP scratch output — snapshots, console logs, screenshots.
 .playwright-mcp/
+
+# Local Wrangler deploy state.
+.wrangler/
+
+# Benchmark screenshots. `court-check.mjs` and `occlusion-check.mjs` write here
+# by default, and A/B runs leave more beside them — a working surface, not a
+# record. The measurements themselves stay: perf/results/*.json is the data
+# `npm run bench:report` reads, and nothing regenerates it.
+perf/*.png
+perf/*.jpeg
+
+# Screenshots the docs do not reference. Shots that illustrate something stay
+# tracked and get linked from the markdown that uses them; the rest are a
+# session's evidence and were quietly costing ~10 MB of every clone.
+docs/*.jpeg
+!docs/shot-v6.jpeg
+!docs/shot-v19-endless.jpeg
+!docs/shot-v20-layers.jpeg
+!docs/shot-v22-cube.jpeg
+
+# Internal punch-list, kept local. Public roadmap lives in GitHub Issues.
+docs/TODO.md
+
+# Internal benchmark logs, kept local.
+perf/ITERATIONS-100.md
+perf/MARKOV_PORT.md

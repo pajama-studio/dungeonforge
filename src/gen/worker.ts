@@ -6,16 +6,21 @@ import { generate, type Layout, type Params } from "./dungeon";
 
 self.onmessage = (e: MessageEvent<{ id: number; seed: number; params?: Partial<Params> }>) => {
   const { id, seed, params } = e.data;
-  const input = { ...params, seed };
-  const layout: Layout = generate(input);
-  const transfers = [
-    layout.kind.buffer, layout.tier.buffer, layout.wallTop.buffer,
-    layout.wallBase.buffer, layout.support.buffer, layout.stairMask.buffer,
-    layout.ruinMask.buffer, layout.redMask.buffer, layout.templeMask.buffer, layout.plazaMask.buffer,
-    layout.doorMask.buffer, layout.shaftMask.buffer, layout.volumeMask.buffer,
-  ];
-  (self as unknown as Worker).postMessage({ id, layout }, transfers as Transferable[]);
+  try {
+    const input = { ...params, seed };
+    const layout: Layout = generate(input);
+    const transfers = [
+      layout.kind.buffer, layout.tier.buffer, layout.wallTop.buffer,
+      layout.wallBase.buffer, layout.support.buffer, layout.stairMask.buffer,
+      layout.ruinMask.buffer, layout.redMask.buffer, layout.templeMask.buffer, layout.plazaMask.buffer,
+      layout.doorMask.buffer, layout.shaftMask.buffer, layout.volumeMask.buffer,
+    ];
+    (self as unknown as Worker).postMessage({ id, layout }, transfers as Transferable[]);
+  } catch (error) {
+    const detail = error instanceof Error ? error.stack ?? error.message : String(error);
+    (self as unknown as Worker).postMessage({ id, error: detail });
+  }
 };
 
 export type GenRequest = { id: number; seed: number };
-export type GenResponse = { id: number; layout: Layout };
+export type GenResponse = { id: number; layout: Layout } | { id: number; error: string };

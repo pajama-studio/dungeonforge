@@ -156,6 +156,33 @@ describe("dungeon generator", () => {
     }
     expect(seen).toEqual(new Set(FOOTPRINT_KINDS));
   });
+
+  it("keeps optional chambers connected inside an L-court satellite", () => {
+    // Hot-reforge regression: the red chamber landed in the L-court's missing
+    // quadrant. Preserving its mask through footprint trimming created a
+    // detached floor island, so all six deterministic attempts failed and the
+    // worker request used to remain pending forever.
+    const l = generate({
+      seed: 3_669_432_622,
+      size: 11,
+      gateSides: [0, 2, 3],
+      verticalAnchors: [{ id: 8, x: 13, y: 12, dockDir: 3 }],
+      narrativeRole: "sanctum",
+      districtId: 6,
+      storyLandmark: false,
+      footprint: "l-court",
+      rot: 2,
+      templeOn: false,
+      ravineOn: true,
+      plazas: 2,
+      totems: 2,
+      decay: 0.2928,
+      heightAmp: 3.6992,
+      newest: 0.939,
+      mound: 0.925,
+    });
+    expect(bfsReachAll(l)).toBe(true);
+  });
 });
 
 describe("ground shaft", () => {

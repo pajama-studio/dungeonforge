@@ -399,16 +399,32 @@ function attempt(p: Params, seed: number, coreGenerator: MazeCoreGenerator): Lay
 
   // Red chamber: sunken 2×2 maze cells, dropped one tier — position drifts per seed.
   {
-    const ri = Math.max(1, Math.min(M - 3, Math.round(M * (0.6 + (hash2(seed, 1, 212) - 0.5) * 0.3))));
-    const rj = Math.max(Math.round(M * 0.42), Math.min(M - 3, Math.round(M * (0.78 + (hash2(seed, 2, 213) - 0.5) * 0.24))));
-    let lo = 9;
-    for (let j = rj; j <= rj + 1; j++) for (let i = ri; i <= ri + 1; i++) lo = Math.min(lo, mTier[mi(i, j)]);
-    const rt = Math.max(0, lo - 1);
-    for (let gy = 2 * rj + 1; gy <= 2 * rj + 3; gy++) {
-      for (let gx = 2 * ri + 1; gx <= 2 * ri + 3; gx++) {
-        if (plazaMask[gi(gx, gy)] || shaftReserve[gi(gx, gy)]) continue;
-        setFloor(gx, gy, rt);
-        redMask[gi(gx, gy)] = 1;
+    const rawRi = Math.max(1, Math.min(M - 3, Math.round(M * (0.6 + (hash2(seed, 1, 212) - 0.5) * 0.3))));
+    const rawRj = Math.max(Math.round(M * 0.42), Math.min(M - 3, Math.round(M * (0.78 + (hash2(seed, 2, 213) - 0.5) * 0.24))));
+    const mirror = (value: number) => Math.max(1, Math.min(M - 3, M - 2 - value));
+    const candidates: Array<[number, number]> = [
+      [rawRi, rawRj], [mirror(rawRi), rawRj],
+      [rawRi, mirror(rawRj)], [mirror(rawRi), mirror(rawRj)],
+    ];
+    const site = candidates.find(([ri, rj]) => {
+      for (let gy = 2 * rj + 1; gy <= 2 * rj + 3; gy++) {
+        for (let gx = 2 * ri + 1; gx <= 2 * ri + 3; gx++) {
+          if (!footprintContains(footprint, gx, gy, N)) return false;
+        }
+      }
+      return true;
+    });
+    if (site) {
+      const [ri, rj] = site;
+      let lo = 9;
+      for (let j = rj; j <= rj + 1; j++) for (let i = ri; i <= ri + 1; i++) lo = Math.min(lo, mTier[mi(i, j)]);
+      const rt = Math.max(0, lo - 1);
+      for (let gy = 2 * rj + 1; gy <= 2 * rj + 3; gy++) {
+        for (let gx = 2 * ri + 1; gx <= 2 * ri + 3; gx++) {
+          if (plazaMask[gi(gx, gy)] || shaftReserve[gi(gx, gy)]) continue;
+          setFloor(gx, gy, rt);
+          redMask[gi(gx, gy)] = 1;
+        }
       }
     }
   }

@@ -11,16 +11,12 @@
 import { assetUrl } from "../assets";
 import * as THREE from "three/webgpu";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
-import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
 import { getKit } from "../scene/kit";
+import { createGltfDracoLoader } from "../scene/gltf-draco";
 import { thumbnailFor } from "./thumbs";
 import type { AssetDef } from "./types";
 
-const draco = new DRACOLoader();
-// Same vendored decoder the scene landmarks use. It was a pinned gstatic build,
-// which meant the editor needed the network to open an asset and could drift
-// from the decoder three itself ships.
-draco.setDecoderPath("/draco/gltf/");
+const draco = createGltfDracoLoader();
 const gltf = new GLTFLoader();
 gltf.setDRACOLoader(draco);
 

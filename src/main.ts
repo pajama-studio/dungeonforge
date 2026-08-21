@@ -17,7 +17,8 @@ import { ClusteredLighting } from "three/addons/lighting/ClusteredLighting.js";
 import { DEFAULT_PARAMS, type Params } from "./gen/dungeon";
 import { GenPool } from "./gen/pool";
 import {
-  pruneSlots, setSlotDetail, setSlotLodLevel, setDecorSuppressed, revealDecor,
+  pruneSlots, setSlotDetail, setSlotLodLevel, setDecorSuppressed, revealDecor, cancelDecorReveal,
+  decorRevealStatus, lodWarmStatus, startupDecorRenderObjectCount,
   setOccludingSlots, areSlotsLodWarm, stageSlotLodWarmup,
   type LodLevel, gpuSceneSlotPools } from "./scene/slots";
 import {
@@ -26,11 +27,12 @@ import {
 } from "./scene/env";
 import { setInteriorCull, getInteriorCull, setClosedCourses, getClosedCourses, setFarShadows, getFarShadows } from "./scene/build";
 import { landmarkStreamStatus } from "./scene/abyss-landmarks";
-import { flickerDamp, loadHandPaintedStoneTexture, setOcclusionWindow, stoneStyle, loadBrushAtlas, loadStoneSet } from "./scene/kit/materials";
-import { createPost } from "./render/post";
+import { flickerDamp, setOcclusionWindow, stoneStyle } from "./scene/kit/materials";
+import type { PostChain } from "./render/post";
 import { GpuMasonryScene } from "./render/gpu-scene";
-import { Player } from "./player/player";
+import type { Player } from "./player/player";
 import { LightPool } from "./world/lights";
+import { isEffectivelyVisible, parseStartupBatch, startupRenderWork } from "./startup-pacing";
 import { StairTowers } from "./world/stairs";
 import { DungeonActors } from "./world/actors";
 import { WalkMap } from "./world/walkmap";
@@ -42,16 +44,22 @@ import { Cinematic } from "./world/cinematic";
 import { RoutePath } from "./world/route";
 import { NavMesh, NavOverlay } from "./world/nav";
 import { EndlessWorld } from "./world/stream";
-import { GpuDestruction } from "./world/destruction";
+import type { GpuDestruction } from "./world/destruction";
 import { RogueRun, type RelicKind, type RelicReward } from "./game/roguelike";
 import { playerInputFromKeys } from "./player/input";
 import { buildPanel } from "./ui/panel";
-import { CameraShots } from "./editor/shots";
+import type { CameraShots } from "./editor/shots";
 import { mulberry32 } from "./gen/rng";
 import {
   TH, CELL, PR_BASE, PR_LARGE,
   LOD_NEAR, LOD_FAR, LOD_MID_NEAR, LOD_MID_FAR,
 } from "./config";
+
+// index.html stamps this immediately before requesting the entry module, so
+// startup metrics include module fetch/parse and synchronous environment
+// construction instead of beginning after the heaviest CPU work has finished.
+const pageStartedAt = (window as unknown as { __dfPageStartedAt?: number }).__dfPageStartedAt
+  ?? performance.now();
 
 const app = document.getElementById("app")!;
 const loadingEl = document.getElementById("loading")!;
@@ -77,6 +85,30 @@ const runReward = document.getElementById("runReward")!;
 const runRewardOptions = document.getElementById("runRewardOptions")!;
 
 const urlParams = new URLSearchParams(location.search);
+// Runtime overrides keep cold-start pacing measurable without maintaining
+// benchmark-only branches. After global low-surface compaction, repeated
+// foreground traces selected weighted budgets 14×12: both queues finish near
+// 1.06 s without a >100 ms render or frame gap. The first cinematic
+// submissions remain independently empty so the prepared dragon/skull and the
+// four surface buckets each own a bounded ScenePass preview frame.
+const startupCoreBatch = parseStartupBatch(urlParams.get("coreBatch"), 14, 20);
+const startupDecorBatch = parseStartupBatch(urlParams.get("decorBatch"), 12, 16);
+const startupFirstPostBatch = parseStartupBatch(
+  urlParams.get("firstPostBatch"), 0, startupCoreBatch, 0,
+);
+// Pick the startup fill-rate tier before the first WebGPU target exists. A
+// default 20-block chain always lands in PR_LARGE after spatial fitting; first
+// rendering it at PR_BASE and clamping later invalidated every just-created
+// render object. Small review scenes retain the sharper tier.
+const requestedStartupIslands = urlParams.has("islands")
+  ? Number(urlParams.get("islands")) || 1
+  : DEFAULT_PARAMS.islands;
+const startupMode = urlParams.get("mode");
+const startupPrCap = requestedStartupIslands >= 6
+  || startupMode === "ziggurat"
+  || startupMode === "reliquary"
+  ? PR_LARGE
+  : PR_BASE;
 
 // ---- renderer / camera / controls -------------------------------------------
 const scene = new THREE.Scene();
@@ -91,7 +123,7 @@ if (urlParams.get("clustered") !== "0") {
   renderer.lighting = new ClusteredLighting(32, 64, 16, 16);
 }
 renderer.setSize(innerWidth, innerHeight);
-renderer.setPixelRatio(Math.min(devicePixelRatio, PR_BASE));
+renderer.setPixelRatio(Math.min(devicePixelRatio, startupPrCap));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFShadowMap; // static baked shadows — soft PCF not worth the taps
 // AgX was the wrong curve for this scene. It is built to desaturate as it
@@ -115,7 +147,12 @@ controls.dampingFactor = 0.06;
 controls.maxPolarAngle = 1.38;
 controls.minDistance = 18;
 controls.maxDistance = 170;
-controls.autoRotate = true;
+// Hold the authored establishing composition. Continuous auto-rotation moved
+// the colossal dragon and skull out of frame while the remaining detail was
+// still streaming, so the scene users eventually saw no longer matched the
+// deliberate two-subject camera produced by forge(). Orbit remains available
+// by drag, and the cinematic control provides an intentional moving tour.
+controls.autoRotate = false;
 controls.autoRotateSpeed = 0.35;
 renderer.domElement.addEventListener("pointerdown", () => { controls.autoRotate = false; });
 
@@ -136,6 +173,11 @@ const forgeStageOrder: ForgeStage[] = ["requested", "generating", "assembling", 
 const forgeRuns: ForgeRunRecord[] = [];
 let activeForgeRun: ForgeRunRecord | null = null;
 let reforgeSerial = 0;
+let cancelStartupProgressiveReveal = (): void => {};
+let resolveStartupSceneReady!: () => void;
+const startupSceneReady = new Promise<void>((resolve) => {
+  resolveStartupSceneReady = resolve;
+});
 let forgeStatusHideTimer = 0;
 
 function renderForgeStatus(run: ForgeRunRecord, completed?: number, total?: number): void {
@@ -180,6 +222,7 @@ function renderForgeStatus(run: ForgeRunRecord, completed?: number, total?: numb
   }
   const busy = run.stage !== "ready" && run.stage !== "failed";
   btnNew.setAttribute("aria-busy", String(busy));
+  btnNew.disabled = busy;
   btnNew.textContent = busy ? "⚒ Shuffling…" : "⚄ New dungeon";
   btnGo.disabled = busy;
   seedInput.disabled = busy;
@@ -246,10 +289,52 @@ const env = buildEnvironment(
   (specs) => lights.setCinematic(specs),
   (specs) => lights.setLandmarkSpecs(specs),
 ); // seed-stable; kept across regens
-const { post: postProcessing, setBloom, godrays: godrayStats } = createPost(renderer, scene, camera, {
-  ambientOcclusion: urlParams.get("ao") === "1",
-  godrayLight: env.godrayLight,
-});
+// Bloom, volumetric fog, GTAO and godrays are not needed for the useful first
+// paint. Keeping render/post.ts in the synchronous entry made the browser
+// download and parse that entire node graph before boot() could even submit
+// the coarse preview. Load it after first paint; until it is ready every
+// caller receives the same responsive direct-render fallback.
+let cinematicPost: PostChain | null = null;
+let cinematicPostLoad: Promise<PostChain | null> | null = null;
+let requestedBloom = 0.9;
+const godrayStats = { enabled: false, resolutionScale: 0, raymarchSteps: 0 };
+const postProcessing = {
+  render(): void {
+    if (cinematicPost) cinematicPost.post.render();
+    else renderer.render(scene, camera);
+  },
+};
+const setBloom = (strength: number): void => {
+  requestedBloom = strength;
+  cinematicPost?.setBloom(strength);
+};
+const loadCinematicPost = (): Promise<PostChain | null> => {
+  if (cinematicPost) return Promise.resolve(cinematicPost);
+  if (cinematicPostLoad) return cinematicPostLoad;
+  startupTiming.postModuleRequestedAt = performance.now();
+  cinematicPostLoad = import("./render/post")
+    .then(({ createPost }) => {
+      const chain = createPost(renderer, scene, camera, {
+        ambientOcclusion: urlParams.get("ao") === "1",
+        bloom: urlParams.get("bloom") !== "0",
+        cinematic: urlParams.get("post") !== "basic",
+        // Keep an explicit fallback for driver triage and low-end captures.
+        // Default remains the authored shadow-derived moon shaft.
+        godrayLight: urlParams.get("godrays") === "0" ? undefined : env.godrayLight,
+        godrayVolume: env.godrayVolume,
+      });
+      chain.setBloom(requestedBloom);
+      cinematicPost = chain;
+      Object.assign(godrayStats, chain.godrays);
+      startupTiming.postModuleReadyAt = performance.now();
+      return chain;
+    })
+    .catch((error) => {
+      console.warn("Cinematic post failed to load; keeping direct rendering", error);
+      return null;
+    });
+  return cinematicPostLoad;
+};
 const stairs = new StairTowers(scene);
 const actors = new DungeonActors(scene, camera, renderer.domElement);
 
@@ -278,7 +363,8 @@ const ctx: Ctx = {
     endless: false,
     lastExtent: 0,
     token: 0,
-    prCap: PR_BASE,
+    reforging: false,
+    prCap: startupPrCap,
   },
 };
 const endless = new EndlessWorld(ctx);
@@ -287,15 +373,40 @@ const nav = new NavMesh(ctx);
 const navOverlay = new NavOverlay(ctx, nav);
 const route = new RoutePath(ctx, nav);
 const slotDetail = new Map<number, LodLevel>();
-const gpuScene = new GpuMasonryScene(scene, renderer, urlParams.get("gpuscene") !== "0");
-const destruction = new GpuDestruction(
-  scene, camera, renderer, renderer.domElement,
-  ctx.walk.sample,
-  () => ctx.walk.touch(),
-  (slot) => { slotDetail.set(slot, 2); setSlotLodLevel(slot, 2); },
-  () => postProcessing.render(),
-  (mesh, instanceId) => gpuScene.hideSourceInstance(mesh, instanceId),
+const gpuScene = new GpuMasonryScene(
+  scene,
+  renderer,
+  urlParams.get("gpuscene") !== "0",
+  urlParams.get("deferHighMasonry") !== "0",
 );
+let destruction: GpuDestruction | null = null;
+let destructionLoad: Promise<GpuDestruction> | null = null;
+
+/** Fracture is an explicit tool, not part of the default diorama. Keeping its
+ * 21 kB module, fixed GPU buffers, compute graph and pointer listeners off the
+ * cold path makes the complete default scene arrive sooner without weakening
+ * the feature: the first click owns the import and warm-up state visibly. */
+async function ensureDestruction(): Promise<GpuDestruction> {
+  if (destruction) return destruction;
+  destructionLoad ??= import("./world/destruction").then(({ GpuDestruction }) => {
+    const instance = new GpuDestruction(
+      scene, camera, renderer, renderer.domElement,
+      ctx.walk.sample,
+      () => ctx.walk.touch(),
+      (slot) => { slotDetail.set(slot, 2); setSlotLodLevel(slot, 2); },
+      () => postProcessing.render(),
+      (mesh, instanceId) => gpuScene.hideSourceInstance(mesh, instanceId),
+    );
+    destruction = instance;
+    return instance;
+  });
+  try {
+    return await destructionLoad;
+  } catch (error) {
+    destructionLoad = null;
+    throw error;
+  }
+}
 
 // ---- UI ---------------------------------------------------------------------
 // Hierarchy: the WORLD (bottom-left: ⚄ New, seed, mode segments) · the VIEW
@@ -354,10 +465,21 @@ async function runReforge(): Promise<void> {
     token: expectedToken,
     seed: ctx.state.seed,
     mode: modeAtStart,
-    detail: "preserving current frame",
+    detail: !decorReady
+      ? "finishing the current scene upload"
+      : "preserving current frame",
   });
+  // A rebuild before the final scene context has seen its render objects
+  // would have to compile hundreds of pipelines inside the transaction. Keep
+  // the current progressive frame alive, queue the request, and start as soon
+  // as the complete scene is genuinely warm. Orbit remains responsive while
+  // it waits.
+  await startupSceneReady;
+  if (requestSerial !== reforgeSerial) return;
   await captureForgeSnapshot();
   if (requestSerial !== reforgeSerial) return;
+  cancelStartupProgressiveReveal();
+  ctx.state.reforging = true;
   try {
     const task = modeAtStart === "cube"
       ? forgeCube(ctx)
@@ -408,6 +530,10 @@ async function runReforge(): Promise<void> {
       error: message,
     });
     console.error("[forge] shuffle failed", error);
+  } finally {
+    // A superseded transaction must not clear the flag owned by the newer
+    // rebuild that replaced it.
+    if (requestSerial === reforgeSerial) ctx.state.reforging = false;
   }
 }
 
@@ -429,6 +555,10 @@ buildPanel(ctx.genParams, { onParams: reforge });
 const uiRng = mulberry32((Date.now() ^ 0x5f3759df) >>> 0); // UI-only randomness; the world itself is seed-pure
 function forgeSeed(seed: number): void {
   ctx.state.seed = seed;
+  // A new seed is a new establishing shot even when its numeric extent happens
+  // to match the previous chain. Without this reset, portrait compensation and
+  // the seed-dependent dragon/dungeon target could silently retain stale framing.
+  ctx.state.lastExtent = 0;
   if (activeMode === "endless") setModeActive("chain");
   reforge();
 }
@@ -674,7 +804,7 @@ btnNav.addEventListener("click", () => { if (!ctx.state.endless) navOverlay.togg
 btnWalk.addEventListener("click", () => { if (walking) stopWalk(); else void startWalk(); });
 let breakArming = false;
 btnBreak.addEventListener("click", async () => {
-  if (destruction.enabled) {
+  if (destruction?.enabled) {
     destruction.setEnabled(false);
   } else {
     if (breakArming) return;
@@ -682,16 +812,17 @@ btnBreak.addEventListener("click", async () => {
     btnBreak.classList.add("active");
     document.getElementById("tip")!.textContent = "arming GPU fracture…";
     try {
-      await destruction.warmup();
-      destruction.setEnabled(true);
+      const feature = await ensureDestruction();
+      await feature.warmup();
+      feature.setEnabled(true);
     } catch (error) {
       console.error("[destruction] pipeline failed:", error);
     } finally {
       breakArming = false;
     }
   }
-  btnBreak.classList.toggle("active", destruction.enabled);
-  document.getElementById("tip")!.textContent = destruction.enabled
+  btnBreak.classList.toggle("active", destruction?.enabled === true);
+  document.getElementById("tip")!.textContent = destruction?.enabled
     ? "click masonry to fracture · drag still orbits · X exits"
     : "drag to orbit · scroll to zoom · Esc stops";
 });
@@ -756,22 +887,40 @@ async function toggleEditor(force?: boolean): Promise<void> {
 
 btnEditor.addEventListener("click", () => { void toggleEditor(); });
 
-// 📷 camera shots: fly, press C, keep the framing. Built eagerly — it is tiny
-// and the whole value is that capturing never makes you stop and open a panel.
+// 📷 camera shots: fly, press C, keep the framing. Its panel, persistence and
+// DOM listeners are useful only after that explicit action, so keep them out
+// of the default scene's parse/construction path.
 const btnShots = document.getElementById("btnShots") as HTMLButtonElement;
-const cameraShots = new CameraShots({
-  camera,
-  controls,
-  quiesce: () => {
-    if (walking) stopWalk();
-    if (rogueMode) stopRogueRun();
-    cine.stop();
-  },
-  toast: (message) => flashRunToast(message),
-});
-btnShots.addEventListener("click", () => {
-  cameraShots.toggle();
-  btnShots.classList.toggle("active", cameraShots.open);
+let cameraShots: CameraShots | null = null;
+let cameraShotsLoad: Promise<CameraShots> | null = null;
+
+async function ensureCameraShots(): Promise<CameraShots> {
+  if (cameraShots) return cameraShots;
+  cameraShotsLoad ??= import("./editor/shots").then(({ CameraShots }) => {
+    cameraShots = new CameraShots({
+      camera,
+      controls,
+      quiesce: () => {
+        if (walking) stopWalk();
+        if (rogueMode) stopRogueRun();
+        cine.stop();
+      },
+      toast: (message) => flashRunToast(message),
+    });
+    return cameraShots;
+  });
+  try {
+    return await cameraShotsLoad;
+  } catch (error) {
+    cameraShotsLoad = null;
+    throw error;
+  }
+}
+
+btnShots.addEventListener("click", async () => {
+  const shots = await ensureCameraShots();
+  shots.toggle();
+  btnShots.classList.toggle("active", shots.open);
 });
 
 // ---- skeleton route walker: the CC0 skeleton walks the whole route --------
@@ -964,6 +1113,7 @@ let playerReady: Promise<void> | null = null;
  * player explicitly enters a playable mode. */
 function preloadPlayer(): Promise<void> {
   playerReady ??= (async () => {
+    const { Player } = await import("./player/player");
     player = new Player();
     try { await player.load(assetUrl("skeleton-game.glb")); } catch { /* placeholder-only */ }
     player.group.position.set(0, -600, 0);
@@ -1193,8 +1343,10 @@ addEventListener("keydown", (e: KeyboardEvent) => {
     e.preventDefault();
   }
   if (e.key.toLowerCase() === "c" && !editingText && !e.repeat && !e.metaKey && !e.ctrlKey) {
-    cameraShots.capture();
-    btnShots.classList.add("active");
+    void ensureCameraShots().then((shots) => {
+      shots.capture();
+      btnShots.classList.add("active");
+    });
     e.preventDefault();
   }
   if (e.key === "Escape" && dragonGizmoActive) void setDragonGizmoActive(false);
@@ -1228,7 +1380,7 @@ renderer.domElement.addEventListener("pointerdown", () => { cine.stop(); });
 // steps between 1.0 and the mode cap, driven by an EMA of the frame time —
 // heavy views trade a little sharpness for smoothness, light views win it
 // back. Adjust at most once a second (setPixelRatio reallocates targets).
-let dprNow = Math.min(devicePixelRatio, PR_BASE);
+let dprNow = Math.min(devicePixelRatio, startupPrCap);
 let frameVsync = 16.7; // rolling estimate of the display refresh interval
 let frameDropped = 0;
 let frameCounted = 0;
@@ -1242,14 +1394,139 @@ let decorRevealFrames = 0;
 let lodToken = -1;
 let lastOcclusionCheck = 0;
 const startupTiming = {
-  startedAt: performance.now(),
+  startedAt: pageStartedAt,
   forgeReadyAt: 0,
   coreReadyAt: 0,
   firstVisibleAt: 0,
   postReadyAt: 0,
+  postPreviewPrimeReadyAt: 0,
+  postPreviewReadyAt: 0,
+  shadowReadyAt: 0,
+  postModuleRequestedAt: 0,
+  postModuleReadyAt: 0,
+  maxFrameGapMs: 0,
+  frameGaps: [] as number[],
+  maxRenderBlockMs: 0,
+  renderBlocks: [] as number[],
+  renderBlockEvents: [] as Array<{
+    at: number;
+    duration: number;
+    programs: number;
+    pipelines: number;
+    decor: ReturnType<typeof decorRevealStatus>;
+    lodWarm: ReturnType<typeof lodWarmStatus>;
+    pipelineWork: {
+      renderCalls: number;
+      computeCalls: number;
+      shaderCalls: number;
+      totalMs: number;
+      topObjects: Array<{ label: string; count: number }>;
+      slowest: Array<{ kind: "render" | "compute" | "shader"; duration: number; label: string }>;
+    };
+  }>,
+  pipelineCreateEvents: [] as Array<{
+    at: number;
+    kind: "render" | "compute" | "shader";
+    duration: number;
+    label: string;
+  }>,
+  postProgramsBefore: 0,
+  postProgramsAfter: 0,
+  postPipelinesBefore: 0,
+  postPipelinesAfter: 0,
+  postStageEvents: [] as Array<{
+    stage: "preview-prime" | "preview" | "cinematic" | "shadow";
+    duration: number;
+    programs: number;
+    pipelines: number;
+    renderCalls: number;
+    computeCalls: number;
+    shaderCalls: number;
+    pipelineMs: number;
+    topObjects: Array<{ label: string; count: number }>;
+  }>,
   stoneTextureReadyAt: 0,
+  coreStreamObjects: 0,
+  worldStreamObjects: 0,
+  environmentStreamObjects: 0,
+  coreStreamInventory: [] as Array<{
+    name: string;
+    type: string;
+    material: string;
+    work: number;
+    instances: number;
+    castShadow: boolean;
+  }>,
+  coreStreamBatch: startupCoreBatch,
+  firstPostStreamBatch: startupFirstPostBatch,
+  decorStreamBatch: startupDecorBatch,
+  localDecorStreamObjects: 0,
+  decorLayersReadyAt: 0,
+  landmarksReadyAt: 0,
+  coreStreamReadyAt: 0,
   decorReadyAt: 0,
 };
+const pipelineTraceCalls: Array<{
+  kind: "render" | "compute" | "shader";
+  duration: number;
+  label: string;
+}> = [];
+function traceWebGpuPipelineCreation(): void {
+  const backend = renderer.backend as unknown as Record<string, unknown> & { device?: Record<string, unknown> };
+  const device = backend.device;
+  if (!device || (backend as { __dfTraced?: boolean }).__dfTraced) return;
+  (backend as { __dfTraced?: boolean }).__dfTraced = true;
+  const record = (kind: "render" | "compute" | "shader", duration: number, label: string) => {
+    if (pipelineTraceCalls.length < 5000) pipelineTraceCalls.push({ kind, duration, label });
+    if (duration <= 50 || startupTiming.pipelineCreateEvents.length >= 48) return;
+    startupTiming.pipelineCreateEvents.push({
+      at: performance.now(), kind, duration: Math.round(duration), label,
+    });
+  };
+  const wrapBackend = (method: "createRenderPipeline" | "createComputePipeline", kind: "render" | "compute") => {
+    const original = backend[method];
+    if (typeof original !== "function") return;
+    backend[method] = function (this: unknown, subject: unknown, ...rest: unknown[]) {
+      const renderObject = subject as {
+        object?: { name?: string; type?: string };
+        material?: { name?: string; type?: string };
+        geometry?: { name?: string; type?: string };
+        name?: string;
+      };
+      const label = kind === "render"
+        ? `${renderObject.object?.name || renderObject.object?.type || "object"} · ${renderObject.material?.name || renderObject.material?.type || "material"} · ${renderObject.geometry?.name || renderObject.geometry?.type || "geometry"}`
+        : renderObject.name || "compute-pipeline";
+      const started = performance.now();
+      const result = (original as (this: unknown, ...args: unknown[]) => unknown).call(this, subject, ...rest);
+      record(kind, performance.now() - started, label);
+      return result;
+    };
+  };
+  wrapBackend("createRenderPipeline", "render");
+  wrapBackend("createComputePipeline", "compute");
+  const wrap = (method: "createRenderPipeline" | "createComputePipeline", kind: "render" | "compute") => {
+    const original = device[method];
+    if (typeof original !== "function") return;
+    device[method] = function (this: unknown, descriptor: { label?: string }) {
+      const started = performance.now();
+      const result = (original as (this: unknown, descriptor: object) => unknown).call(this, descriptor);
+      const duration = performance.now() - started;
+      record(kind, duration, descriptor.label ?? "unlabelled");
+      return result;
+    };
+  };
+  wrap("createRenderPipeline", "render");
+  wrap("createComputePipeline", "compute");
+  const originalShaderModule = device.createShaderModule;
+  if (typeof originalShaderModule === "function") {
+    device.createShaderModule = function (this: unknown, descriptor: { label?: string }) {
+      const started = performance.now();
+      const result = (originalShaderModule as (this: unknown, descriptor: object) => unknown).call(this, descriptor);
+      record("shader", performance.now() - started, descriptor.label ?? "unlabelled-shader");
+      return result;
+    };
+  }
+}
 function adaptResolution(t: number, rawMs: number): void {
   // Resolution changes are NOT cheap on this renderer: ClusteredLightsNode
   // derives its cluster grid from the drawing-buffer size, so every
@@ -1301,6 +1578,7 @@ async function boot(): Promise<void> {
   ).then(() => { startupTiming.forgeReadyAt = performance.now(); })
     .catch((e) => { forgeErr = e; console.error("[forge] failed:", e); });
   await rendererReady;
+  if (urlParams.has("bench")) traceWebGpuPipelineCreation();
 
   // Present the FIRST completed island while the paced forge continues. The
   // former Promise.all waited for every slot, then submitted 300+ cold render
@@ -1320,51 +1598,302 @@ async function boot(): Promise<void> {
   }
   if (forgeErr !== null || ctx.worlds.length === 0) throw forgeErr ?? new Error("Dungeon forge produced no world");
 
-  // Wave 1 is a direct scene render. On a cold WebGPU cache the full
-  // bloom+volumetric pipeline took 7.6 s to build while CPU forge needed only
-  // ~0.7 s. The direct pass presents real playable geometry first; cinematic
-  // post is activated after that frame is safely on screen.
-  renderer.render(scene, camera);
-  const queue = (renderer.backend as unknown as {
-    device?: { queue?: { onSubmittedWorkDone?: () => Promise<void> } };
-  }).device?.queue;
-  await (queue?.onSubmittedWorkDone?.() ?? Promise.resolve());
+  // Wave 1 is a direct scene render. Forge runs alongside renderer.init(), so
+  // a fast CPU can finish every block before the renderer is ready. Rendering
+  // the whole completed chain here defeated the intended "first island"
+  // paint and made a cold WebGPU driver realize hundreds of objects behind the
+  // opaque loading screen (12 s measured on Chrome). Temporarily submit only
+  // the first playable block; the forge remains complete in memory and the
+  // remaining groups rejoin immediately after this first useful frame.
+  const firstPaintGroup = ctx.worlds[0].group;
+  const deferredFirstPaintGroups = [...new Set(ctx.worlds.map((world) => world.group))]
+    .filter((group) => group !== firstPaintGroup && group.visible);
+  for (const group of deferredFirstPaintGroups) group.visible = false;
+
+  // A first paint needs the generated silhouette, not every final shader.
+  // Submit only the coarse floor/masonry meshes with one unlit material and a
+  // flat abyss backdrop. The normal scene graph is restored before the next
+  // frame, which can compile lighting, fog, landmarks and detail while this
+  // useful preview remains on the canvas instead of the loading card.
+  const previewKeys = new Set([
+    "blocksLo", "blocksMidLo", "blockTopsLo",
+    "tilesLo", "tilesMidLo", "stepsLo", "colsLo",
+  ]);
+  const deferredFirstPaintObjects: THREE.Object3D[] = [];
+  const hideVisibleRenderables = (
+    root: THREE.Object3D | undefined,
+    keep: (object: THREE.Object3D) => boolean,
+  ): void => {
+    root?.traverse((object) => {
+      const renderable = (object as THREE.Mesh).isMesh
+        || (object as THREE.Line).isLine
+        || (object as THREE.Sprite).isSprite;
+      if (!renderable || !object.visible || keep(object)) return;
+      object.visible = false;
+      deferredFirstPaintObjects.push(object);
+    });
+  };
+  hideVisibleRenderables(scene.getObjectByName("environment"), () => false);
+  hideVisibleRenderables(firstPaintGroup, (object) => previewKeys.has(object.name));
+
+  const previewMaterial = new THREE.MeshBasicNodeMaterial({
+    color: 0x435565,
+    vertexColors: true,
+  });
+  const savedOverrideMaterial = scene.overrideMaterial;
+  const savedBackground = scene.background;
+  const savedBackgroundNode = scene.backgroundNode;
+  const savedFogNode = scene.fogNode;
+  const savedShadows = renderer.shadowMap.enabled;
+  scene.overrideMaterial = previewMaterial;
+  scene.background = new THREE.Color(0x0a0e1c);
+  scene.backgroundNode = null;
+  scene.fogNode = null;
+  renderer.shadowMap.enabled = false;
+  try {
+    renderer.render(scene, camera);
+    const queue = (renderer.backend as unknown as {
+      device?: { queue?: { onSubmittedWorkDone?: () => Promise<void> } };
+    }).device?.queue;
+    await (queue?.onSubmittedWorkDone?.() ?? Promise.resolve());
+  } finally {
+    renderer.shadowMap.enabled = savedShadows;
+    scene.fogNode = savedFogNode;
+    scene.backgroundNode = savedBackgroundNode;
+    scene.background = savedBackground;
+    scene.overrideMaterial = savedOverrideMaterial;
+    for (const object of deferredFirstPaintObjects) object.visible = true;
+    for (const group of deferredFirstPaintGroups) group.visible = true;
+    previewMaterial.dispose();
+  }
   coreReady = true;
   startupTiming.coreReadyAt = performance.now();
   startupTiming.firstVisibleAt = performance.now();
   loadingEl.style.opacity = "0";
   loadingEl.style.visibility = "hidden";
   loadingEl.style.display = "none";
-  // The shared 76 KB brush texture is deliberately post-first-visible. Its
-  // placeholder already compiled with the masonry shader, so swapping pixels
-  // later neither blocks startup nor creates a new render pipeline.
-  window.setTimeout(() => {
-    void Promise.all([loadHandPaintedStoneTexture(), loadBrushAtlas(), loadStoneSet()])
-      .then(() => { startupTiming.stoneTextureReadyAt = performance.now(); })
-      .catch((error) => console.warn("Hand-painted stone texture failed to stream", error));
-  }, 1400);
+  // Fetch the cinematic module as soon as the useful coarse frame is on
+  // screen. Keep this promise so CPU forging and module parsing can finish in
+  // parallel, then submit the complete world only through the final shared
+  // ScenePass. Rendering the restored full scene directly while this import
+  // was pending compiled every object once here and again in ScenePass.
+  const cinematicPostStarted = loadCinematicPost();
+  // Masonry stays on its neutral resident maps during startup. Updating a
+  // shared Texture after WebGPU has realized the world invalidates every
+  // concrete render object (~1,070 on the default chain), while direct queue
+  // copies expose a Chrome MRT bug that turns the titan skull into a white
+  // bloom mask. The procedural grain, joints, wear and cracks already carry
+  // the wide shot; streamed surface maps remain outside the live scene until
+  // they can be isolated behind a renderer-safe upload path.
 
   // Keep the partial world alive and animated while layout/build work yields
   // between islands. This callback is replaced atomically by the full game
   // loop below as soon as forging is complete.
   let cinematicPostEnabled = false;
-  let cinematicPostRequested = false;
-  const cinematicPostDeadline = performance.now() + 6500;
   let earlyLastT = performance.now() / 1000;
   renderer.setAnimationLoop(() => {
     const t = performance.now() / 1000;
+    const rawMs = (t - earlyLastT) * 1000;
     const dt = Math.min(0.05, t - earlyLastT);
     earlyLastT = t;
+    if (rawMs > 100) {
+      startupTiming.maxFrameGapMs = Math.max(startupTiming.maxFrameGapMs, rawMs);
+      if (startupTiming.frameGaps.length < 32) startupTiming.frameGaps.push(Math.round(rawMs));
+    }
     controls.update();
     for (const world of ctx.worlds) world.tick(t);
     ctx.actors.tick(t, dt);
     ctx.lights.tick(t, 0.3);
-    renderer.render(scene, camera);
   });
 
-  await forging;
+  // Until ScenePass exists the already-presented coarse frame deliberately
+  // remains on the canvas. This short hold avoids a second cold realization
+  // of the complete scene while still letting forge and the dynamic import
+  // make progress together. A failed optional import resolves to null and the
+  // full loop below falls back to a single direct realization.
+  await Promise.all([forging, cinematicPostStarted]);
   if (forgeErr !== null || ctx.worlds.length === 0) throw forgeErr ?? new Error("Dungeon forge produced no world");
+  // Preview and cinematic pipelines can share the ScenePass node but Three's
+  // renderer still gives each RenderPipeline a distinct render context. The
+  // old preview→post switch therefore recreated all 392 default-scene render
+  // objects. Enter the final context while the world is still sparse and keep
+  // every subsequent streamed object in that one context for its whole life.
+  cinematicPostEnabled = cinematicPost !== null;
+  // The coarse first paint deliberately had shadows disabled and therefore
+  // did not allocate the static moon map. Forge may have requested several
+  // bakes while assembling CPU objects; clear that pending bit so the shared
+  // ScenePass preview and the fullscreen post graph each get their own frame.
+  // We request the one real bake immediately after the final post appears.
+  if (cinematicPostEnabled) ctx.env.godrayLight.shadow.needsUpdate = false;
+  // Establish global GPU-owned buckets before inventorying per-slot objects.
+  // Otherwise a source such as `blocksLo` enters the deferred queue, is then
+  // replaced by an indirect bucket, and the stale queue later makes that
+  // managed source visible again. Rebuilding here lets canStream() exclude the
+  // exact render objects the GPU scene has already superseded.
   gpuScene.rebuild();
+  gpuScene.setCompactedDecorVisible(false);
+  const splitSharedScenePreview = cinematicPostEnabled
+    && cinematicPost !== null
+    && cinematicPost.preview !== cinematicPost.post;
+  if (splitSharedScenePreview) gpuScene.setLowSurfacesVisible(false);
+  // Keep the first playable block plus the dragon/skull/main beam intact and
+  // stage every secondary environment object alongside the remaining dungeon.
+  // The foreground subjects therefore arrive as one authored composition,
+  // while fog, horizon remnants, oracle dressing and distant masonry fill in
+  // over subsequent frames instead of joining one cold 128-call submission.
+  const isRenderable = (object: THREE.Object3D): boolean => (
+    (object as THREE.Mesh).isMesh
+    || (object as THREE.Line).isLine
+    || (object as THREE.Sprite).isSprite
+  );
+  const canStream = (object: THREE.Object3D): boolean => {
+    if (!isRenderable(object) || !isEffectivelyVisible(object)) return false;
+    const instanced = object as THREE.InstancedMesh;
+    return !instanced.isInstancedMesh || (
+      instanced.count > 0
+      && !(instanced.userData as { gpuSceneManaged?: boolean }).gpuSceneManaged
+    );
+  };
+  const hasAncestorNamed = (object: THREE.Object3D, names: ReadonlySet<string>): boolean => {
+    let current: THREE.Object3D | null = object;
+    while (current) {
+      if (names.has(current.name)) return true;
+      current = current.parent;
+    }
+    return false;
+  };
+  // The shadow aperture is part of the main beam, not late atmosphere. Keeping
+  // it in the first authored composition makes the shaft appear with the
+  // dragon/skull and lets the dedicated startup shadow frame realize its real
+  // occluder. The two additive dust blades remain in the later queue: they are
+  // texture, not structure, and including them made one measured ScenePass
+  // prime graze 101 ms. Moving only the aperture removes two work units from
+  // the later queue (44 → 42), still enough for the safe 14-unit budget to
+  // finish it in three frames instead of a nearly-empty fourth frame.
+  // `criticalBeam=0` is retained as an exact browser A/B escape hatch.
+  const criticalBeam = urlParams.get("criticalBeam") !== "0";
+  const criticalEnvironmentRoots = new Set([
+    "streamed-colossal-perched-dragon-slot",
+  ]);
+  const criticalEnvironmentObjects = new Set([
+    "terraced-weathered-abyss-bedrock",
+    "colossal-dragon-slate-spire",
+    ...(criticalBeam ? ["procedural-overhead-cavern-godray-aperture"] : []),
+  ]);
+  // Hide the async oracle at its stable parent, not at whichever streamed
+  // children happen to exist during this traversal. Otherwise a shell that
+  // finishes one frame later bypasses the inventory and unexpectedly adds ten
+  // cold render/shader realizations to the ScenePass preview.
+  const deferredEnvironmentRoots = [
+    scene.getObjectByName("abyssal-cephalopod-oracle"),
+  ].filter((object): object is THREE.Object3D => Boolean(object?.parent && object.visible));
+  for (const root of deferredEnvironmentRoots) root.visible = false;
+  const deferredEnvironmentObjects: THREE.Object3D[] = [];
+  scene.getObjectByName("environment")?.traverse((object) => {
+    if (!canStream(object)
+      || criticalEnvironmentObjects.has(object.name)
+      || hasAncestorNamed(object, criticalEnvironmentRoots)) return;
+    object.visible = false;
+    deferredEnvironmentObjects.push(object);
+  });
+  // Population is five fixed instanced batches, independent of island count.
+  // They are gameplay-important but not part of the dragon/skull establishing
+  // silhouette, so spread them through the environment side of the core queue
+  // instead of compiling all five in the first preview.
+  const deferredActorObjects = ctx.actors.startupRenderables()
+    .filter((object) => canStream(object));
+  for (const object of deferredActorObjects) object.visible = false;
+  deferredEnvironmentObjects.unshift(...deferredEnvironmentRoots, ...deferredActorObjects);
+
+  const deferredWorldObjects: THREE.Object3D[] = [];
+  const deferredGroups = [...new Set(ctx.worlds.map((world) => world.group))]
+    .filter((group) => group.visible);
+  for (const group of deferredGroups) {
+    group.traverse((object) => {
+      if (!canStream(object)) return;
+      // The resident low-LOD silhouette of the first island has already been
+      // presented by the coarse paint and is needed beneath the dragon. Its
+      // ancillary meshes are not: putting those into the same final-context
+      // queue as every other island removes a block-sized material burst from
+      // the shared ScenePass preview without changing the authored layout.
+      if (group === firstPaintGroup && previewKeys.has(object.name)) return;
+      object.visible = false;
+      deferredWorldObjects.push(object);
+    });
+  }
+  // Two dungeon objects followed by one environment object gives the playable
+  // chain priority without letting the atmosphere pop in as one late layer.
+  const deferredCoreObjects: THREE.Object3D[] = [];
+  for (let worldCursor = 0, environmentCursor = 0;
+    worldCursor < deferredWorldObjects.length || environmentCursor < deferredEnvironmentObjects.length;) {
+    for (let i = 0; i < 2 && worldCursor < deferredWorldObjects.length; i++) {
+      deferredCoreObjects.push(deferredWorldObjects[worldCursor++]);
+    }
+    if (environmentCursor < deferredEnvironmentObjects.length) {
+      deferredCoreObjects.push(deferredEnvironmentObjects[environmentCursor++]);
+    }
+  }
+  startupTiming.worldStreamObjects = deferredWorldObjects.length;
+  startupTiming.environmentStreamObjects = deferredEnvironmentObjects.length;
+  startupTiming.coreStreamObjects = deferredCoreObjects.length;
+  if (urlParams.get("profile") === "1") {
+    startupTiming.coreStreamInventory = deferredCoreObjects.map((object) => {
+      const renderable = object as THREE.Mesh & THREE.InstancedMesh;
+      const materials = renderable.material
+        ? (Array.isArray(renderable.material) ? renderable.material : [renderable.material])
+        : [];
+      return {
+        name: object.name || object.type,
+        type: object.type,
+        material: materials.map((material) => material.name || material.type).join("+") || "group",
+        work: startupRenderWork(object),
+        // Node-driven Sprite batches expose their draw instance count directly
+        // without pretending to be InstancedMesh. Report the renderer-facing
+        // count so startup inventory does not understate those batches.
+        instances: Number.isFinite(renderable.count) ? renderable.count : 1,
+        castShadow: renderable.castShadow === true,
+      };
+    });
+  }
+  let deferredCoreCursor = 0;
+  const revealDeferredCore = (budget: number): boolean => {
+    // Zero is an authored phase boundary, not an undersized positive budget:
+    // the shared ScenePass preview must contain no queued Oracle/environment
+    // object. Clamping it to one reintroduced the exact cold landmark burst
+    // `startupFirstPostBatch=0` exists to prevent.
+    if (budget <= 0) return deferredCoreCursor >= deferredCoreObjects.length;
+    let revealedThisFrame = 0;
+    let revealedWork = 0;
+    let revealedShadowCaster = false;
+    const workBudget = budget;
+    while (deferredCoreCursor < deferredCoreObjects.length) {
+      const object = deferredCoreObjects[deferredCoreCursor];
+      if (!object.parent) {
+        deferredCoreCursor++;
+        continue;
+      }
+      const objectWork = startupRenderWork(object);
+      if (revealedThisFrame > 0 && revealedWork + objectWork > workBudget) break;
+      deferredCoreCursor++;
+      object.visible = true;
+      revealedShadowCaster ||= (object as THREE.Mesh).castShadow === true;
+      revealedThisFrame++;
+      revealedWork += objectWork;
+    }
+    // The directional shadow is intentionally static. Refresh it only when a
+    // newly streamed caster joins the scene: its shadow render object is then
+    // realized inside the same three-object budget as its colour pass. The old
+    // fixed 1.5 s rebake discovered 20+ cold shadow objects in one frame and
+    // caused a second ~110 ms hitch after the dungeon appeared.
+    if (revealedShadowCaster) ctx.env.bakeShadows();
+    const complete = deferredCoreCursor >= deferredCoreObjects.length;
+    if (complete && startupTiming.coreStreamReadyAt === 0) {
+      startupTiming.coreStreamReadyAt = performance.now();
+    }
+    return complete;
+  };
+  // CPU generation is complete and the coarse canvas is still visible. The
+  // progressive queues below now populate the one final cinematic context.
   reportForgeStage("ready", {
     token: ctx.state.token,
     seed: ctx.state.seed,
@@ -1379,9 +1908,59 @@ async function boot(): Promise<void> {
   // leaving the user staring at low LOD. The reveal queue submits one real
   // object per frame instead: pipelines are cached naturally and render-object
   // realization is amortised while the already-visible dungeon stays usable.
-  const beginProgressiveDecor = (): void => {
+  let decorRevealRequested = false;
+  let startupStreamingCancelled = false;
+  let compactedDecorPreviewPending = false;
+  let localDecorRevealNeeded = false;
+  let decorReadyAfterRender = false;
+  let decorLayersSubmitted = false;
+  const startProgressiveDecor = (): void => {
+    if (startupStreamingCancelled) return;
     decorRevealFrames = 0;
-    decorRevealPending = true;
+    startupTiming.localDecorStreamObjects = startupDecorRenderObjectCount();
+    localDecorRevealNeeded = startupTiming.localDecorStreamObjects > 0;
+    compactedDecorPreviewPending = gpuScene.hasCompactedDecor();
+    decorRevealPending = localDecorRevealNeeded && !compactedDecorPreviewPending;
+    if (gpuScene.setCompactedDecorVisible(true)) ctx.env.bakeShadows();
+    if (!localDecorRevealNeeded) {
+      // LOD0 has no local shells to submit. Clear suppression now so a later
+      // near-LOD promotion can reveal its detail normally, and finish only
+      // after this frame has really drawn the global decor.
+      cancelDecorReveal();
+      decorReadyAfterRender = true;
+    }
+  };
+  const beginProgressiveDecor = (): void => {
+    if (startupStreamingCancelled) return;
+    decorRevealRequested = true;
+    if (deferredCoreCursor >= deferredCoreObjects.length) startProgressiveDecor();
+  };
+
+  cancelStartupProgressiveReveal = () => {
+    if (startupStreamingCancelled) return;
+    startupStreamingCancelled = true;
+    // Environment objects persist across New Dungeon; world-slot objects are
+    // immediately repopulated by forge(), so only the persistent half needs
+    // restoring when this one-shot startup queue is abandoned.
+    for (const object of deferredEnvironmentObjects) {
+      if (object.parent) object.visible = true;
+    }
+    deferredCoreCursor = deferredCoreObjects.length;
+    decorRevealPending = false;
+    compactedDecorPreviewPending = false;
+    decorReadyAfterRender = false;
+    decorLayersSubmitted = false;
+    gpuScene.setCompactedDecorVisible(true);
+    cancelDecorReveal();
+    if (!decorReady) {
+      decorReady = true;
+      startupTiming.decorReadyAt ||= performance.now();
+    }
+  };
+
+  const streamTerminal = (name: string, terminal: readonly string[]): boolean => {
+    const object = scene.getObjectByName(name);
+    return Boolean(object && terminal.includes(String(object.userData.streamState)));
   };
 
   let revealed = true;
@@ -1391,7 +1970,20 @@ async function boot(): Promise<void> {
     const rawMs = (t - lastT) * 1000;
     const dt = Math.min(0.05, t - lastT);
     lastT = t;
+    if (rawMs > 100) {
+      startupTiming.maxFrameGapMs = Math.max(startupTiming.maxFrameGapMs, rawMs);
+      if (startupTiming.frameGaps.length < 32) startupTiming.frameGaps.push(Math.round(rawMs));
+    }
     adaptResolution(t, rawMs);
+    // runReforge() has already captured the last complete frame into the
+    // overlay. Do not submit half-refilled slot pools behind it: those draws
+    // used to realize transient render objects, causing several 100–240 ms
+    // blocks that the player could not even see. RAF remains alive so Pacer
+    // can yield assembly work; the transaction submits once when coherent.
+    if (ctx.state.reforging) {
+      controls.update();
+      return;
+    }
     if (rogueMode && rogue.state.active && player && !rogueTransition) {
       const { f: forward, s: strafe } = playerInputFromKeys(rogueKeys);
       const camYaw = Math.atan2(
@@ -1512,32 +2104,49 @@ async function boot(): Promise<void> {
     tickOcclusion(dt);
     for (const w of ctx.worlds) w.tick(t);
     ctx.actors.tick(t, dt);
-    destruction.tick(dt);
-    if (decorRevealPending) {
+    destruction?.tick(dt);
+    // The first cinematic submission already realizes the post graph and all
+    // critical subjects, so keep its scene delta empty. Once that context is
+    // hot, the measured core batch shortens complete-scene arrival without
+    // raising the first-post compilation peak.
+    const finalPostReady = !cinematicPostEnabled || startupTiming.postReadyAt !== 0;
+    const startupShadowReady = !cinematicPostEnabled || startupTiming.shadowReadyAt !== 0;
+    const coreBatch = finalPostReady && startupShadowReady
+      ? startupCoreBatch
+      : startupFirstPostBatch;
+    if (!ctx.state.reforging && !startupStreamingCancelled
+      && revealDeferredCore(coreBatch) && decorRevealRequested
+      && !decorRevealPending && !compactedDecorPreviewPending && !decorReady) {
+      startProgressiveDecor();
+    }
+    if (!ctx.state.reforging && !startupStreamingCancelled && compactedDecorPreviewPending) {
+      // Two global all-LOD decor objects get one isolated realization frame.
+      // The remaining queue starts next frame, so banners/red tiles cannot
+      // combine with a full detail batch into a new cold-render spike.
+      compactedDecorPreviewPending = false;
+      decorRevealPending = localDecorRevealNeeded;
+    } else if (!ctx.state.reforging && !startupStreamingCancelled && decorRevealPending) {
       // Most pooled details are zero-count at far LOD, but architectural bays
       // intentionally survive every distance tier. Reveal one concrete object
-      // per direct-rendered frame so their NodeMaterial setup cannot collapse
-      // the first visible frame or enter the expensive post graph cold.
+      // per final-context frame so their NodeMaterial setup cannot collapse
+      // the first visible frame into one monolithic compile.
       decorRevealFrames++;
-      const batch = 1;
-      if (revealDecor(batch)) {
+      if (revealDecor(startupDecorBatch)) {
         decorRevealPending = false;
-        decorReady = true;
-        startupTiming.decorReadyAt = performance.now();
-        slotDetail.clear(); // let distance LOD re-apply to the revealed layers
+        decorReadyAfterRender = true;
       }
     }
     // distance LOD: far islands drop their small-detail layers. TRUE 3D
     // distance — a camera hovering 200 units above a spire is far from every
     // island even when its xz distance is small
-    if (lodToken !== ctx.state.token) {
+    if (!ctx.state.reforging && lodToken !== ctx.state.token) {
       lodToken = ctx.state.token;
       slotDetail.clear();
-      destruction.reset();
+      destruction?.reset();
     }
     let nearestD = Infinity;
     let lodSlot = -1, lodWant: LodLevel = 0, lodPriority = Infinity;
-    for (const isl of ctx.walk.islands) {
+    for (const isl of ctx.state.reforging ? [] : ctx.walk.islands) {
       const half = (isl.l.N * CELL) / 2;
       const d2 = Math.hypot(
         camera.position.x - isl.ox,
@@ -1550,7 +2159,7 @@ async function boot(): Promise<void> {
       // before the nearest one is allowed to promote.
       const prev = slotDetail.get(isl.slot) ?? 0;
       let want: LodLevel;
-      if (destruction.enabled) want = 2;
+      if (destruction?.enabled) want = 2;
       else if (prev === 2) want = d2 < LOD_FAR ? 2 : 1;
       else if (prev === 1) want = d2 < LOD_NEAR ? 2 : d2 > LOD_MID_FAR ? 0 : 1;
       else want = d2 < LOD_MID_NEAR ? 1 : 0;
@@ -1583,7 +2192,7 @@ async function boot(): Promise<void> {
     btnRoute.classList.toggle("active", route.visible);
     btnNav.classList.toggle("active", navOverlay.visible);
     btnWalk.classList.toggle("active", walking);
-    btnBreak.classList.toggle("active", destruction.enabled);
+    btnBreak.classList.toggle("active", destruction?.enabled === true);
     btnPlay.classList.toggle("active", rogueMode);
     // distance calms the flicker: near 60 units torches dance at full
     // amplitude; past ~150 they settle to a steady candle glow (dozens of
@@ -1593,41 +2202,168 @@ async function boot(): Promise<void> {
     ctx.lights.tick(t, damp);
     ctx.env.tick(camera);
     gpuScene.tick(camera);
+    const pipelineTraceStart = pipelineTraceCalls.length;
+    const warmingStartupShadow = cinematicPostEnabled
+      && startupTiming.postReadyAt !== 0
+      && startupTiming.shadowReadyAt === 0;
+    let startupPostStage: "preview-prime" | "preview" | "cinematic" | "shadow" | "" = "";
     const r0 = performance.now();
-    if (cinematicPostEnabled) {
-      postProcessing.render();
-      if (startupTiming.postReadyAt === 0) startupTiming.postReadyAt = performance.now();
+    if (cinematicPostEnabled && cinematicPost) {
+      const needsSharedScenePrime = splitSharedScenePreview
+        && startupTiming.postPreviewPrimeReadyAt === 0;
+      const needsSharedScenePreview = startupTiming.postPreviewReadyAt === 0
+        && cinematicPost.preview !== cinematicPost.post;
+      const firstPost = !needsSharedScenePrime
+        && !needsSharedScenePreview
+        && startupTiming.postReadyAt === 0;
+      if (firstPost) {
+        startupTiming.postProgramsBefore = renderer.info.memory.programs;
+        startupTiming.postPipelinesBefore = (renderer as unknown as {
+          _pipelines?: { caches?: { size?: number } };
+        })._pipelines?.caches?.size ?? 0;
+      }
+      if (needsSharedScenePrime) {
+        startupPostStage = "preview-prime";
+        // First realize the authored subjects plus global masonry. The coarse
+        // canvas already contains a walkable floor silhouette, so the four
+        // low-surface buckets can safely enter the same ScenePass one frame
+        // later instead of adding their material graphs to this peak.
+        cinematicPost.preview.render();
+        startupTiming.postPreviewPrimeReadyAt = performance.now();
+        gpuScene.setLowSurfacesVisible(true);
+      } else if (needsSharedScenePreview) {
+        startupPostStage = "preview";
+        // `preview` reads the exact ScenePass texture used by the cinematic
+        // chain. Realize the critical scene materials and their shadow paths
+        // in that shared context first, then let bloom / atmosphere / godrays
+        // join on the following frame. This replaces one monolithic cold
+        // submission with two useful pictures; it does not render the scene
+        // into a throwaway context or compile any object twice.
+        cinematicPost.preview.render();
+        startupTiming.postPreviewReadyAt = performance.now();
+      } else {
+        if (firstPost) startupPostStage = "cinematic";
+        else if (warmingStartupShadow) startupPostStage = "shadow";
+        postProcessing.render();
+      }
+      if (firstPost) {
+        startupTiming.postReadyAt = performance.now();
+        startupTiming.postProgramsAfter = renderer.info.memory.programs;
+        startupTiming.postPipelinesAfter = (renderer as unknown as {
+          _pipelines?: { caches?: { size?: number } };
+        })._pipelines?.caches?.size ?? 0;
+      }
     } else {
       renderer.render(scene, camera);
     }
-    lodWarmRestore?.();
-    // Never move a cold concrete render object through the full bloom/AO
-    // graph. Direct WebGPU submission realizes it far more cheaply. Once the
-    // nearest requested tier has no staged object left, switch the already
-    // visible scene to the cinematic pipeline on the following frame.
-    if (!cinematicPostEnabled && cinematicPostRequested && decorReady && !lodWarmRestore) {
-      const dragonStream = scene.getObjectByName("streamed-colossal-perched-dragon-slot");
-      const dragonState = dragonStream?.userData.streamState as string | undefined;
-      const heroReady = !dragonStream || dragonState === "fading" || dragonState === "ready" || dragonState === "failed";
-      // Keep the responsive direct path alive until the rigged hero shell has
-      // decoded and solved IK. Otherwise a cold post frame can monopolise the
-      // main thread long enough to starve the loader callback itself.
-      if (heroReady || performance.now() >= cinematicPostDeadline) cinematicPostEnabled = true;
+    if (warmingStartupShadow) startupTiming.shadowReadyAt = performance.now();
+    // Split the new global low-masonry shadow realization from the already
+    // expensive first cinematic colour submission. The first complete frame
+    // still contains every wall; only its static shadow map arrives one frame
+    // later, then remains baked for the session.
+    if ((!cinematicPostEnabled || startupTiming.postReadyAt !== 0)
+      && gpuScene.enableLowMasonryShadows()) {
+      ctx.env.bakeShadows();
     }
+    lodWarmRestore?.();
     const rDur = performance.now() - r0;
-    if (rDur > 100) console.log(`[frame] render() blocked ${rDur.toFixed(0)}ms`);
+    if (startupPostStage) {
+      const pipelineCalls = pipelineTraceCalls.slice(pipelineTraceStart);
+      const renderObjectCounts = new Map<string, number>();
+      for (const call of pipelineCalls) {
+        if (call.kind !== "render") continue;
+        const label = call.label.split(" · ", 1)[0];
+        renderObjectCounts.set(label, (renderObjectCounts.get(label) ?? 0) + 1);
+      }
+      startupTiming.postStageEvents.push({
+        stage: startupPostStage,
+        duration: rDur,
+        programs: renderer.info.memory.programs,
+        pipelines: (renderer as unknown as {
+          _pipelines?: { caches?: { size?: number } };
+        })._pipelines?.caches?.size ?? 0,
+        renderCalls: pipelineCalls.filter((call) => call.kind === "render").length,
+        computeCalls: pipelineCalls.filter((call) => call.kind === "compute").length,
+        shaderCalls: pipelineCalls.filter((call) => call.kind === "shader").length,
+        pipelineMs: pipelineCalls.reduce((sum, call) => sum + call.duration, 0),
+        topObjects: [...renderObjectCounts]
+          .map(([label, count]) => ({ label, count }))
+          .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label)),
+      });
+    }
+    if (decorReadyAfterRender) {
+      decorReadyAfterRender = false;
+      decorLayersSubmitted = true;
+      startupTiming.decorLayersReadyAt ||= performance.now();
+    }
+    // "Complete" means the actual authored composition, not merely the local
+    // instance queues. Async hero/horizon children can join visible parents
+    // after startup inventory; wait until each is terminal, then mark ready
+    // only after this frame has submitted those newly attached renderables.
+    const landmarksReady = streamTerminal(
+      "streamed-colossal-perched-dragon-slot", ["ready", "failed"],
+    ) && streamTerminal(
+      "abyssal-cephalopod-oracle", ["ready", "fallback"],
+    ) && streamTerminal("horizon-ring", ["ready"]);
+    if (landmarksReady) startupTiming.landmarksReadyAt ||= performance.now();
+    if (!decorReady && decorLayersSubmitted && landmarksReady) {
+      decorReady = true;
+      startupTiming.decorReadyAt = performance.now();
+      resolveStartupSceneReady();
+      slotDetail.clear(); // let distance LOD re-apply to the revealed layers
+    }
+    if (rDur > 100) {
+      const pipelineCalls = pipelineTraceCalls.slice(pipelineTraceStart);
+      const renderObjectCounts = new Map<string, number>();
+      for (const call of pipelineCalls) {
+        if (call.kind !== "render") continue;
+        const label = call.label.split(" · ", 1)[0];
+        renderObjectCounts.set(label, (renderObjectCounts.get(label) ?? 0) + 1);
+      }
+      startupTiming.maxRenderBlockMs = Math.max(startupTiming.maxRenderBlockMs, rDur);
+      if (startupTiming.renderBlocks.length < 32) startupTiming.renderBlocks.push(Math.round(rDur));
+      if (startupTiming.renderBlockEvents.length < 32) {
+        startupTiming.renderBlockEvents.push({
+          at: performance.now(),
+          duration: Math.round(rDur),
+          programs: renderer.info.memory.programs,
+          pipelines: (renderer as unknown as {
+            _pipelines?: { caches?: { size?: number } };
+          })._pipelines?.caches?.size ?? 0,
+          decor: decorRevealStatus(),
+          lodWarm: lodWarmStatus(),
+          pipelineWork: {
+            renderCalls: pipelineCalls.filter((call) => call.kind === "render").length,
+            computeCalls: pipelineCalls.filter((call) => call.kind === "compute").length,
+            shaderCalls: pipelineCalls.filter((call) => call.kind === "shader").length,
+            totalMs: Math.round(pipelineCalls.reduce((sum, call) => sum + call.duration, 0)),
+            topObjects: [...renderObjectCounts]
+              .map(([label, count]) => ({ label, count }))
+              .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
+              .slice(0, 64),
+            slowest: [...pipelineCalls]
+              .sort((a, b) => b.duration - a.duration)
+              .slice(0, 5)
+              .map((call) => ({ ...call, duration: Math.round(call.duration) })),
+          },
+        });
+      }
+      console.log(`[frame] render() blocked ${rDur.toFixed(0)}ms`);
+    }
     if (!revealed && ctx.worlds.length > 0 && coreReady) {
       revealed = true;
       loadingEl.style.opacity = "0";
       loadingEl.style.visibility = "hidden";
     }
   });
-  // Give the browser a full second of responsive direct-rendered frames before
-  // the cold cinematic graph compiles. The visible dungeon remains on canvas
-  // during that one-time driver job instead of an opaque loading screen.
-  window.setTimeout(() => { cinematicPostRequested = true; }, 1100);
-  // Let the first frame and short CSS fade settle, then stream visual detail.
-  setTimeout(beginProgressiveDecor, 350);
+  // Arm detail immediately. This does not reveal anything early: the main loop
+  // still requires the final post, startup shadow and complete core queue.
+  // The former fixed 350 ms timer predated those explicit gates; once the
+  // pipeline became faster it idled after core completion and added 40–100 ms
+  // to the real complete-picture time. The already-settled post import makes
+  // the request synchronous here, while the same direct-render fallback is
+  // preserved if that optional module failed.
+  void loadCinematicPost().finally(beginProgressiveDecor);
 }
 
 void boot().catch((error) => {
@@ -1659,7 +2395,8 @@ void boot().catch((error) => {
   godrayStats,
   get editor() { return editor; },
   openEditor: (open?: boolean) => toggleEditor(open),
-  cameraShots,
+  get cameraShots() { return cameraShots; },
+  ensureCameraShots,
   stoneStyle,
   /** Landmark streaming, per request: requested / loaded / failed. */
   landmarkStreams: () => landmarkStreamStatus(),
@@ -1687,7 +2424,8 @@ void boot().catch((error) => {
     },
   },
   gpuScene,
-  destruction,
+  get destruction() { return destruction; },
+  ensureDestruction,
   dragonPlacement: {
     get controls() { return dragonTransform; },
     anchor: dragonTransformAnchor,

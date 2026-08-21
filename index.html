@@ -347,6 +347,61 @@
       background: linear-gradient(90deg, #76613e, #d3ae64); box-shadow: 0 0 8px rgba(211,174,100,.42);
       transition: transform .16s linear; will-change: transform;
     }
+
+    /* ---- compact/touch viewport dock ----
+       Keep world actions and view tools on separate rails. Their former
+       left/right desktop anchoring overlapped around tablet portrait widths. */
+    @media (max-width: 900px), (pointer: coarse) {
+      #hud { top: calc(12px + env(safe-area-inset-top)); left: 12px; }
+      #runHud {
+        top: calc(10px + env(safe-area-inset-top)); width: calc(100vw - 24px);
+        min-width: 0; box-sizing: border-box;
+      }
+      #modes {
+        left: 12px; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom));
+        justify-content: center; gap: 8px; flex-wrap: nowrap;
+      }
+      #modes button, #modes input { min-height: 44px; box-sizing: border-box; }
+      #btnNew { padding-block: 0; }
+      .seedbox input { width: 76px; }
+      .seedbox button { padding: 0 11px; }
+      #tools {
+        left: 12px; right: 12px; bottom: calc(68px + env(safe-area-inset-bottom));
+        display: grid; grid-template-columns: repeat(10, 44px); justify-content: center; gap: 6px;
+      }
+      #tools button { width: 44px; height: 44px; }
+      #tip {
+        left: 12px; right: 12px; bottom: calc(120px + env(safe-area-inset-bottom));
+        text-align: center;
+      }
+      #forgeStatus { left: 12px; bottom: calc(122px + env(safe-area-inset-bottom)); }
+      #dragonGizmoPanel, #shots { right: 12px; bottom: calc(122px + env(safe-area-inset-bottom)); }
+      #params {
+        top: calc(12px + env(safe-area-inset-top)); right: 12px;
+        max-height: calc(100vh - 162px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+      }
+      #editor {
+        top: calc(12px + env(safe-area-inset-top)); left: 12px;
+        bottom: calc(122px + env(safe-area-inset-bottom));
+      }
+      #params .phead button, #editor .editor-close { min-width: 44px; min-height: 44px; }
+    }
+    @media (max-width: 560px) {
+      #tools {
+        bottom: calc(68px + env(safe-area-inset-bottom));
+        grid-template-columns: repeat(5, 44px);
+      }
+      #tip { bottom: calc(170px + env(safe-area-inset-bottom)); }
+      #forgeStatus { bottom: calc(172px + env(safe-area-inset-bottom)); }
+      #dragonGizmoPanel, #shots { bottom: calc(172px + env(safe-area-inset-bottom)); }
+      #editor { bottom: calc(172px + env(safe-area-inset-bottom)); width: calc(100vw - 26px); }
+      #params {
+        max-height: calc(100vh - 212px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+      }
+      #btnNew { font-size: 12.5px; padding-inline: 11px; }
+      .seedbox input { width: 62px; padding-inline: 8px; }
+      .seedbox button { padding-inline: 9px; }
+    }
     @keyframes breathe { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
   </style>
 </head>

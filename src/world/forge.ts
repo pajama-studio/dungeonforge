@@ -14,6 +14,11 @@ import { TH, CELL, DISTRICT_COURT_GAP, DISTRICT_GAP, ISLAND_GAP, PR_BASE, PR_LAR
 import type { Ctx } from "./context";
 import { gateWorld, verticalStairDock, groundStairDock, ensureGate, fuseDistrictBoundary, Pacer } from "./helpers";
 import { generateSpatialPlan, planVerticalAnchors, planGroundEntrance } from "../markov/spatial-plan";
+import {
+  establishingDistanceScale,
+  establishingLandmarkWeight,
+  establishingVerticalFov,
+} from "./framing";
 
 export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   if (ctx.state.endless) return; // roaming owns the world in endless mode
@@ -147,7 +152,13 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   // sub-step pacing: EVERY costly unit (one island build, one gate repair,
   // one bridge, one pier set, one shadow bake) is followed by a budget check,
   // so no frame ever carries more than ~one unit past the 6ms budget
-  const pacer = new Pacer(6);
+  // Default cold-start assembly is dominated by scheduler turns, not CPU:
+  // each small island used to cross a 6 ms aggregate budget and wait another
+  // RAF, leaving several milliseconds idle in a 60 Hz frame. Cold assembly
+  // keeps enough room for the coarse scene to animate; a re-forge is already
+  // covered by the captured previous frame, so it can safely combine more
+  // small island/link steps and shorten that frozen transaction.
+  const pacer = new Pacer(ctx.state.reforging ? 24 : 10);
   for (let i = 0; i < layoutPromises.length; i++) {
     const l = i === 0 ? firstLayout : await layoutPromises[i];
     if (tok !== state.token) return; // superseded while generating
@@ -236,7 +247,10 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
     const isl = ctx.walk.addIsland(l, ox, oy, oz, i);
     minX = Math.min(minX, ox - half); maxX = Math.max(maxX, ox + half);
     minZ = Math.min(minZ, oz - half); maxZ = Math.max(maxZ, oz + half);
-    await pacer.tick(); // the island build is the heaviest single step
+    // The first authored block is the coarse first paint. Yield regardless of
+    // accumulated budget so main.ts can present it immediately; only later
+    // blocks share the wider 14 ms assembly window.
+    await pacer.tick(i === 0);
     if (tok !== state.token) return;
     ctx.reportForgeStage?.("assembling", {
       token: tok, seed, mode: "chain", detail: "placing blocks, links and supports", completed: i + 1, total: nIsl,
@@ -299,7 +313,7 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
     // shadow bakes are a full scene render each — every 8th island is plenty
     // (pipelines are warm after the first session compile). The bake lands in
     // the NEXT rendered frame, so hand it a frame with an empty CPU budget.
-    if ((i & 7) === 7) {
+    if (!state.reforging && (i & 7) === 7) {
       ctx.env.bakeShadows();
       await pacer.tick();
       if (tok !== state.token) return;
@@ -359,28 +373,39 @@ export async function forge(ctx: Ctx, newSeed: number): Promise<void> {
   ctx.camera.updateProjectionMatrix();
   const extent = half + top * 0.5; // reframe on height changes too (tall spires)
   if (Math.abs(state.lastExtent - extent) > 1) {
-    ctx.controls.target.set(centerX, 3 * TH + top * 0.13, centerZ);
+    const dungeonTarget = new Vector3(centerX, 3 * TH + top * 0.13, centerZ);
+    ctx.controls.target.copy(dungeonTarget);
     const cameraCandidate = new Vector3(
       centerX + half * 0.64,
       Math.max(38, half * 0.34 + top * 0.27),
       centerZ + half * 1.08,
     );
-    // The art-directed dragon is intentionally colossal and can overlap the
-    // maze. Keep the establishing camera low, but never spawn it inside the
-    // streamed wing/body volume. This is a one-time framing correction only;
-    // OrbitControls remains unrestricted afterward.
+    // The art-directed dragon is intentionally colossal. Merely pushing the
+    // camera out of its volume while continuing to aim at the maze centre put
+    // the dragon beyond the left edge and the titan skull beyond the bottom
+    // edge: contact was correct in 3D but invisible in the establishing shot.
+    // Compose the maze and the perch as two subjects instead. The offsets are
+    // expressed from the generated support, so custom landmark placement and
+    // differently sized chains retain the same readable dragon/skull overlap.
     const dragonSupport = ctx.scene.getObjectByName("streamed-colossal-perched-dragon-slot");
     if (dragonSupport) {
       const dragonCenter = dragonSupport.getWorldPosition(new Vector3());
-      const dx = cameraCandidate.x - dragonCenter.x;
-      const dz = cameraCandidate.z - dragonCenter.z;
-      const flatDistance = Math.hypot(dx, dz);
-      const exclusion = Math.max(340, half * 2.65);
-      if (flatDistance < exclusion) {
-        const inv = exclusion / Math.max(0.001, flatDistance);
-        cameraCandidate.x = dragonCenter.x + dx * inv;
-        cameraCandidate.z = dragonCenter.z + dz * inv;
-      }
+      const landmarkTarget = dragonCenter.clone();
+      landmarkTarget.y -= top * 0.1;
+      landmarkTarget.z += half * 0.18;
+      const aspect = ctx.camera.aspect;
+      ctx.camera.fov = establishingVerticalFov(aspect);
+      ctx.controls.target.copy(dungeonTarget).lerp(landmarkTarget, establishingLandmarkWeight(aspect));
+      const framingDistance = Math.max(780, half * 5.5, top * 3.6)
+        * establishingDistanceScale(aspect);
+      const viewOffset = new Vector3(0.608, 0.228, 0.76)
+        .normalize()
+        .multiplyScalar(framingDistance);
+      cameraCandidate.copy(ctx.controls.target).add(viewOffset);
+      // The combined dragon/skull silhouette reaches much farther than the
+      // playable chain. Keep its far corners out of the far-plane slice.
+      ctx.camera.far = Math.max(ctx.camera.far, framingDistance * 1.85);
+      ctx.camera.updateProjectionMatrix();
     }
     ctx.camera.position.copy(cameraCandidate);
     ctx.controls.maxDistance = (half + top * 0.5) * 5;

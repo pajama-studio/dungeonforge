@@ -529,7 +529,7 @@ export function makeGeometries(): GeoKit {
     return merged;
   })();
 
-  // creeper patch (爬山虎): a wall-hugging carpet of small leaves that climbs
+  // creeper patch: a wall-hugging carpet of small leaves that climbs
   // up from the floor — dense at the base, thinning and narrowing upward,
   // with a few runner leaves straggling past the fringe
   const creeperGeo = (() => {

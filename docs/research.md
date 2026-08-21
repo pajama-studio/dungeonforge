@@ -1,133 +1,173 @@
-# 研究:3D 石造迷宫要塞型 Dungeon 的程序化生成
+# Research: procedurally generating 3D stone-labyrinth fortress dungeons
 
-> 2026-08-06 · 四路并行调研的综合(经典算法 / 3D 竖直性 / 业界管线 / 渲染技术)。
-> 目标画面:夜景等距视角的多层石迷宫要塞 —— 厚墙迷宫、可走墙顶、大阶梯、
-> 后方高台神殿、圆形法阵广场、高塔、火把 + 蓝旗、深渊雾气、红光密室。
+> 2026-08-06 · A synthesis of four parallel investigations (classic algorithms /
+> 3D verticality / industry pipelines / rendering technique).
+> Target image: a night isometric multi-level stone labyrinth fortress — thick-walled
+> maze, walkable wall tops, grand staircases, a raised temple at the back,
+> a circular sigil plaza, towers, torches + blue banners, abyss fog, a red-lit chamber.
 
-## 一、结论先行
+## 1. Conclusion first
 
-这类 dungeon 在业界**没有单一算法**,所有成熟系统都是**分层 pipeline(先抽象后细化)**:
+There is **no single algorithm** for this kind of dungeon in the industry; every
+mature system is a **layered pipeline (abstract first, refine later)**:
 
 ```
-宏观拓扑(图)→ 高度分层(tier 场)→ 平面布局(迷宫/房间)→
-连通性保证(楼梯/桥)→ 模块化拼装(marching-squares → 3D kit)→
-装饰规则(火把/旗帜/变体替换)→ 渲染(instancing + bloom + 雾)
+macro topology (graph) → height layering (tier field) → floor plan (maze/rooms) →
+connectivity guarantee (stairs/bridges) → modular assembly (marching-squares → 3D kit) →
+dressing rules (torches/banners/variant swaps) → rendering (instancing + bloom + fog)
 ```
 
-针对这张图,证据最强的配方是:
+For this particular image, the best-evidenced recipe is:
 
-- **平面**:Nystrom 式 rooms-and-mazes(growing-tree 迷宫 + braiding 环路 + 厚墙 tile 网格)——
-  密集迷宫感的精确匹配;Diablo 式房间散布(TinyKeep)产出的是稀疏房间群,不是这种。
-- **竖直**:高度场量化成离散 tier + 「相邻差 ≤1」平滑规则(SC2 悬崖 / Tivolt terracing),
-  分层 connected-component 图 + 生成树选边放楼梯,BFS 验收(标准配方)。
-- **地标**:图层面先定(Unexplored 原则)—— 神殿(weenie)、法阵、高塔、桥都是先在
-  抽象图上决定位置与连接关系,再落到几何;**先挖峡谷再找桥位是反模式**。
-- **拼装**:tile 网格 → 邻域 case-table(Diablo 1 的 marching-squares 思路)选 3D 模块,
-  instancing 渲染;Bad North 的「tile 自带可行走性元数据」是楼梯正确性的最强保证。
-- **渲染**:three.js WebGPU + TSL —— MRT emissive bloom、`scene.fogNode` 高度雾、
-  billboarding TSL 火焰、AgX tone mapping、per-instance AO 染色。
+- **Floor plan**: Nystrom-style rooms-and-mazes (growing-tree maze + braiding loops +
+  thick-wall tile grid) — an exact match for the dense-maze feel; Diablo-style room
+  scattering (TinyKeep) produces sparse room clusters, not this.
+- **Vertical**: quantize the height field into discrete tiers + a "neighbours differ by ≤1"
+  smoothing rule (SC2 cliffs / Tivolt terracing), a per-tier connected-component graph +
+  spanning-tree edge selection for stair placement, BFS acceptance (the standard recipe).
+- **Landmarks**: fixed at the graph level first (the Unexplored principle) — temple
+  (weenie), sigils, tower and bridge all have their position and connectivity decided on
+  the abstract graph before they become geometry; **carving the ravine first and then
+  hunting for a bridge site is an anti-pattern**.
+- **Assembly**: tile grid → neighbourhood case-table (Diablo 1's marching-squares idea)
+  picks a 3D module, rendered with instancing; Bad North's "tiles carry their own
+  walkability metadata" is the strongest guarantee of stair correctness.
+- **Rendering**: three.js WebGPU + TSL — MRT emissive bloom, `scene.fogNode` height fog,
+  billboarding TSL flames, AgX tone mapping, per-instance AO tinting.
 
-## 二、算法家族对比(何时用什么)
+## 2. Algorithm families compared (when to use what)
 
-| 家族 | 产出形态 | 连通性 | 与本图匹配度 | 角色 |
+| Family | Output shape | Connectivity | Match to this image | Role |
 |---|---|---|---|---|
-| 迷宫(growing-tree)+ braid + 房间 | 密走廊、厚墙 | 构造保证 | **精确匹配** | 平面主生成器 |
-| 高度场量化 + 楼梯修复 | 台地、悬崖、坡道 | BFS 修复保证 | **精确匹配**(竖直) | 竖直主生成器 |
-| TinyKeep 散布+Delaunay+MST | 有机房间群+宽走廊 | MST 保证 | 低(太稀疏) | 不用;但其「图作为一等公民」思想保留 |
-| BSP | 直角楼层平面 | 树保证 | 中 | 可选做特殊房间分区 |
-| 元胞自动机 | 有机洞穴 | 需修复 | 低 | 只做「坍塌区」点缀 |
-| Cyclic generation(Dormans) | 有设计感的环路+锁钥 | 构造保证 | 拓扑层适用 | 简化版:直接生成 1 大环+嵌套小环 |
-| WFC / Model Synthesis | 局部一致的 tile | **不保证** | 拼装层适用 | 只做 detailer,不做 designer(Caves of Qud 教训) |
+| maze (growing-tree) + braid + rooms | dense corridors, thick walls | guaranteed by construction | **exact match** | primary floor-plan generator |
+| height-field quantization + stair repair | terraces, cliffs, ramps | guaranteed by BFS repair | **exact match** (vertical) | primary vertical generator |
+| TinyKeep scatter + Delaunay + MST | organic room clusters + wide corridors | guaranteed by MST | low (too sparse) | not used; but keep its "graph as a first-class citizen" idea |
+| BSP | rectilinear floor plans | guaranteed by the tree | medium | optional, for partitioning special rooms |
+| cellular automata | organic caves | needs repair | low | only as garnish for "collapsed areas" |
+| cyclic generation (Dormans) | designed-feeling loops + lock-and-key | guaranteed by construction | applies at the topology layer | simplified: directly generate 1 large loop + nested small loops |
+| WFC / model synthesis | locally consistent tiles | **not guaranteed** | applies at the assembly layer | detailer only, never designer (the Caves of Qud lesson) |
 
-关键参考:
-- 迷宫 braiding:死胡同按比例打通(p≈0.3–0.6),是「烦人迷宫 ↔ 有墙竞技场」的调节旋钮
+Key references:
+- maze braiding: knock dead ends open at a set proportion (p≈0.3–0.6) — the knob between
+  "annoying maze" and "walled arena"
 - Bob Nystrom [Rooms and Mazes](http://journal.stuffwithstuff.com/2014/12/21/rooms-and-mazes/):
-  先放房间→迷宫填缝→区域间开门→剪死胡同,正是「石造要塞房间嵌在密迷宫里」
-- Boris the Brave 的 [Diablo 1](https://www.boristhebrave.com/2019/07/14/dungeon-generation-in-diablo-1/) /
+  place rooms → fill the gaps with maze → open doors between regions → prune dead ends,
+  which is exactly "stone-fortress rooms embedded in a dense maze"
+- Boris the Brave's [Diablo 1](https://www.boristhebrave.com/2019/07/14/dungeon-generation-in-diablo-1/) /
   [Unexplored](https://www.boristhebrave.com/2021/04/10/dungeon-generation-in-unexplored/) /
-  [Gungeon](https://www.boristhebrave.com/2019/07/28/dungeon-generation-in-enter-the-gungeon/) 三篇是必读
-- 竖直性圣经:Bad North(EPC2018 talk)—— 每个 tile 携带「可从哪进哪出」元数据,
-  WFC collapse 过程中始终保持已观察区域可导航;楼梯只是「低边可走↔高边可走」的普通 tile
-- 楼梯修复标准配方:flood-fill 分 tier 组件 → 组件图 → 生成树(+环边)→ 沿 tier 差=1 的
-  边界放楼梯(**两端都要验证落在可走格上**)→ 从入口 BFS 全图验收,失败重掷派生 seed
+  [Gungeon](https://www.boristhebrave.com/2019/07/28/dungeon-generation-in-enter-the-gungeon/)
+  are three required-reading articles
+- The verticality bible: Bad North (EPC2018 talk) — every tile carries "which sides you can
+  enter and leave from" metadata, and the WFC collapse keeps the already-observed region
+  navigable throughout; a staircase is just an ordinary tile whose low edge and high edge
+  are both walkable
+- Standard stair-repair recipe: flood-fill into tier components → component graph →
+  spanning tree (+ loop edges) → place stairs along boundaries where the tier difference
+  is 1 (**both ends must be verified to land on walkable cells**) → BFS from the entrance
+  to accept the whole map, re-roll a derived seed on failure
 
-## 三、业界管线的共同收敛点
+## 3. Where industry pipelines converge
 
-1. **先抽象后艺术**(Diablo 的 predungeon → tile 选择两段式;Gungeon 的 flow 图 → 房间模板)
-2. **随机组合、手工授权件**(D3/D4 大势:tile 是手作的,算法只负责摆放;装饰是可切换的
-   数据层 —— theme = data, geometry = shared)
-3. **变体替换防平铺感**(Diablo 1:同款变体禁止相邻;LDtk auto-layer 规则式贴花)
-4. **火把 = 沿墙走格 + 最小间距(Chebyshev ≥4~5)+ 跳过门口**;gpulab dungeon 已实现过
-   空间哈希版本(`src/gpulab/dungeon/generate.ts`),直接复用思路
-5. **Weenie 原则**(迪士尼):一座比一切都高、灯光独特的地标统摄构图 —— 即本图的神殿;
-   生成时最特殊节点最先定,装饰密度向它爬升
-6. 距离场(BFS from entrance)同时服务:难度曲线、语义房间(入口/宝藏/boss)、装饰密度
+1. **Abstract first, art later** (Diablo's two-stage predungeon → tile selection;
+   Gungeon's flow graph → room templates)
+2. **Random composition, hand-authored pieces** (the D3/D4 trend: tiles are hand-made and
+   the algorithm only places them; dressing is a swappable data layer —
+   theme = data, geometry = shared)
+3. **Variant swaps to break up tiling** (Diablo 1: identical variants may not be adjacent;
+   LDtk auto-layer rule-based decals)
+4. **Torches = a walk along wall cells + a minimum spacing (Chebyshev ≥4–5) + skip
+   doorways**; the predecessor gpulab dungeon had already implemented a spatial-hash
+   version of this (`src/gpulab/dungeon/generate.ts`, in that project, not this repo), so
+   the approach carries over directly — Dungeonforge's equivalent is the min-Chebyshev
+   bucket walk in `src/gen/dungeon.ts`
+5. **The weenie principle** (Disney): one landmark taller than everything else and lit
+   distinctively anchors the composition — here that is the temple; the most special node
+   is fixed first during generation, and dressing density climbs toward it
+6. A distance field (BFS from the entrance) serves several purposes at once: the difficulty
+   curve, semantic rooms (entrance/treasure/boss) and dressing density
 
-## 四、渲染配方(three.js 0.185 WebGPU + TSL)
+## 4. Rendering recipe (three.js 0.185 WebGPU + TSL)
 
-- **Bloom**:MRT emissive bloom(`scenePass.setMRT({output, emissive})` → `bloom(emissiveTex)`)——
-  只有 emissive 通道进 bloom,火焰/法阵/门户发光,沙岩石墙不发光,无需调阈值
-- **雾**:`scene.fogNode` = 高度雾 + `triNoise3D` 扰动(官方 `webgpu_custom_fog` 例子就是
-  「低洼积雾」),零 draw call 覆盖全场景;峡谷再叠 2–3 层滚动噪声雾面片 + 少量 billboard 雾团
-- **火焰**:官方 `webgpu_tsl_vfx_flames` 配方 —— sprite + `billboarding()` + cellular 噪声上滚
-  + 梯度 ramp(夜火把橙:`#1a0500→#7a2000→#ff7b24→#ffd9a0→#fff6e0`),颜色走 emissiveNode
-- **灯光预算**:1 盏投影方向光(冷月光)+ 火把用 nearest-N 真实 PointLight 池(6–12 盏,
-  不投影)+ 其余纯 emissive;进阶可用 `ClusteredLightsNode`(Forward+,上千盏)
-- **闪烁**:2–3 个互质频率正弦 + 噪声,per-torch 相位 = `hash(instanceIndex)`
-- **Instancing**:同一几何 → InstancedMesh;多几何共材质(整套石件 kit)→ BatchedMesh 一次
-  draw;per-instance 色用 `setColorAt`(WebGPU 下可用)或 TSL `hash(instanceIndex)`
-- **AO**:方块场景最优解是**构建期烘焙 per-instance AO 染色**(Minecraft 式邻域遮蔽分数
-  乘进 colorNode)—— 比 GTAO 稳定且更「手绘」;GTAO+TRAA 可后期再加
-- **调色**:AgX tone mapping(蓝色高光不偏紫,优于 ACES)+ 夜景曝光 ~0.5;emissive 强度
-  10×+ 当作光照数据;暖近冷远双色雾;vignette
-- **旗帜**:平面 20×30 段,TSL positionNode 双正弦位移,`uv.y` 权重钉住挂杆边
-- **法阵**:极坐标 SDF(同心环 smoothstep + 角向分段 hash 断环 + 倒数辉光),emissiveNode 蓝/金
+- **Bloom**: MRT emissive bloom (`scenePass.setMRT({output, emissive})` →
+  `bloom(emissiveTex)`) — only the emissive channel enters bloom, so flames/sigils/portals
+  glow while sandstone walls do not, and no threshold needs tuning
+- **Fog**: `scene.fogNode` = height fog + `triNoise3D` perturbation (the official
+  `webgpu_custom_fog` example is exactly "fog pooling in low ground"), covering the whole
+  scene at zero draw calls; the ravine adds 2–3 layers of scrolling noise fog planes +
+  a few billboard fog puffs
+- **Flames**: the official `webgpu_tsl_vfx_flames` recipe — sprite + `billboarding()` +
+  cellular noise scrolling upward + a gradient ramp (night-torch orange:
+  `#1a0500→#7a2000→#ff7b24→#ffd9a0→#fff6e0`), colour driven through emissiveNode
+- **Light budget**: one shadow-casting directional light (cold moonlight) + a nearest-N
+  pool of real PointLights for the torches (6–12, no shadows) + everything else pure
+  emissive; `ClusteredLightsNode` (Forward+, thousands of lights) is the step up
+- **Flicker**: 2–3 sines at coprime frequencies + noise, per-torch phase =
+  `hash(instanceIndex)`
+- **Instancing**: same geometry → InstancedMesh; multiple geometries sharing a material
+  (the whole stone kit) → BatchedMesh in one draw; per-instance colour via `setColorAt`
+  (available under WebGPU) or TSL `hash(instanceIndex)`
+- **AO**: for a blocky scene the best answer is **baking per-instance AO tint at build
+  time** (a Minecraft-style neighbourhood occlusion score multiplied into colorNode) —
+  more stable than GTAO and more "hand-painted"; GTAO+TRAA can be added later
+- **Grading**: AgX tone mapping (blue highlights do not skew purple, better than ACES) +
+  night exposure ~0.5; emissive intensity 10×+ treated as lighting data; two-tone fog,
+  warm near and cool far; vignette
+- **Banners**: a plane with 20×30 segments, TSL positionNode double-sine displacement,
+  `uv.y` weighting pinning the pole edge
+- **Sigils**: polar-coordinate SDF (concentric rings via smoothstep + angular segment hash
+  to break the rings + reciprocal glow), emissiveNode in blue/gold
 
-## 五、值得研究的开源参照
+## 5. Open-source references worth studying
 
-- [majidmanzarpour/threejs-procedural-dungeon](https://github.com/majidmanzarpour/threejs-procedural-dungeon) — 最接近的现成参照(确定性 seed、五主题、instancing、bloom+tilt-shift)
-- [felixturner hex-map-wfc](https://felixturner.github.io/hex-map-wfc/article/) — three.js WFC 生产级写作:BatchedMesh 2 draw call、WebGPU/TSL、分块求解
-- [marian42 infinite WFC city](https://marian42.de/article/wfc/) — 3D WFC 垂直 connector 机制 + 分块无限生成
-- [Vazgriz 3D dungeon](https://vazgriz.com/119/procedurally-generated-dungeons/) — TinyKeep 3D 化 + A* 楼梯
-- [BorisTheBrave/DeBroglie](https://github.com/BorisTheBrave/DeBroglie) — 带全局路径约束的 WFC(C#,思路可移植)
-- 本 repo 内:`src/gpulab/dungeon/generate.ts` — 已有的确定性平面 dungeon 生成器(RNG/火把间距/BFS 距离场可复用)
+- [majidmanzarpour/threejs-procedural-dungeon](https://github.com/majidmanzarpour/threejs-procedural-dungeon) — the closest ready-made reference (deterministic seed, five themes, instancing, bloom+tilt-shift)
+- [felixturner hex-map-wfc](https://felixturner.github.io/hex-map-wfc/article/) — production-grade three.js WFC writeup: BatchedMesh 2 draw calls, WebGPU/TSL, chunked solving
+- [marian42 infinite WFC city](https://marian42.de/article/wfc/) — 3D WFC vertical connector mechanism + chunked infinite generation
+- [Vazgriz 3D dungeon](https://vazgriz.com/119/procedurally-generated-dungeons/) — TinyKeep made 3D + A* stairs
+- [BorisTheBrave/DeBroglie](https://github.com/BorisTheBrave/DeBroglie) — WFC with global path constraints (C#, the approach ports)
+- Prior work in the predecessor gpulab project: `src/gpulab/dungeon/generate.ts` — an existing deterministic flat dungeon generator (its RNG, torch spacing and BFS distance field are all reusable). That file is not part of this repo; Dungeonforge's generator is `src/gen/dungeon.ts`.
 
-### `threejs-procedural-dungeon` 吸收边界（2026-08-07 核验）
+### `threejs-procedural-dungeon` absorption boundary (verified 2026-08-07)
 
-这个参照的主线是 `scatter → separate → Delaunay → MST + loops → room semantics →
-tile carve → BFS validation → decoration`，许可证为 MIT。它适合作为**宏观拓扑与叙事标注参考**，
-不作为当前渲染架构或多层空间实现的底座。
+The through-line of this reference is `scatter → separate → Delaunay → MST + loops →
+room semantics → tile carve → BFS validation → decoration`, under an MIT licence. It is
+suited to being a **reference for macro topology and narrative annotation**, not a base
+for the current rendering architecture or the multi-level spatial implementation.
 
-| 参考点 | 在 Dungeonforge 中的用法 | 决策 |
+| Reference point | Use in Dungeonforge | Decision |
 |---|---|---|
-| MST 保底连通、再按概率加回短环 | 用于 block/island 级候选连接图；Markov 仍只负责 block 内局部立体细化 | 吸收思想 |
-| 从入口 BFS 得到深度、critical path 与房间角色 | 驱动敌人强度、宝箱、神殿/精英房，以及传送门前奖励；上下层连接也进入同一语义图 | 优先移植 |
-| `doorway`、`nearDoor`、`interior`、占用 mask 后再散布装饰 | 统一约束柱子、宝箱、敌人和破坏后通路，避免把被柱体占据的格子判成可走 | 优先移植 |
-| 生成阶段/graph/difficulty overlay 与实时统计 | 给多层连接、路线回头和 GPU Scene cull 做可视化验收 | 吸收思想 |
-| 单层二维 tile、L 形走廊 | 无法表达当前楼层随机衔接、桥、螺旋梯和 block 内立体结构 | 不移植 |
-| WebGL 后处理、每类一个普通 `InstancedMesh` | 没有 HZB、cluster culling、GPU compaction 或 indirect draw，不能解决大量遮挡砖块 | 不移植 |
-| 单文件中耦合生成、渲染与 UI | 与当前 pure-data worker + slot pool 架构冲突 | 不移植 |
+| MST guarantees connectivity, then short loops are added back by probability | used for the block/island-level candidate connection graph; Markov still only handles local 3D refinement inside a block | absorb the idea |
+| BFS from the entrance yields depth, the critical path and room roles | drives enemy strength, chests, temple/elite rooms and the reward before a portal; inter-level connections enter the same semantic graph | port first |
+| `doorway`, `nearDoor`, `interior`, scattering decoration only after an occupancy mask | unifies the constraints on pillars, chests, enemies and post-destruction routes, so a cell occupied by a pillar is never judged walkable | port first |
+| generation-stage / graph / difficulty overlays with live statistics | gives multi-level connections, route backtracking and GPU Scene culling a visual acceptance check | absorb the idea |
+| single-level 2D tiles, L-shaped corridors | cannot express the current random floor-to-floor joins, bridges, spiral stairs or the 3D structure inside a block | do not port |
+| WebGL post-processing, one plain `InstancedMesh` per category | no HZB, cluster culling, GPU compaction or indirect draw, so it cannot solve heavy brick occlusion | do not port |
+| generation, rendering and UI coupled in a single file | conflicts with the current pure-data worker + slot pool architecture | do not port |
 
-若以后直接改写其具体实现而非只采用算法思想，需要在派生文件中保留 MIT 版权归属；
-当前阶段只记录设计模式，不复制源代码。
+If we later adapt its concrete implementation rather than only adopting the algorithmic
+ideas, derived files must keep the MIT copyright attribution; at this stage we only record
+the design patterns and copy no source code.
 
-## 六、针对本图的推荐架构(dungeonforge v1)
+## 6. Recommended architecture for this image (dungeonforge v1)
 
 ```
 seed
- └─ 1. 宏观图:入口(南)→ 神殿(北,最高)critical path + 1-2 环;
-        地标节点:神殿、法阵×2(蓝/金)、高塔、红光密室、峡谷+桥
- └─ 2. tier 场:fbm 噪声量化 0..4 + 神殿方向 mound(+2..3,ziggurat 台阶式)
-        + 「相邻 maze cell 差 ≤1」钳制(BFS 携带式赋值)
- └─ 3. 平面:growing-tree 迷宫(newest/random ≈ 0.7/0.3)铺满 → braid p≈0.4
-        → 地标区域清墙(法阵圆、神殿平台、红房)→ 峡谷按图挖 + 桥先定后挖
- └─ 4. 连通:楼梯 = tier 差 1 的开口格(两端验证);flood-fill 全图 BFS 验收,
-        断连则在组件边界开楼梯修复;失败 re-roll 派生 seed(≤5 次)
- └─ 5. 拼装:邻域 case-table → 石块砌层(墙体/垛口/楼梯/塔/ziggurat)
-        → 变体替换(色相/亮度抖动,禁相邻同款)→ 火把/旗帜/braziers 规则布置
- └─ 6. 渲染:BatchedMesh/InstancedMesh + baked per-instance AO
-        + MRT emissive bloom + fogNode 高度雾 + TSL 火焰/旗帜/法阵 + AgX
+ └─ 1. macro graph: entrance (south) → temple (north, highest) critical path + 1-2 loops;
+        landmark nodes: temple, sigils ×2 (blue/gold), tower, red-lit chamber, ravine + bridge
+ └─ 2. tier field: fbm noise quantized 0..4 + a mound toward the temple (+2..3, ziggurat stepping)
+        + a "neighbouring maze cells differ by ≤1" clamp (assigned as the BFS carries it)
+ └─ 3. floor plan: growing-tree maze (newest/random ≈ 0.7/0.3) filling everything → braid p≈0.4
+        → clear walls in landmark areas (sigil circle, temple platform, red room) → carve the
+        ravine per the graph + fix the bridge before carving
+ └─ 4. connectivity: stairs = opening cells where the tier difference is 1 (verify both ends);
+        flood-fill BFS acceptance over the whole map, and where disconnected open stairs on the
+        component boundary to repair; on failure re-roll a derived seed (≤5 times)
+ └─ 5. assembly: neighbourhood case-table → stone courses (walls/crenellations/stairs/towers/ziggurat)
+        → variant swaps (hue/brightness jitter, no identical neighbours) → rule-based placement
+        of torches/banners/braziers
+ └─ 6. rendering: BatchedMesh/InstancedMesh + baked per-instance AO
+        + MRT emissive bloom + fogNode height fog + TSL flames/banners/sigils + AgX
 ```
 
-纯数据生成器(零 THREE 依赖)+ 确定性 seed + vitest 不变量测试(连通性/楼梯合法/checksum),
-与 repo 现有 gpulab dungeon 的工程风格一致。
+A pure-data generator (zero THREE dependencies) + a deterministic seed + vitest invariant
+tests (connectivity / stair legality / checksum), matching the engineering style of the
+predecessor gpulab dungeon.

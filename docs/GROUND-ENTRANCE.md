@@ -1,8 +1,8 @@
 # The ground entrance — design
 
 **Status:** built through step 5 (§10), and unseen — the suite is green and the
-bundle builds, but nobody has looked at it. Implements the P0 TODO item
-*"将地面定义为真正的游戏起点"*.
+bundle builds, but nobody has looked at it. It exists to make the ground the
+real starting point of the game rather than scenery.
 
 Before this, the world had no way in. Blocks floated, the abyss floor was
 scenery, and `Layout.entrance` was a cell nothing arrived at. This describes the
@@ -214,8 +214,9 @@ can be under a ground block. The check would never fire once.
 
 That probe did turn up a real number for a different item. **239 of the (mi, mj)
 columns have no `mk = 0` cell at all** — blocks whose lowest member floats with
-nothing beneath it. That is the TODO's *"为没有下层投影承重的最低 maze block 求解
-3–5 个基岩支点"*, now with a magnitude attached. The entrance tower is one such
+nothing beneath it. That is the open bedrock-footing problem — solve 3–5
+footings for the lowest maze block that has no lower-level footprint bearing it
+— now with a magnitude attached. The entrance tower is one such
 pier, and the most legible one: a load path the player walks up. The pier solver
 should treat it as fixed and solve the remaining ones around it.
 
@@ -331,8 +332,8 @@ different `mk === 0` cell and retry rather than failing the world.
 Among cells with `mk === 0`, ranked:
 
 1. **clear descent** — hard filter (§5)
-2. **nearest the monument** — the TODO's requirement, and the reason the first
-   frame reads as an establishing shot
+2. **nearest the monument** — required, and the reason the first frame reads
+   as an establishing shot
 3. **largest clear interior** — the shaft needs 7×7 of reservation without
    fighting the temple or a plaza
 4. **deterministic tiebreak** — `hash3(seed, cell, …)`, never `Math.random`

@@ -5,11 +5,13 @@ import * as THREE from "three/webgpu";
 import {
   color, mix, positionWorld, positionWorldDirection, time,
   fog, densityFogFactor, triNoise3D, float, floor as tslFloor, hash, smoothstep, vec3, sin,
-  uv, length, uniform, vec2, fract, atan,
+  uv, length, uniform, vec2, fract, atan, instancedBufferAttribute,
 } from "three/tsl";
 import * as BufferGeometryUtils from "three/addons/utils/BufferGeometryUtils.js";
 import { hash2 } from "../gen/rng";
-import { abyssFloorHeight, ABYSS_FLOOR, ABYSS_FLOOR_BASE_Y } from "./abyss-floor";
+import {
+  abyssFloorHeight, abyssFloorRingScale, ABYSS_FLOOR, ABYSS_FLOOR_BASE_Y,
+} from "./abyss-floor";
 import { ABYSS } from "../gen/dungeon";
 import { TH } from "../config";
 import { buildAbyssLandmarks } from "./abyss-landmarks";
@@ -105,6 +107,14 @@ export function buildEnvironment(
   applyLandmarkLights?: (specs: LightSpec[]) => void,
 ): {
   godrayLight: THREE.DirectionalLight;
+  godrayVolume: {
+    bottom: THREE.UniformNode<"vec3", THREE.Vector3>;
+    top: THREE.UniformNode<"vec3", THREE.Vector3>;
+    params: THREE.UniformNode<"vec3", THREE.Vector3>;
+    screenBottom: THREE.UniformNode<"vec3", THREE.Vector3>;
+    screenTop: THREE.UniformNode<"vec3", THREE.Vector3>;
+    screenParams: THREE.UniformNode<"vec3", THREE.Vector3>;
+  };
   fit: (half: number, centerX?: number, centerZ?: number, top?: number) => void;
   bakeShadows: () => void;
   tick: (camera: THREE.Camera) => void;
@@ -112,6 +122,42 @@ export function buildEnvironment(
 } {
   const group = new THREE.Group();
   group.name = "environment";
+  // Stable object references shared with the lazily-created post graph. fit()
+  // mutates them in place, so the analytic shaft mask follows every seed and
+  // editor adjustment without rebuilding a TSL pipeline.
+  const godrayVolume = {
+    bottom: uniform(new THREE.Vector3()),
+    top: uniform(new THREE.Vector3(0, 1, 0)),
+    params: uniform(new THREE.Vector3(1, 1, 0)), // radius, length, reserved
+    screenBottom: uniform(new THREE.Vector3(0.5, 0.9, 0.02)),
+    screenTop: uniform(new THREE.Vector3(0.5, 0.1, 0.02)),
+    screenParams: uniform(new THREE.Vector3(1, 0, 0)), // aspect, reserved
+  };
+  const godrayProjectCenter = new THREE.Vector3();
+  const godrayProjectEdge = new THREE.Vector3();
+  const godrayCameraUp = new THREE.Vector3();
+  const projectShaftEndpoint = (
+    camera: THREE.Camera,
+    world: THREE.Vector3,
+    radius: number,
+    output: THREE.Vector3,
+  ): void => {
+    godrayCameraUp.setFromMatrixColumn(camera.matrixWorld, 1).normalize();
+    godrayProjectCenter.copy(world).project(camera);
+    godrayProjectEdge.copy(world).addScaledVector(godrayCameraUp, radius).project(camera);
+    output.set(
+      godrayProjectCenter.x * 0.5 + 0.5,
+      0.5 - godrayProjectCenter.y * 0.5,
+      Math.max(0.001, Math.abs(godrayProjectEdge.y - godrayProjectCenter.y) * 0.5),
+    );
+  };
+  const updateGodrayScreenMask = (camera: THREE.Camera): void => {
+    camera.updateMatrixWorld();
+    const radius = godrayVolume.params.value.x;
+    projectShaftEndpoint(camera, godrayVolume.bottom.value, radius, godrayVolume.screenBottom.value);
+    projectShaftEndpoint(camera, godrayVolume.top.value, radius, godrayVolume.screenTop.value);
+    godrayVolume.screenParams.value.x = (camera as THREE.PerspectiveCamera).aspect || 1;
+  };
 
   // -- Sky: deep navy zenith, faintly glowing horizon, salted with stars and
   //    crowned by the moon (HDR values — the bloom pass gives it its halo).
@@ -280,7 +326,13 @@ export function buildEnvironment(
   const apertureColor = new THREE.Color();
   for (let i = 0; i < apertureSegments; i++) {
     apertureInner.push(0.88 + hash2(seed, i, 910) * 0.28);
-    apertureOuter.push(6.7 + hash2(seed, i, 911) * 0.7);
+    // The annulus is projected obliquely into a seed-dependent orthographic
+    // shadow frustum. The former 6.7× outer radius only barely covered a
+    // square frustum on long chains; at some bearings its corners escaped the
+    // roof and the godray pass exposed the whole rectangular light volume.
+    // This invisible skirt sits well past every frustum corner while leaving
+    // the authored inner opening — and therefore shaft width — unchanged.
+    apertureOuter.push(15.5 + hash2(seed, i, 911) * 1.2);
     apertureBottom.push(-0.54 + hash2(seed, i, 912) * 0.16);
     apertureTop.push(0.42 + hash2(seed, i, 913) * 0.2);
   }
@@ -347,11 +399,25 @@ export function buildEnvironment(
   cavernAperture.castShadow = true;
   cavernAperture.receiveShadow = false;
   cavernAperture.frustumCulled = false;
+  // The geological lid is invisible scenery and exists only to cut the moon's
+  // shadow map. Opacity zero still made the main ScenePass build and submit two
+  // transparent DoubleSide colour pipelines on a cold start. Put it on a
+  // dedicated layer that only the shadow camera sees; the main camera keeps
+  // layer 0, while the moon camera renders both normal casters and this lid.
+  // Preserve the former path for exact browser A/B and driver triage.
+  const shadowOnlyAperture = typeof window === "undefined"
+    || new URLSearchParams(window.location.search).get("apertureLayer") !== "legacy";
+  if (shadowOnlyAperture) {
+    const shadowOnlyLayer = 1;
+    cavernAperture.layers.set(shadowOnlyLayer);
+    moon.shadow.camera.layers.enable(shadowOnlyLayer);
+  }
   cavernAperture.userData.aperture = {
     segments: apertureSegments,
     triangles: apertureIndices.length / 3,
     draws: 1,
     shadowSource: "shared-static-moon-map",
+    shadowOnlyLayer: shadowOnlyAperture,
   };
   group.add(cavernAperture);
 
@@ -368,8 +434,11 @@ export function buildEnvironment(
     const drift = triNoise3D(vec3(u.mul(2.6), v.mul(5.4).add(time.mul(0.05)), 2.7), 0.12, time);
     const core = float(1).sub(u.sub(0.5).abs().mul(2)).clamp(0, 1).pow(1.6);
     const ends = smoothstep(0.02, 0.3, v).mul(smoothstep(1.0, 0.7, v));
-    shaftDustMat.colorNode = color(0xd8c491).mul(drift).mul(core).mul(ends).mul(0.5);
-    shaftDustMat.opacityNode = drift.mul(core).mul(ends).mul(0.5);
+    // Shadow-derived godrays already carry the solid shaft. This proxy only
+    // supplies moving dust texture; at 0.5 it doubled the curtain and washed
+    // out the dragon/skull contact whenever the two layers overlapped.
+    shaftDustMat.colorNode = color(0xd8c491).mul(drift).mul(core).mul(ends).mul(0.32);
+    shaftDustMat.opacityNode = drift.mul(core).mul(ends).mul(0.32);
   }
   const shaftDust = new THREE.Group();
   shaftDust.name = "godray-dust-curtain";
@@ -417,13 +486,13 @@ export function buildEnvironment(
 
   // -- The horizon is generated rock now. It used to be 31 mesas and three ruin
   //    clusters built from raw BoxGeometry, which is exactly what they read as
-  //    once a camera got near them. buildHorizonRing keeps the arc those had —
-  //    a horseshoe closed across the narrative back and open toward the default
-  //    approach — and hangs Tripo cliffs, spires and ruins on it instead, five
-  //    draw calls for the whole skyline.
+  //    once a camera got near them. buildHorizonRing now places eleven Tripo
+  //    cliffs/spires/ruins into three detached groups across the narrative back:
+  //    no continuous upper rim, still only five draw calls for the skyline.
   //    Everything ring-shaped lives in ringGroup so fit() can recentre/rescale
   //    it around a multi-block chain.
   const ringGroup = new THREE.Group();
+  ringGroup.name = "abyss-horizon-enclosure";
   group.add(ringGroup);
   const horizon = buildHorizonRing(seed);
   ringGroup.add(horizon.group);
@@ -439,14 +508,45 @@ export function buildEnvironment(
       const mistEdge = length(uv().sub(0.5))
         .add(sin(uv().x.mul(15).add(time.mul(0.035))).mul(0.028));
       mist.opacityNode = smoothstep(0.08, 0.52, mistEdge).oneMinus().mul(0.17);
-      for (let k = 0; k < 12; k++) {
-        const a = (k / 12) * Math.PI * 2 + hash2(seed, k, 33) * 0.4;
-        const s = new THREE.Sprite(mist);
+      const mistCount = 12;
+      const mistPositions = new Float32Array(mistCount * 3);
+      const mistScales = new Float32Array(mistCount * 2);
+      for (let k = 0; k < mistCount; k++) {
+        const a = (k / mistCount) * Math.PI * 2 + hash2(seed, k, 33) * 0.4;
         const rad = 96 + hash2(seed, k, 34) * 26;
-        s.position.set(Math.cos(a) * rad, -2 + hash2(seed, k, 36) * 6, Math.sin(a) * rad);
         const sc = 46 + hash2(seed, k, 37) * 26;
-        s.scale.set(sc, sc * 0.4, 1);
-        ringGroup.add(s);
+        mistPositions[k * 3] = Math.cos(a) * rad;
+        mistPositions[k * 3 + 1] = -2 + hash2(seed, k, 36) * 6;
+        mistPositions[k * 3 + 2] = Math.sin(a) * rad;
+        mistScales[k * 2] = sc;
+        mistScales[k * 2 + 1] = sc * 0.4;
+      }
+
+      // SpriteNodeMaterial accepts instanced vertex attributes even though the
+      // host object is one Sprite. This preserves true camera-facing banks but
+      // turns twelve permanent render objects/draws into one. Besides the
+      // steady-state draw reduction, the startup environment queue falls below
+      // the fourth 14-work frame boundary. Keep the former objects as an exact
+      // browser A/B for visual and timing regression checks.
+      const batchMist = typeof window === "undefined"
+        || new URLSearchParams(window.location.search).get("mistBatch") !== "legacy";
+      if (batchMist) {
+        mist.positionNode = instancedBufferAttribute(mistPositions, "vec3");
+        mist.scaleNode = instancedBufferAttribute(mistScales, "vec2");
+        const mistCurtain = new THREE.Sprite(mist) as THREE.Sprite & { count: number };
+        mistCurtain.name = "instanced-horizon-mist-curtain";
+        mistCurtain.count = mistCount;
+        // Node-driven positions sit outside the host Sprite's zero-sized local
+        // bounds, so the batch must not be culled from that placeholder bound.
+        mistCurtain.frustumCulled = false;
+        ringGroup.add(mistCurtain);
+      } else {
+        for (let k = 0; k < mistCount; k++) {
+          const s = new THREE.Sprite(mist);
+          s.position.fromArray(mistPositions, k * 3);
+          s.scale.set(mistScales[k * 2], mistScales[k * 2 + 1], 1);
+          ringGroup.add(s);
+        }
       }
 
       // Eight horizontal billow islands fill the otherwise empty inner abyss.
@@ -555,6 +655,7 @@ export function buildEnvironment(
     // The post chain samples this light's already-baked shadow depth to build
     // true occluded shafts; no duplicate light or shadow map is allocated.
     godrayLight: moon,
+    godrayVolume,
     /** refit shadows, canyon ring and haze to the current chain extent/centre.
      *  `top` = world height of the tallest stack: the moon backs off along its
      *  own direction and the shadow volume grows so sky-spires stay inside the
@@ -593,24 +694,39 @@ export function buildEnvironment(
           roofY: roof,
           center: cavernAperture.position.toArray(),
         };
+        // The additive dust proxy must terminate at the same offset landing
+        // point as the shadow-derived shaft. It previously stayed hard-coded
+        // at the maze centre, so moving the aperture left a second bright
+        // curtain across the dragon/skull contact and made the live gizmo lie.
+        const shaftBottom = new THREE.Vector3(
+          centerX + shape.offsetX,
+          4,
+          centerZ + shape.offsetZ,
+        );
+        const shaftAxis = cavernAperture.position.clone().sub(shaftBottom);
+        const shaftLength = shaftAxis.length();
+        shaftDust.position.copy(shaftBottom).addScaledVector(shaftAxis, 0.5);
+        shaftDust.quaternion.setFromUnitVectors(
+          new THREE.Vector3(0, 1, 0), shaftAxis.normalize());
+        shaftDust.scale.set(radius * 2.1, shaftLength, radius * 2.1);
+        godrayVolume.bottom.value.copy(shaftBottom);
+        godrayVolume.top.value.copy(cavernAperture.position);
+        godrayVolume.params.value.set(radius, shaftLength, 0);
       };
       seat();
       reseatGodray = seat;
-      // seat the dust curtain along the aperture→maze shaft axis
-      const shaftBottom = new THREE.Vector3(centerX, 4, centerZ);
-      const shaftAxis = cavernAperture.position.clone().sub(shaftBottom);
-      const shaftLength = shaftAxis.length();
-      shaftDust.position.copy(shaftBottom).addScaledVector(shaftAxis, 0.5);
-      shaftDust.quaternion.setFromUnitVectors(
-        new THREE.Vector3(0, 1, 0), shaftAxis.normalize());
-      shaftDust.scale.set(openingRadius * 2.1, shaftLength, openingRadius * 2.1);
-      const lightHeight = roofY + 130;
+      const seatedRoofY = roofY * godrayShape.height;
+      const lightHeight = seatedRoofY + 130;
       moon.position.set(
         centerX + lightHeight * tiltX,
         lightHeight,
         centerZ + lightHeight * tiltZ,
       );
       moon.target.position.set(centerX, 0, centerZ);
+      // Keep the caster comfortably inside the shadow box. The post pass owns
+      // the finite shaft mask; pushing this near plane toward the lid clips the
+      // annulus under PCF and turns its opening into a giant bright rectangle.
+      sc.near = 8;
       // slanted light travels lightHeight / MOON_DIR.y to reach the target
       sc.far = Math.max(150 * k, lightHeight / MOON_DIR.y + 70);
       sc.updateProjectionMatrix();
@@ -622,7 +738,7 @@ export function buildEnvironment(
       caveFill.target.position.set(centerX, 0, centerZ);
       // the mesa/mist/ruin ring was authored around a ~40-unit island — recentre
       // on the chain and push it outward so cliffs never intersect the blocks
-      const s = Math.max(1, (half + 26) / 72);
+      const s = abyssFloorRingScale(half);
       ringGroup.position.set(centerX, 0, centerZ);
       ringGroup.scale.set(s, 1, s);
       atmosphereParticles.position.set(centerX, 0, centerZ);
@@ -664,12 +780,18 @@ export function buildEnvironment(
         ...light, x: light.x + centerX, z: light.z + centerZ,
       })));
       // longer sightlines need thinner air or the far blocks drown in haze
-      hazeU.value = Math.min(0.008, Math.max(0.002, 0.5 / (half * 2.4)));
+      // The establishing camera can exceed 1,000 units on elongated seeds.
+      // A 0.002 floor still removed ~85% of hero contrast at that range, so
+      // dragon, skull and dungeon vanished together even though their framing
+      // was correct. Let material fog keep thinning with world extent; the
+      // depth-aware post haze still encloses the abyss and distant low layer.
+      hazeU.value = Math.min(0.008, Math.max(0.0012, 0.42 / (half * 2.4)));
     },
     bakeShadows() {
       moon.shadow.needsUpdate = true;
     },
     tick(camera: THREE.Camera) {
+      updateGodrayScreenMask(camera);
       cemetery.tick(camera);
       (landmarkGroup.userData as { clearCamera?: (c: THREE.Camera) => void })
         .clearCamera?.(camera);

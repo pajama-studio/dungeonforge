@@ -1,0 +1,101 @@
+{
+  "schema": 1,
+  "label": "shared-courts-perf-final",
+  "workload": {
+    "rounds": 20,
+    "warmup": 6,
+    "drawsPerLoop": 2,
+    "url": "http://127.0.0.1:4173/?seed=359139884&islands=20&rev=shared-courts-perf-final"
+  },
+  "summary": {
+    "frameMedianMs": 36.525000005960464,
+    "frameP95Ms": 39.24999998807907,
+    "fpsFromMedian": 27.378507866853152,
+    "instances": 90565,
+    "visibleRenderObjects": 834,
+    "triangles": 8088744,
+    "gpuWait": true
+  },
+  "samples": [
+    {
+      "loop": 1,
+      "frameMs": 33.80000001192093
+    },
+    {
+      "loop": 2,
+      "frameMs": 36.75
+    },
+    {
+      "loop": 3,
+      "frameMs": 35.14999997615814
+    },
+    {
+      "loop": 4,
+      "frameMs": 34.40000003576279
+    },
+    {
+      "loop": 5,
+      "frameMs": 36.64999997615814
+    },
+    {
+      "loop": 6,
+      "frameMs": 40.19999998807907
+    },
+    {
+      "loop": 7,
+      "frameMs": 38.10000002384186
+    },
+    {
+      "loop": 8,
+      "frameMs": 37.89999997615814
+    },
+    {
+      "loop": 9,
+      "frameMs": 32.90000003576279
+    },
+    {
+      "loop": 10,
+      "frameMs": 37.84999996423721
+    },
+    {
+      "loop": 11,
+      "frameMs": 35.25
+    },
+    {
+      "loop": 12,
+      "frameMs": 31.75
+    },
+    {
+      "loop": 13,
+      "frameMs": 35.55000001192093
+    },
+    {
+      "loop": 14,
+      "frameMs": 39.19999998807907
+    },
+    {
+      "loop": 15,
+      "frameMs": 38.65000003576279
+    },
+    {
+      "loop": 16,
+      "frameMs": 35.14999997615814
+    },
+    {
+      "loop": 17,
+      "frameMs": 35.44999998807907
+    },
+    {
+      "loop": 18,
+      "frameMs": 36.40000003576279
+    },
+    {
+      "loop": 19,
+      "frameMs": 36.89999997615814
+    },
+    {
+      "loop": 20,
+      "frameMs": 37.35000002384186
+    }
+  ]
+}

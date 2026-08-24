@@ -82,15 +82,34 @@ export class StairTowers {
     const parts: THREE.BufferGeometry[] = [];
     const rc = m; // exactly the same centreline used by spiralHeight()
     const span = a - core + 0.2;
+    // Each step is a BLOCK, not a slab: it carries its own riser down to meet
+    // the step below, the way a cut-stone spiral actually works. A slab of
+    // thickness treadT (0.10-0.17) against a rise of ~0.26 left more than half
+    // the height as open air, so the flight read as a stack of plates threaded
+    // on a post — see-through, and visibly not a thing you could climb.
+    //
+    // Costs nothing: the same box, taller, translated so its walking surface
+    // stays exactly where the analytic spiralHeight() sampler expects it. The
+    // ground sampler is untouched by design — the geometry now agrees with the
+    // height field that was always there.
+    const stepH = rise + treadT;
     const addTread = (s: number, localY: number): void => {
       const p = stairXZAtS(s, m);
       const ringSide = Math.floor((((s % P) + P) % P) / (2 * m));
       // sides 0/2 run along x (tread depth radial in z); sides 1/3 run along z
       const tread = ringSide % 2 === 0
-        ? new THREE.BoxGeometry(treadW, treadT, span)
-        : new THREE.BoxGeometry(span, treadT, treadW);
-      tread.translate(p.x, localY - 0.12, p.z);
+        ? new THREE.BoxGeometry(treadW, stepH, span)
+        : new THREE.BoxGeometry(span, stepH, treadW);
+      // Keep the top face where the slab's top face used to be.
+      const top = localY - 0.12 + treadT / 2;
+      tread.translate(p.x, top - stepH / 2, p.z);
       parts.push(tread);
+
+      // No parapet here, and that is a decision rather than an omission. A
+      // 0.62 rail on the outer edge of every step was tried and reverted: one
+      // per step joins into a continuous wall that hides the treads entirely,
+      // turning a readable flight into a slotted column. The steps ARE the
+      // silhouette, and anything at their outer edge competes with them.
     };
     const fullSteps = Math.floor(height / rise);
     for (let i = 0; i <= fullSteps; i++) addTread(phase + i * STAIR.STEP, i * rise);
@@ -131,9 +150,19 @@ export class StairTowers {
     // solid square core the flights wind around; tall towers get a heavier
     // core with a capstone so the silhouette varies with the variant
     const core2 = core * 2;
-    const coreGeo = new THREE.BoxGeometry(core2, y1 - y0 + 2.2, core2);
-    coreGeo.translate(0, (y1 - y0) / 2 + 0.4, 0);
-    parts.push(coreGeo);
+    // Coursed, not one tall box. A single extrusion reads as a painted slab the
+    // moment a tower is seen in the open rather than between fortress walls —
+    // which the entrance tower is, standing alone on its dais out in the abyss.
+    // Courses cost ~12 triangles each and make it masonry.
+    const courseH = 0.94;
+    const courses = Math.max(1, Math.round((y1 - y0 + 2.2) / courseH));
+    for (let k = 0; k < courses; k++) {
+      const wobble = (h(30 + k) - 0.5) * 0.09;
+      const brick = new THREE.BoxGeometry(core2 + wobble, courseH * 0.94, core2 + wobble);
+      // Alternate the course inset so the joint line reads at a distance.
+      brick.translate((k & 1) * 0.02, (k + 0.5) * courseH - 0.7, 0);
+      parts.push(brick);
+    }
     if (h(5) > 0.45) {
       const cap = new THREE.BoxGeometry(core2 + 0.5, 0.5, core2 + 0.5);
       cap.translate(0, y1 - y0 + 1.7, 0);

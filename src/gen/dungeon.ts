@@ -111,6 +111,10 @@ export interface Params {
   storyLandmark?: boolean;
   /** non-square generation domain; omitted chooses a deterministic shape. */
   footprint?: FootprintKind;
+  /** id of the verticalAnchor that is the ground shaft — the world's one way
+   *  in. Reserved exactly like a stair court; what differs is that it may not
+   *  be re-sited, so the layout fails rather than moving it. */
+  groundAnchorId?: number;
 }
 
 export const DEFAULT_PARAMS: Params = {
@@ -165,6 +169,10 @@ export interface Layout {
   /** grid indices of the temple-building wall cells (facade/warm-tint lookups) */
   templeCells: number[];
   entrance: { x: number; y: number };
+  /** id of the shaft carrying the way in from the abyss floor, on the one block
+   *  that owns it. The door at its foot faces that anchor's dockDir, so it
+   *  rotates with the layout for free. */
+  groundAnchorId: number | null;
   temple: { platformTier: number; buildTop: number } | null;
   stats: { floor: number; wall: number; attempts: number; genMs: number; volumeCells: number; volumeLevels: number };
 }
@@ -279,6 +287,14 @@ function attempt(p: Params, seed: number, coreGenerator: MazeCoreGenerator): Lay
     // anchors may sit two cells from a boundary. The ring still stays inside.
     const x = Math.max(2, Math.min(N - 3, Math.round(req.x)));
     const y = Math.max(2, Math.min(N - 3, Math.round(req.y)));
+    // A stair court may be nudged inward: both blocks clamp identically, so
+    // they still agree. The ground shaft has no partner to agree with — it is
+    // the one way into the world, sited against the terrain and the plinth
+    // below. Moving it here would silently break that agreement, so a clamp
+    // that would actually move it fails the layout instead.
+    if (req.id === p.groundAnchorId && (x !== Math.round(req.x) || y !== Math.round(req.y))) {
+      return "ground shaft outside footprint";
+    }
     const dockDir = (Math.round(req.dockDir) & 3) as Dir;
     let P = kind[gi(x, y)] === FLOOR ? tier[gi(x, y)] : -1;
     for (let r = 1; P < 0 && r <= 4; r++) {
@@ -383,16 +399,32 @@ function attempt(p: Params, seed: number, coreGenerator: MazeCoreGenerator): Lay
 
   // Red chamber: sunken 2×2 maze cells, dropped one tier — position drifts per seed.
   {
-    const ri = Math.max(1, Math.min(M - 3, Math.round(M * (0.6 + (hash2(seed, 1, 212) - 0.5) * 0.3))));
-    const rj = Math.max(Math.round(M * 0.42), Math.min(M - 3, Math.round(M * (0.78 + (hash2(seed, 2, 213) - 0.5) * 0.24))));
-    let lo = 9;
-    for (let j = rj; j <= rj + 1; j++) for (let i = ri; i <= ri + 1; i++) lo = Math.min(lo, mTier[mi(i, j)]);
-    const rt = Math.max(0, lo - 1);
-    for (let gy = 2 * rj + 1; gy <= 2 * rj + 3; gy++) {
-      for (let gx = 2 * ri + 1; gx <= 2 * ri + 3; gx++) {
-        if (plazaMask[gi(gx, gy)] || shaftReserve[gi(gx, gy)]) continue;
-        setFloor(gx, gy, rt);
-        redMask[gi(gx, gy)] = 1;
+    const rawRi = Math.max(1, Math.min(M - 3, Math.round(M * (0.6 + (hash2(seed, 1, 212) - 0.5) * 0.3))));
+    const rawRj = Math.max(Math.round(M * 0.42), Math.min(M - 3, Math.round(M * (0.78 + (hash2(seed, 2, 213) - 0.5) * 0.24))));
+    const mirror = (value: number) => Math.max(1, Math.min(M - 3, M - 2 - value));
+    const candidates: Array<[number, number]> = [
+      [rawRi, rawRj], [mirror(rawRi), rawRj],
+      [rawRi, mirror(rawRj)], [mirror(rawRi), mirror(rawRj)],
+    ];
+    const site = candidates.find(([ri, rj]) => {
+      for (let gy = 2 * rj + 1; gy <= 2 * rj + 3; gy++) {
+        for (let gx = 2 * ri + 1; gx <= 2 * ri + 3; gx++) {
+          if (!footprintContains(footprint, gx, gy, N)) return false;
+        }
+      }
+      return true;
+    });
+    if (site) {
+      const [ri, rj] = site;
+      let lo = 9;
+      for (let j = rj; j <= rj + 1; j++) for (let i = ri; i <= ri + 1; i++) lo = Math.min(lo, mTier[mi(i, j)]);
+      const rt = Math.max(0, lo - 1);
+      for (let gy = 2 * rj + 1; gy <= 2 * rj + 3; gy++) {
+        for (let gx = 2 * ri + 1; gx <= 2 * ri + 3; gx++) {
+          if (plazaMask[gi(gx, gy)] || shaftReserve[gi(gx, gy)]) continue;
+          setFloor(gx, gy, rt);
+          redMask[gi(gx, gy)] = 1;
+        }
       }
     }
   }
@@ -545,6 +577,18 @@ function attempt(p: Params, seed: number, coreGenerator: MazeCoreGenerator): Lay
   // reachability of the temple terrace from the entrance is implied by nc==1,
   // but assert it explicitly (it's the whole point of the fortress):
   if (templeOn && comp[gi(entrance.x, entrance.y)] !== comp[gi(gcx, 2)]) return "temple unreachable";
+
+  // The way in has to actually lead in. nc==1 already implies it, but the shaft
+  // ring is carved before the maze is solved and trimmed by the footprint after,
+  // so assert the landing survived both and joined the same world the entrance
+  // is in — a fortress you can enter and not leave is worse than a re-roll.
+  if (p.groundAnchorId !== undefined) {
+    const ground = verticalAnchors.find((a) => a.id === p.groundAnchorId);
+    if (!ground) return "ground shaft lost";
+    const landing = gi(ground.x + DX[ground.dockDir], ground.y + DY[ground.dockDir]);
+    if (kind[landing] !== FLOOR) return "ground shaft landing not floor";
+    if (comp[landing] !== comp[gi(entrance.x, entrance.y)]) return "ground shaft unreachable";
+  }
 
   // -- Stage 5.5: gates — openings in the outer wall where bridges dock.
   const gates: Gate[] = [];
@@ -859,6 +903,7 @@ function attempt(p: Params, seed: number, coreGenerator: MazeCoreGenerator): Lay
     stairs, gates, verticalAnchors, torches, banners, towers, medallions, braziers, bridge, door,
     doorDir: 2, templeCells,
     entrance,
+    groundAnchorId: p.groundAnchorId ?? null,
     temple,
     stats: {
       floor, wall, attempts: 1, genMs: 0,
@@ -928,6 +973,8 @@ function rotateOnce(l: Layout): Layout {
       return gi(y, N - 1 - x);
     }),
     entrance: mp(l.entrance),
+    // An id, not a position — the anchor it names is rotated with the rest.
+    groundAnchorId: l.groundAnchorId,
   };
 }
 

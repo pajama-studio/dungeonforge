@@ -53,6 +53,30 @@ npm run build      # static bundle in dist/
 
 Shareable URLs: `?seed=123&islands=8&size=13` pins a build.
 
+### Where the models come from
+
+The streamed models are not in this repository. They live on the studio shelf,
+[props.pajama.studio](https://props.pajama.studio), under content-addressed
+keys — a URL names exact bytes, so the immutable cache in front of them is
+correct and re-exporting a model changes its URL instead of needing a purge.
+
+`src/asset-urls.json` is the committed path → URL table the game reads, so the
+build stays offline and an asset change shows up in review as a changed hash.
+Everything resolves through `assetUrl()` in `src/assets.ts`, which throws on an
+unknown path rather than falling back to a 404.
+
+```sh
+npm run assets:sync    # regenerate the table from the props catalogue + API
+npm run assets:check   # fail if it is stale (CI)
+npm run assets:pull    # cache the models under public/assets …
+npm run dev:offline    # … and load them from there instead
+```
+
+Textures, the LOD descriptor and KayKit's CC0 skeleton stay in git: the shelf
+catalogues models, and third-party work stays beside its attribution in
+[LICENSES.md](LICENSES.md). The build ships exactly what git tracks — anything
+staged in `public/assets` by the decimation pipeline is left out of `dist/`.
+
 ## 🎮 Controls
 
 | Input | Action |
@@ -192,8 +216,20 @@ src/
 | ![layers](docs/shot-v20-layers.jpeg) | ![cube](docs/shot-v22-cube.jpeg) | ![endless](docs/shot-v19-endless.jpeg) |
 | stacked sky layers | the 3×3×3 Cube | endless streaming |
 
+## 🤝 Contributing
+
+Patches welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers the house rules that
+are load-bearing rather than stylistic, which parts of `scripts/` you can
+actually run without Blender or a Tripo account, and — importantly — how to
+verify rendering changes, because **headless browsers cannot draw this scene**
+and CI therefore checks only types, tests and the build.
+
+See also [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) and
+[SECURITY.md](SECURITY.md).
+
 ## 📄 License
 
-Code is [MIT](LICENSE). The adventurer is the CC0
-[KayKit Adventurers](https://kaylousberg.com) Knight — see
-[LICENSES.md](LICENSES.md) for asset credits.
+Code is [MIT](LICENSE). The 💀 walker is the CC0
+[KayKit Skeletons](https://kaylousberg.com) Skeleton Minion, and the Draco
+decoder under `public/draco/` is Google's, Apache-2.0 — see
+[LICENSES.md](LICENSES.md) for the full credits.

@@ -2,7 +2,51 @@ node_modules/
 dist/
 rust/**/target/
 artifacts/
+# Raw Tripo generations: ~45MB per model before decimation. Neither these nor
+# the decimated tiers they produce are versioned here — see below.
+tripo-out/
 .tripo/
 .img2threejs/
 scripts/__pycache__/
 .DS_Store
+
+# Shipped models live on the studio shelf (props.pajama.studio), not in git.
+# They are content-addressed there, so src/asset-urls.json — which IS versioned —
+# pins the exact bytes this build loads. `npm run assets:pull` caches them back
+# here for offline work; that cache is disposable.
+#
+# The two exceptions are third-party: KayKit's CC0 skeleton is credited in
+# LICENSES.md and stays with its attribution rather than being redistributed
+# from a shelf labelled studio-internal.
+public/assets/**/*.glb
+!public/assets/skeleton.glb
+!public/assets/skeleton-game.glb
+
+# Playwright MCP scratch output — snapshots, console logs, screenshots.
+.playwright-mcp/
+
+# Local Wrangler deploy state.
+.wrangler/
+
+# Benchmark screenshots. `court-check.mjs` and `occlusion-check.mjs` write here
+# by default, and A/B runs leave more beside them — a working surface, not a
+# record. The measurements themselves stay: perf/results/*.json is the data
+# `npm run bench:report` reads, and nothing regenerates it.
+perf/*.png
+perf/*.jpeg
+
+# Screenshots the docs do not reference. Shots that illustrate something stay
+# tracked and get linked from the markdown that uses them; the rest are a
+# session's evidence and were quietly costing ~10 MB of every clone.
+docs/*.jpeg
+!docs/shot-v6.jpeg
+!docs/shot-v19-endless.jpeg
+!docs/shot-v20-layers.jpeg
+!docs/shot-v22-cube.jpeg
+
+# Internal punch-list, kept local. Public roadmap lives in GitHub Issues.
+docs/TODO.md
+
+# Internal benchmark logs, kept local.
+perf/ITERATIONS-100.md
+perf/MARKOV_PORT.md

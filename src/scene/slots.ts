@@ -7,6 +7,7 @@
 import * as THREE from "three/webgpu";
 import { InstList } from "./instances";
 import { getKit } from "./kit";
+import { startupRenderWork } from "../startup-pacing";
 
 export interface SlotPool {
   slot: number;
@@ -140,6 +141,11 @@ export function putInstanced(
     pool.meshes.set(key, mesh);
     pool.group.add(mesh);
   }
+  // Re-forge reuses pooled render objects. Runtime settings such as
+  // `farShadows` are sampled on every build, so shadow flags must be refreshed
+  // even when geometry/material/capacity let the mesh itself survive.
+  mesh.castShadow = shadows;
+  mesh.receiveShadow = shadows;
   mesh.name = key;
   fillInstanced(mesh, list);
   if (decorSuppressed && (DETAIL_KEYS.includes(key) || DECOR_EXTRA.includes(key))) mesh.visible = false;
@@ -168,6 +174,8 @@ export function putInstancedCombined(
     pool.meshes.set(key, mesh);
     pool.group.add(mesh);
   }
+  mesh.castShadow = shadows;
+  mesh.receiveShadow = shadows;
   mesh.name = key;
   if (!mesh.instanceColor) {
     mesh.instanceColor = new THREE.InstancedBufferAttribute(
@@ -237,6 +245,8 @@ export function putInstancedTwin(
     pool.meshes.set(key, mesh);
     pool.group.add(mesh);
   }
+  mesh.castShadow = shadows;
+  mesh.receiveShadow = shadows;
   mesh.name = key;
   mesh.instanceMatrix = source.instanceMatrix;
   mesh.instanceColor = source.instanceColor;
@@ -253,6 +263,36 @@ export function putInstancedTwin(
  * objects per frame turn the same work into bounded, progressive detail. */
 let decorRevealQueue: THREE.Object3D[] | null = null;
 let decorRevealCursor = 0;
+let lastDecorReveal = { name: "", slot: -1, instances: 0, cursor: 0, total: 0 };
+export function decorRevealStatus(): typeof lastDecorReveal { return { ...lastDecorReveal }; }
+
+/** Number of per-slot decor render objects that can actually draw at the
+ * current startup LOD. Most DETAIL_KEYS own authored instances but correctly
+ * have count=0 while the camera is far; they must not force an otherwise empty
+ * extra reveal frame. Architectural shells are the exception because startup
+ * suppression temporarily zeroes their count even though they survive LOD0. */
+export function startupDecorRenderObjectCount(): number {
+  let total = 0;
+  for (const pool of slotPools.values()) {
+    for (const key of [...DETAIL_KEYS, ...DECOR_EXTRA]) {
+      const object = pool.meshes.get(key);
+      if (!object || (object.userData as { gpuSceneManaged?: boolean }).gpuSceneManaged) continue;
+      const authored = (object.userData as { n?: number }).n ?? 0;
+      if (authored <= 0) continue;
+      const architectural = ARCHITECTURAL_SHELL_KEYS.includes(
+        object.name as typeof ARCHITECTURAL_SHELL_KEYS[number],
+      );
+      if ((architectural ? authored : object.count) > 0) total++;
+    }
+  }
+  return total;
+}
+
+/** Approximate cold WebGPU realization work, not visual complexity. A
+ * Standard node material creates a materially larger graph than an unlit
+ * batch, while a shadow caster also needs a second render path. This small
+ * weight lets startup reveal more cheap glow/prop batches per frame without
+ * ever grouping eight banner or red-tile pipelines into the same hitch. */
 export function revealDecor(maxObjects = Infinity): boolean {
   if (!decorSuppressed && decorRevealQueue === null) return true;
   if (decorRevealQueue === null) {
@@ -262,7 +302,9 @@ export function revealDecor(maxObjects = Infinity): boolean {
     for (const p of slotPools.values()) {
       for (const k of [...DETAIL_KEYS, ...DECOR_EXTRA]) {
         const m = p.meshes.get(k);
-        if (m && ((m.userData as { n?: number }).n ?? 0) > 0) decorRevealQueue.push(m);
+        if (m
+          && !(m.userData as { gpuSceneManaged?: boolean }).gpuSceneManaged
+          && ((m.userData as { n?: number }).n ?? 0) > 0) decorRevealQueue.push(m);
       }
       // Unique per-build meshes are distance-detail, not startup content.
       // Submitting one cold portal/rope/medallion from every far island caused
@@ -271,22 +313,43 @@ export function revealDecor(maxObjects = Infinity): boolean {
     }
   }
   let submitted = 0;
+  let submittedWork = 0;
   const renderBudget = Math.max(1, maxObjects);
   while (decorRevealCursor < decorRevealQueue.length) {
     const object = decorRevealQueue[decorRevealCursor];
     const architectural = ARCHITECTURAL_SHELL_KEYS.includes(object.name as typeof ARCHITECTURAL_SHELL_KEYS[number]);
-    // Far-LOD detail meshes keep count=0, so revealing their bookkeeping does
-    // not submit a render object and is free. Only the always-visible façade
-    // shells consume the per-frame realization budget.
-    if (architectural && submitted >= renderBudget) break;
+    const instanced = (object as THREE.InstancedMesh).isInstancedMesh
+      ? object as THREE.InstancedMesh
+      : null;
+    const revealCount = architectural && instanced
+      ? ((instanced.userData as { n?: number }).n ?? 0)
+      : instanced?.count ?? 1;
+    const willSubmit = revealCount > 0;
+    const revealWork = willSubmit ? startupRenderWork(object as THREE.Mesh) : 0;
+    // Far-LOD detail meshes keep count=0. They must also stay invisible: a
+    // zero-count but visible InstancedMesh still enters Three's RenderObject
+    // setup and used to create 1,146 useless WebGPU render/shadow states in a
+    // single 2.3 s frame. Every object that can actually draw consumes the
+    // same one-per-frame budget, not only façade shells.
+    if (willSubmit && submitted > 0 && submittedWork + revealWork > renderBudget) break;
     decorRevealCursor++;
-    if (architectural && (object as THREE.InstancedMesh).isInstancedMesh) {
-      const mesh = object as THREE.InstancedMesh;
-      mesh.count = ((mesh.userData as { n?: number }).n ?? 0);
-      mesh.visible = mesh.count > 0;
+    if (instanced) {
+      if (architectural) instanced.count = revealCount;
+      instanced.visible = instanced.count > 0;
+      if (!willSubmit) continue;
+      lastDecorReveal = {
+        name: instanced.name,
+        slot: (instanced.parent?.userData as { slot?: number } | undefined)?.slot ?? -1,
+        instances: instanced.count,
+        cursor: decorRevealCursor,
+        total: decorRevealQueue.length,
+      };
       submitted++;
+      submittedWork += revealWork;
     } else {
       object.visible = true;
+      submitted++;
+      submittedWork += revealWork;
     }
   }
   if (decorRevealCursor < decorRevealQueue.length) return false;
@@ -411,12 +474,19 @@ export function setDecorSuppressed(on: boolean): void {
     decorRevealCursor = 0;
   }
 }
+/** Abandon an in-flight startup reveal without making its stale objects
+ * visible. A new forge repopulates the shared pools immediately afterward. */
+export function cancelDecorReveal(): void {
+  decorSuppressed = false;
+  decorRevealQueue = null;
+  decorRevealCursor = 0;
+}
 export function isDecorSuppressed(): boolean { return decorSuppressed; }
 
 const DETAIL_KEYS = [
   "merlons", "rubble", "moss", "stains", "vines", "leaves", "creepers", "bramblesA",
   "bramblesB", "wisps", "links", "brackets", "cheeks", "wallGlows", "embers", "roots",
-  "flamesW", "flamesB", "flamesR", "flamesP",
+  "flamesW", "flamesB", "flamesR", "flamesP", "floorGlows", "bowls", "linkBowls", "crates",
 ];
 const ARCHITECTURAL_SHELL_KEYS = ["architecturalBays", "towerRoofs"] as const;
 
@@ -454,6 +524,8 @@ function applyArchitectureVisibility(p: SlotPool): void {
   setCount(p, "blockMidsLo", !faded && middle);
   setCount(p, "blockMidsFade", faded && high);
   setCount(p, "blockMidsLoFade", faded && middle);
+  setCount(p, "blockBases", !faded && high);
+  setCount(p, "blockBasesFade", faded && high);
   setCount(p, "blockTops", !faded && high);
   setCount(p, "blockTopsLo", !faded && middle);
   setCount(p, "blockTopsFade", faded && high);
@@ -505,27 +577,19 @@ export function setSlotLodLevel(slot: number, level: LodLevel): void {
   for (const k of DETAIL_KEYS) {
     const m = p.meshes.get(k);
     if (m) {
-      m.visible = true;
       m.count = level === 2 ? ((m.userData as { n?: number }).n ?? 0) : 0;
+      // A zero-count InstancedMesh still reaches Three's render-object setup
+      // when it remains visible. On a cold WebGPU session that compiled every
+      // decorative material during the low-LOD first paint even though no
+      // instance could be drawn, extending the loading screen by seconds.
+      m.visible = m.count > 0;
     }
   }
   applyArchitectureVisibility(p);
-  const tiles = p.meshes.get("tiles");
-  if (tiles) {
-    tiles.count = level === 2 ? ((tiles.userData as { n?: number }).n ?? 0) : 0;
-    tiles.visible = tiles.count > 0;
-  }
+  setCount(p, "tiles", level === 2);
   const tilesMidLo = p.meshes.get("tilesMidLo");
-  if (tilesMidLo) {
-    tilesMidLo.count = level === 1 ? ((tilesMidLo.userData as { n?: number }).n ?? 0) : 0;
-    tilesMidLo.visible = tilesMidLo.count > 0;
-  }
-  const tilesLo = p.meshes.get("tilesLo");
-  if (tilesLo) {
-    tilesLo.count = (level === 0 || (level === 1 && !tilesMidLo))
-      ? ((tilesLo.userData as { n?: number }).n ?? 0) : 0;
-    tilesLo.visible = tilesLo.count > 0;
-  }
+  setCount(p, "tilesMidLo", level === 1);
+  setCount(p, "tilesLo", level === 0 || (level === 1 && !tilesMidLo));
   setCount(p, "steps", level === 2);
   setCount(p, "stepsLo", level !== 2);
 }
@@ -536,6 +600,8 @@ export function setSlotLodLevel(slot: number, level: LodLevel): void {
 // one real object per frame below the abyss, then switch the whole tier only
 // after every target object has been submitted once.
 const warmedLodObjects = new WeakSet<THREE.Object3D>();
+let lastLodWarm = { name: "", slot: -1, level: 0 as LodLevel, instances: 0 };
+export function lodWarmStatus(): typeof lastLodWarm { return { ...lastLodWarm }; }
 const MID_LOD_WARM_KEYS = [
   "blocksMidLo", "blockMidsLo", "blockTopsLo", "tilesMidLo",
 ] as const;
@@ -554,7 +620,19 @@ function pendingWarmObject(slots: readonly number[], level: LodLevel): THREE.Obj
     if (!p || !p.group.visible) continue;
     for (const key of lodWarmKeys(level)) {
       const mesh = p.meshes.get(key);
-      if (!mesh || warmedLodObjects.has(mesh) || ((mesh.userData as { n?: number }).n ?? 0) <= 0) continue;
+      const metadata = mesh?.userData as {
+        n?: number;
+        gpuSceneManaged?: boolean;
+      } | undefined;
+      // Global GPU buckets own these render submissions. Warming their hidden
+      // CPU authoring sources cannot populate the bucket render-object cache;
+      // it only delays the real tier switch by one no-op frame per source.
+      // The global bucket itself is shared by every slot and realizes once on
+      // the first active LOD, so keep managed sources out of the per-slot queue.
+      if (!mesh
+        || metadata?.gpuSceneManaged
+        || warmedLodObjects.has(mesh)
+        || (metadata?.n ?? 0) <= 0) continue;
       // If it is already in the submitted tier, no extra hidden draw is needed.
       if (mesh.visible && mesh.count > 0) {
         warmedLodObjects.add(mesh);
@@ -590,6 +668,12 @@ export function areSlotsLodWarm(slots: readonly number[], level: LodLevel): bool
 export function stageSlotLodWarmup(slots: readonly number[], level: LodLevel): (() => void) | null {
   const object = pendingWarmObject(slots, level);
   if (!object) return null;
+  lastLodWarm = {
+    name: object.name,
+    slot: (object.parent?.userData as { slot?: number } | undefined)?.slot ?? -1,
+    level,
+    instances: (object.userData as { n?: number }).n ?? 1,
+  };
   const savedVisible = object.visible;
   const savedCulled = object.frustumCulled;
   const instanced = (object as THREE.InstancedMesh).isInstancedMesh

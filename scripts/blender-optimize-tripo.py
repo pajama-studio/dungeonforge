@@ -69,7 +69,17 @@ def select_only(obj: bpy.types.Object) -> None:
 
 def import_joined_mesh(path: Path, name: str) -> bpy.types.Object:
     clear_scene()
-    bpy.ops.import_scene.gltf(filepath=str(path))
+    # merge_vertices is CRITICAL and defaults to False.
+    #
+    # glTF stores UVs per-vertex, so every UV seam is a duplicated vertex in the
+    # file. Imported unwelded, the mesh arrives physically split along every
+    # seam — a Tripo statue shows 40-68k boundary edges before we touch it.
+    # COLLAPSE decimation then treats the two sides of each seam as independent
+    # surfaces, decimates them differently, and they pull apart into visible
+    # cracks. Welding first leaves the mesh watertight through decimation, and
+    # costs nothing: Blender keeps UVs in loops, not vertices, so the seam
+    # layout survives untouched.
+    bpy.ops.import_scene.gltf(filepath=str(path), merge_vertices=True)
     meshes = [obj for obj in bpy.context.scene.objects if obj.type == "MESH"]
     if not meshes:
         raise RuntimeError("The GLB contains no mesh objects")
@@ -85,7 +95,34 @@ def import_joined_mesh(path: Path, name: str) -> bpy.types.Object:
     obj.name = name
     obj.data.name = f"{name}_mesh"
     bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
+    close_pinholes(obj)
     return obj
+
+
+def close_pinholes(obj: bpy.types.Object, max_sides: int = 32) -> int:
+    """Fill the few genuinely missing faces a generated mesh can arrive with.
+
+    Welding on import removes the tens of thousands of seam-splits, but Tripo
+    output occasionally still has a handful of real pinholes (single missing
+    triangles). Those survive decimation and read as specks of backface in
+    engine.
+
+    Bounded by `max_sides` so only pinholes get filled: a large opening is
+    presumably intentional geometry, and capping it would be worse than leaving
+    it alone.
+    """
+    before = mesh_stats(obj)["boundaryEdges"]
+    if before == 0:
+        return 0
+    select_only(obj)
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.mesh.select_all(action="SELECT")
+    bpy.ops.mesh.fill_holes(sides=max_sides)
+    bpy.ops.object.mode_set(mode="OBJECT")
+    after = mesh_stats(obj)["boundaryEdges"]
+    if before != after:
+        print(f"closed pinholes: {before} -> {after} boundary edges", flush=True)
+    return before - after
 
 
 def world_bounds(obj: bpy.types.Object) -> tuple[Vector, Vector]:
@@ -340,11 +377,24 @@ def emit_decimated_branch(
     start_lod: int = 0,
 ) -> list[dict]:
     records = []
+    source_boundary = mesh_stats(source)["boundaryEdges"]
     for offset, target in enumerate(targets):
         index = start_lod + offset
         clone = clone_object(source, f"{asset}_{prefix.upper()}_LOD{index}")
         decimate_to(clone, target)
         stats = mesh_stats(clone)
+        # A watertight input must stay watertight. If decimation opened holes,
+        # the mesh was split somewhere upstream (the usual cause is importing
+        # glTF without merge_vertices, which leaves a seam at every UV border)
+        # and the LOD will show cracks in engine. Say so loudly rather than
+        # writing a quietly broken asset.
+        if source_boundary == 0 and stats["boundaryEdges"] > 0:
+            print(
+                f"WARNING [{asset} {prefix} lod{index}]: decimation opened "
+                f"{stats['boundaryEdges']} boundary edges in a watertight mesh — "
+                f"expect visible cracks.",
+                flush=True,
+            )
         path = out_dir / f"{asset}-{prefix}-lod{index}-{stats['triangles']}tri.glb"
         export_glb(clone, path)
         records.append(artifact_record(path, stats, branch, target))

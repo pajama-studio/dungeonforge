@@ -1,9 +1,18 @@
 import { dirname } from "node:path";
 import { mkdirSync, writeFileSync } from "node:fs";
 
-const output = process.argv[2] ?? "artifacts/img2three/dragon-slate-spire/tripo-custom/runtime-contact.png";
-const pages = await (await fetch("http://127.0.0.1:9337/json/list")).json();
-const page = pages.find((entry) => entry.type === "page" && entry.url.includes("127.0.0.1:4173"));
+const valueAfter = (name, fallback) => {
+  const index = process.argv.indexOf(name);
+  return index >= 0 && process.argv[index + 1] ? process.argv[index + 1] : fallback;
+};
+const output = valueAfter(
+  "--output",
+  process.argv[2]?.startsWith("--") ? undefined : process.argv[2],
+) ?? "artifacts/img2three/dragon-slate-spire/tripo-custom/runtime-contact.png";
+const port = valueAfter("--port", "9337");
+const urlMatch = valueAfter("--url-match", "127.0.0.1:4173");
+const pages = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+const page = pages.find((entry) => entry.type === "page" && entry.url.includes(urlMatch));
 if (!page) throw new Error("Dungeonforge page not found");
 const ws = new WebSocket(page.webSocketDebuggerUrl);
 await new Promise((resolve, reject) => {
@@ -46,6 +55,7 @@ const review = await call("Runtime.evaluate", {
     }
     if (!perch || !skinned) throw new Error('dragon/perch not ready');
     const { ctx, postProcessing, controls } = window.__df;
+    await window.__df.dragonPlacement?.setActive(false);
     ctx.renderer.setAnimationLoop(null);
     controls.autoRotate = false;
     controls.enabled = false;
@@ -62,6 +72,14 @@ const review = await call("Runtime.evaluate", {
     perch.visible = true;
     dragon.visible = true;
     const names = ['fore_left','fore_right','hind_left','hind_right'];
+    const baked = dragon.getObjectByName('AbyssDragonRigged-baked-pose');
+    if (!baked?.visible) throw new Error('visible baked dragon shell not found');
+    const bakedBox = new THREE.Box3().setFromObject(baked);
+    const bakedSize = bakedBox.getSize(new THREE.Vector3());
+    const bakedMaxDimension = Math.max(bakedSize.x, bakedSize.y, bakedSize.z);
+    if (bakedMaxDimension < 100 || bakedMaxDimension > 600) {
+      throw new Error('visible baked dragon shell escaped landmark scale');
+    }
     const feet = names.map((name) => skinned.skeleton.bones.find((bone) => bone.name === name + '_foot').getWorldPosition(new THREE.Vector3()));
     const targets = names.map((name) => skinned.skeleton.bones.find((bone) => bone.name === 'ik_' + name + '_target').getWorldPosition(new THREE.Vector3()));
     const center = feet.reduce((sum, point) => sum.add(point), new THREE.Vector3()).multiplyScalar(1 / feet.length);
@@ -81,6 +99,7 @@ const review = await call("Runtime.evaluate", {
       center: center.toArray(),
       errors: Object.fromEntries(names.map((name, index) => [name, feet[index].distanceTo(targets[index])])),
       surfaceHits: Object.fromEntries((landmark.getObjectByName('streamed-colossal-perched-dragon-slot')?.userData.legIkTargets ?? []).map((entry) => [entry.name, entry.surfaceHit])),
+      bakedBounds: { min: bakedBox.min.toArray(), max: bakedBox.max.toArray(), size: bakedSize.toArray() },
       triangles: perch.userData.renderTriangles,
       vertices: perch.userData.renderVertices,
     };

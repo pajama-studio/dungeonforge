@@ -159,6 +159,153 @@
       border-radius: 50%; background: #d8c9a3; border: 1px solid #6b5f45; cursor: pointer;
     }
 
+    /* ---- left: dungeon editor drawer ---- */
+    #editor {
+      position: fixed; top: 18px; left: 20px; bottom: 74px; z-index: 12; width: 268px;
+      display: flex; flex-direction: column;
+      background: rgba(14, 18, 34, .9); border: 1px solid #32324a; border-radius: 10px;
+      font-family: Georgia, serif; color: #b7a982;
+      backdrop-filter: blur(6px); box-shadow: 0 18px 60px rgba(0,0,0,.5);
+      transition: transform .25s ease, opacity .25s ease;
+    }
+    #editor.closed { transform: translateX(-112%); opacity: 0; pointer-events: none; }
+    #editor header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 11px 13px 9px; border-bottom: 1px solid #26263c;
+    }
+    #editor header strong {
+      font-size: 11px; letter-spacing: .3em; font-weight: 400;
+      color: #8f7f5c; text-transform: uppercase;
+    }
+    #editor .editor-close { padding: 2px 7px; border: none; background: none; color: #7d7460; }
+    #editor .editor-close:hover { color: #ffe9b8; }
+    .editor-tabs { display: flex; gap: 4px; padding: 8px 10px 0; }
+    .editor-tabs button {
+      flex: 1; padding: 6px 4px; font-size: 11px; letter-spacing: .08em;
+      border-radius: 6px 6px 0 0; border-bottom-color: transparent;
+    }
+    .editor-tabs button.active { background: rgba(64, 54, 34, .6); color: #f0d79f; border-color: #6b5f45; }
+    .editor-page { display: none; padding: 4px 13px 14px; overflow-y: auto; flex: 1; }
+    .editor-page.show { display: block; }
+    #editor h3 {
+      margin: 13px 0 3px; font-size: 10.5px; letter-spacing: .22em; font-weight: 400;
+      color: #6f6a58; text-transform: uppercase;
+      border-bottom: 1px solid #26263c; padding-bottom: 4px;
+    }
+    .editor-empty { margin: 8px 0; font-size: 11px; line-height: 1.5; color: #6a6454; }
+    .editor-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; margin-top: 7px; }
+    .editor-tile {
+      display: flex; flex-direction: column; align-items: center; gap: 2px;
+      padding: 7px 2px 5px; border-radius: 7px; overflow: hidden;
+    }
+    .editor-tile .ico { font-size: 17px; line-height: 1.1; height: 22px; display: grid; place-items: center; }
+    .editor-tile .ico img { width: 22px; height: 22px; image-rendering: auto; opacity: .92; }
+    .editor-tile.brushing { border-color: #6b5f45; background: rgba(64, 54, 34, .7); }
+    .editor-tile.brushing .cap { color: #f0d79f; }
+    .editor-search {
+      width: 100%; margin: 8px 0 2px; padding: 5px 8px; font-size: 11.5px;
+    }
+    .editor-brushbar {
+      margin: 8px 0 4px; padding: 8px 9px; border: 1px solid #6b5f45; border-radius: 8px;
+      background: rgba(64, 54, 34, .38); display: flex; flex-direction: column; gap: 7px;
+    }
+    .editor-brush-head { display: flex; align-items: center; gap: 8px; }
+    .editor-brush-label { flex: 1; font-size: 11px; color: #f0d79f; letter-spacing: .04em; }
+    .editor-brush-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+    .editor-brush-grid label {
+      display: flex; align-items: center; justify-content: space-between; gap: 5px;
+      margin: 0; font-size: 10px; color: #6f6a58;
+    }
+    .editor-brush-grid input { width: 3.4rem; min-width: 0; padding: 3px 5px; font-size: 11px; }
+    .editor-tile .cap {
+      font-size: 8px; letter-spacing: .02em; color: #7d7460; text-align: center;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+    }
+    .editor-tile:hover { border-color: #6b5f45; background: rgba(64, 54, 34, .55); }
+    .editor-tile:hover .cap { color: #e8dcc0; }
+    .editor-subject {
+      margin: 9px 0 0; font-size: 11px; color: #e8dcc0; letter-spacing: .04em;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .editor-seg { display: flex; gap: 4px; margin: 9px 0 4px; }
+    .editor-seg button { flex: 1; padding: 6px 2px; font-size: 10.5px; }
+    .editor-seg button.active { background: rgba(64, 54, 34, .7); color: #f0d79f; border-color: #6b5f45; }
+    .editor-check { display: flex; align-items: center; gap: 5px; font-size: 10.5px; margin: 0; white-space: nowrap; }
+    .editor-opts { display: flex; align-items: center; gap: 10px; margin: 9px 0 2px; }
+    .editor-mini { margin-left: auto; padding: 3px 8px; font-size: 10.5px; }
+    .editor-array-row { display: grid; grid-template-columns: 3rem 3rem 1fr auto; gap: 4px; margin-top: 5px; }
+    .editor-array-row input, .editor-array-row select {
+      width: 100%; min-width: 0; padding: 4px 5px; font-size: 11px;
+    }
+    .editor-array-row select {
+      background: rgba(16, 20, 36, .78); color: #cdbf9d;
+      border: 1px solid #33334c; border-radius: 7px; font-family: Georgia, serif;
+    }
+    .editor-array-row button { padding: 4px 8px; font-size: 11px; }
+    .editor-vec { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin-top: 5px; }
+    .editor-vec label { display: flex; align-items: center; gap: 4px; font-size: 10px; color: #6f6a58; }
+    .editor-vec input { width: 100%; min-width: 0; padding: 4px 5px; font-size: 11px; }
+    .editor-actions { display: flex; gap: 5px; margin-top: 11px; }
+    .editor-actions.wrap { flex-wrap: wrap; }
+    .editor-actions button { flex: 1; min-width: 74px; padding: 7px 4px; font-size: 11px; }
+    .editor-actions button.danger { color: #cf9a90; border-color: #5b3733; }
+    .editor-actions button.danger:hover { background: rgba(90, 40, 34, .5); color: #ffd9cf; }
+    .editor-wide { width: 100%; margin-top: 12px; padding: 8px; }
+    .editor-outliner { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; }
+    .editor-row { text-align: left; padding: 5px 8px; font-size: 11px; border-radius: 5px; }
+    .editor-row.active { background: rgba(64, 54, 34, .7); color: #f0d79f; border-color: #6b5f45; }
+    #editor label { display: block; font-size: 11.5px; margin: 7px 0 2px; letter-spacing: .06em; }
+    #editor label span { float: right; color: #e8dcc0; }
+    #editor input[type=range] {
+      width: 100%; height: 4px; -webkit-appearance: none; appearance: none;
+      background: #2c2c44; border-radius: 2px; outline: none; margin: 2px 0 0; border: none;
+    }
+    #editor input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none; width: 11px; height: 11px;
+      border-radius: 50%; background: #d8c9a3; border: 1px solid #6b5f45; cursor: pointer;
+    }
+    body.editing #hud { display: none; }
+
+    /* ---- camera shot list ---- */
+    #shots {
+      position: fixed; right: 20px; bottom: 74px; z-index: 12; width: 236px;
+      max-height: calc(100vh - 160px); display: flex; flex-direction: column;
+      background: rgba(14, 18, 34, .9); border: 1px solid #32324a; border-radius: 10px;
+      font-family: Georgia, serif; color: #b7a982;
+      backdrop-filter: blur(6px); box-shadow: 0 14px 44px rgba(0,0,0,.5);
+      transition: transform .22s ease, opacity .22s ease;
+    }
+    #shots.closed { transform: translateY(12px); opacity: 0; pointer-events: none; }
+    #shots header {
+      display: flex; align-items: baseline; gap: 8px;
+      padding: 10px 12px 8px; border-bottom: 1px solid #26263c;
+    }
+    #shots header strong {
+      font-size: 10.5px; letter-spacing: .28em; font-weight: 400;
+      color: #8f7f5c; text-transform: uppercase;
+    }
+    .shots-count { margin-left: auto; font: 11px monospace; color: #f0d79f; }
+    .shots-actions { display: flex; gap: 5px; padding: 9px 12px 6px; }
+    .shots-actions button { padding: 6px 8px; font-size: 11px; }
+    .shots-capture { flex: 1; color: #f0d79f; border-color: #6b5f45; }
+    .shots-actions .danger { color: #cf9a90; border-color: #5b3733; }
+    .shots-list { overflow-y: auto; padding: 2px 12px 12px; display: flex; flex-direction: column; gap: 4px; }
+    .shots-empty { margin: 8px 0; font-size: 11px; color: #6a6454; }
+    .shots-row { display: grid; grid-template-columns: 1fr 4.4rem 1.4rem; gap: 4px; align-items: stretch; }
+    .shots-go {
+      display: flex; align-items: baseline; gap: 6px; text-align: left;
+      padding: 5px 7px; font-size: 10px; overflow: hidden;
+    }
+    .shots-go b { color: #f0d79f; font-weight: 400; font-family: monospace; }
+    .shots-go span {
+      color: #6f6a58; font-family: monospace; font-size: 9px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .shots-note { min-width: 0; padding: 4px 5px; font-size: 10px; }
+    .shots-del { padding: 4px; font-size: 10px; color: #8a6a64; }
+    .shots-del:hover { color: #ffd9cf; border-color: #5b3733; }
+    .shots-fallback { width: 100%; height: 90px; margin-top: 8px; font: 10px monospace; }
+
     #tip {
       position: fixed; bottom: 64px; right: 22px; z-index: 9;
       color: #5d5645; font: 11px Georgia, serif; letter-spacing: .1em;
@@ -199,6 +346,61 @@
       display: block; width: 100%; height: 100%; transform: scaleX(0); transform-origin: 0 50%;
       background: linear-gradient(90deg, #76613e, #d3ae64); box-shadow: 0 0 8px rgba(211,174,100,.42);
       transition: transform .16s linear; will-change: transform;
+    }
+
+    /* ---- compact/touch viewport dock ----
+       Keep world actions and view tools on separate rails. Their former
+       left/right desktop anchoring overlapped around tablet portrait widths. */
+    @media (max-width: 900px), (pointer: coarse) {
+      #hud { top: calc(12px + env(safe-area-inset-top)); left: 12px; }
+      #runHud {
+        top: calc(10px + env(safe-area-inset-top)); width: calc(100vw - 24px);
+        min-width: 0; box-sizing: border-box;
+      }
+      #modes {
+        left: 12px; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom));
+        justify-content: center; gap: 8px; flex-wrap: nowrap;
+      }
+      #modes button, #modes input { min-height: 44px; box-sizing: border-box; }
+      #btnNew { padding-block: 0; }
+      .seedbox input { width: 76px; }
+      .seedbox button { padding: 0 11px; }
+      #tools {
+        left: 12px; right: 12px; bottom: calc(68px + env(safe-area-inset-bottom));
+        display: grid; grid-template-columns: repeat(10, 44px); justify-content: center; gap: 6px;
+      }
+      #tools button { width: 44px; height: 44px; }
+      #tip {
+        left: 12px; right: 12px; bottom: calc(120px + env(safe-area-inset-bottom));
+        text-align: center;
+      }
+      #forgeStatus { left: 12px; bottom: calc(122px + env(safe-area-inset-bottom)); }
+      #dragonGizmoPanel, #shots { right: 12px; bottom: calc(122px + env(safe-area-inset-bottom)); }
+      #params {
+        top: calc(12px + env(safe-area-inset-top)); right: 12px;
+        max-height: calc(100vh - 162px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+      }
+      #editor {
+        top: calc(12px + env(safe-area-inset-top)); left: 12px;
+        bottom: calc(122px + env(safe-area-inset-bottom));
+      }
+      #params .phead button, #editor .editor-close { min-width: 44px; min-height: 44px; }
+    }
+    @media (max-width: 560px) {
+      #tools {
+        bottom: calc(68px + env(safe-area-inset-bottom));
+        grid-template-columns: repeat(5, 44px);
+      }
+      #tip { bottom: calc(170px + env(safe-area-inset-bottom)); }
+      #forgeStatus { bottom: calc(172px + env(safe-area-inset-bottom)); }
+      #dragonGizmoPanel, #shots { bottom: calc(172px + env(safe-area-inset-bottom)); }
+      #editor { bottom: calc(172px + env(safe-area-inset-bottom)); width: calc(100vw - 26px); }
+      #params {
+        max-height: calc(100vh - 212px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+      }
+      #btnNew { font-size: 12.5px; padding-inline: 11px; }
+      .seedbox input { width: 62px; padding-inline: 8px; }
+      .seedbox button { padding-inline: 9px; }
     }
     @keyframes breathe { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
   </style>
@@ -255,6 +457,8 @@
     <button id="btnWalk" title="the skeleton walks the route (Esc stops)">💀</button>
     <button id="btnBreak" title="GPU destruction — click masonry (X)">💥</button>
     <button id="btnDragonGizmo" title="move dragon + rock landmark (G)">🐉</button>
+    <button id="btnEditor" title="dungeon editor — assets, gizmo, generation (E)">🛠</button>
+    <button id="btnShots" title="camera shots — capture framings (C)">📷</button>
     <button id="btnParams" title="forge parameters">⚙</button>
   </div>
 

@@ -42,6 +42,11 @@ export interface Ctx {
   reportForgeStage?: (stage: ForgeStage, detail: ForgeStageDetail) => void;
   /** live handles — ticked every frame */
   worlds: WorldHandle[];
+  /** Where the player enters the world: the apron outside the entrance tower's
+   *  door. Set by forge() once the owning block is placed, and null in world
+   *  modes that build no ground entrance (cube, monument). Consumers fall back
+   *  to the old in-fortress entrance cell when it is null. */
+  spawn: { x: number; y: number; z: number } | null;
   genParams: Params;
   hud: { name: HTMLElement; seed: HTMLElement };
   state: {
@@ -51,6 +56,8 @@ export interface Ctx {
     lastExtent: number;
     /** forge token: a newer forge/cube supersedes an in-flight one */
     token: number;
+    /** User-triggered rebuild currently covered by the retained snapshot. */
+    reforging: boolean;
     /** pixel-ratio CEILING for the current mode/world size — the adaptive-DPR
      *  loop in main.ts walks the actual ratio between 1.0 and this */
     prCap: number;

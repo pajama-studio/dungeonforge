@@ -1,35 +1,54 @@
-# Rust/WASM 迷宫核心 A/B
+# Rust/WASM maze core A/B
 
-Rust 只接管生长树、tier height、braid 和 extra-loop 热点。它输出 `Int8Array tiers` 与 `Uint8Array open`，其余地标、叙事、旋转、验证和 Layout 组装仍在 TypeScript worker 中。
+Rust takes over only the growing-tree, tier height, braid and extra-loop hot spots. It
+outputs an `Int8Array tiers` and a `Uint8Array open`; all the remaining landmark, narrative,
+rotation, validation and Layout assembly work stays in the TypeScript worker.
 
-这样做的理由：
+The reasons for doing it this way:
 
-- WASM 边界每个 block 只复制两块小数组。
-- 正式 worker 不下载/编译 WASM；实验模块只由独立 benchmark 加载。
-- 任一失败都能回退 TypeScript 后端。
-- Rust 返回 RNG draw count，TS 的后续 RNG 状态保持完全一致。
+- The WASM boundary copies only two small arrays per block.
+- The production worker never downloads or compiles WASM; the experimental module is
+  loaded only by the standalone benchmark.
+- Any failure can fall back to the TypeScript backend.
+- Rust returns the RNG draw count, so the TS side's subsequent RNG state stays exactly
+  consistent.
 
-## 100 轮结果
+## 100-round result
 
-工作负载为每轮 24 个不同 seed/尺寸，包含真实 typed-array 边界复制：
+The workload is 24 different seeds/sizes per round, including the real typed-array
+boundary copies:
 
-| 指标 | TypeScript | Rust/WASM |
+| Metric | TypeScript | Rust/WASM |
 |---|---:|---:|
 | median | 2.137 ms | 1.135 ms |
 | P95 | 5.760 ms | 2.857 ms |
-| 核心加速 | 1.00× | 1.88× |
-| 语义 checksum mismatch | — | 0 / 24 |
+| core speedup | 1.00× | 1.88× |
+| semantic checksum mismatch | — | 0 / 24 |
 | release WASM | — | 24,919 bytes |
 
-核心变快不等于页面冷启动变快。清缓存后的同 seed、20-island 对照中，普通 TS 首批可见为 416.6ms；即使把 module 只编译一次并提前发给 worker，WASM A/B 仍约 1.31s。各布局内部记录的生成时间仍只有约 5–14ms，额外时间主要来自多个 worker 的 WASM 实例化与 WebGPU 首管线编译争抢冷启动 CPU。
+A faster core does not mean a faster page cold start. In a cache-cleared, same-seed,
+20-island comparison, plain TS reached first visible in 416.6ms; even compiling the module
+once and handing it to the worker ahead of time, the WASM A/B still took about 1.31s. The
+generation time recorded inside each layout is still only about 5–14ms — the extra time
+comes mostly from several workers instantiating WASM while the first WebGPU pipeline
+compile contends for the same cold-start CPU.
 
-因此当前结论是：撤掉 demo 的运行时 WASM 接线，只保留可复现的 crate、产物和 benchmark；普通路径已经确认没有 `.wasm` resource request。Rust 本身不会自动提高地图质量；它提供的约 1.9× 内核预算应在下一阶段用于 4–8 个候选并行生成或支撑图计算，再按路径直径、环路分布、瓶颈、垂直变化和叙事约束评分择优。等单 worker/共享内存生命周期方案通过完整 forge 回归后，再考虑接回正式生成池。
+So the current conclusion is: pull the runtime WASM wiring out of the demo and keep only
+the reproducible crate, artifacts and benchmark; the normal path has been confirmed to
+issue no `.wasm` resource request. Rust does not automatically improve map quality by
+itself; the roughly 1.9× kernel budget it provides should be spent in the next phase on
+generating 4–8 candidates in parallel, or on support-graph computation, then scoring them
+by path diameter, loop distribution, bottlenecks, vertical variation and narrative
+constraints and picking the best. Reconnecting it to the production generation pool is
+worth reconsidering once a single-worker / shared-memory lifecycle scheme passes the full
+forge regression.
 
-复现：
+Reproduce:
 
 ```sh
 npm run build:wasm
 npm run bench:wasm -- --rounds 100 --output artifacts/wasm-maze-100.json
 ```
 
-当前页面始终使用稳定的 TypeScript worker pool；`npm run bench:wasm` 是唯一启用 Rust/WASM 的 A/B 入口。
+The page always uses the stable TypeScript worker pool; `npm run bench:wasm` is the only
+entry point that enables Rust/WASM.

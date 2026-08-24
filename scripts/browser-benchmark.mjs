@@ -13,11 +13,18 @@ const screenshot = opts.get("--screenshot");
 const destruction = opts.get("--destruction") === "true";
 const forceDestruction = opts.get("--force-destruction") === "true";
 const detail = opts.get("--detail") !== "false";
+const forcedLod = opts.has("--lod")
+  ? Math.max(0, Math.min(2, Math.round(Number(opts.get("--lod")))))
+  : null;
 const middleFull = opts.get("--middle-full") === "true";
 const fixedSeed = opts.get("--seed");
 const clustered = opts.get("--clustered");
 const ambientOcclusion = opts.get("--ao");
 const gpuScene = opts.get("--gpu-scene");
+const farShadows = opts.has("--far-shadows")
+  ? opts.get("--far-shadows") === "true"
+  : null;
+const occludeFirst = opts.get("--occlude-first") === "true";
 const urlNeedle = opts.get("--url") ?? "127.0.0.1:4173";
 
 const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
@@ -84,6 +91,18 @@ const expression = `(async () => {
   while ((!window.__df || !window.__df.decorReady) && performance.now() < deadline) await sleep(100);
   if (!window.__df) throw new Error("Dungeonforge dev hook did not initialize");
   if (!window.__df.decorReady) throw new Error("Decor pipelines did not finish warming within 60 seconds");
+  if (${JSON.stringify(farShadows)} !== null
+    && window.__df.masonry.farShadows !== ${JSON.stringify(farShadows)}) {
+    const beforeToken = window.__df.ctx.state.token;
+    window.__df.masonry.setFarShadows(${JSON.stringify(farShadows)});
+    document.getElementById("seedInput").value = String(window.__df.ctx.state.seed);
+    document.getElementById("btnGo").click();
+    while ((window.__df.ctx.state.token <= beforeToken || window.__df.ctx.state.reforging)
+      && performance.now() < deadline) await sleep(20);
+    if (window.__df.ctx.state.token <= beforeToken || window.__df.ctx.state.reforging) {
+      throw new Error("far-shadow reforge timed out");
+    }
+  }
   // Player/skinning is demand-loaded and absent here, but WebGPU may still be
   // retiring asynchronous pipeline work immediately after incremental decor
   // reveal. Keep the historical four-second settle window so 100-loop results
@@ -95,13 +114,18 @@ const expression = `(async () => {
   // [0.85, cap] during startup. Benchmarks must compare the same number of
   // pixels, so lock the backing targets after stopping the animation loop.
   ctx.renderer.setPixelRatio(1);
-  if (${forceDestruction} && window.__df.destruction) {
+  if (${forceDestruction}) {
     // Benchmark-only worst case: keep the fixed compute pool awake for every
     // measured draw. TypeScript-private fields remain normal JS properties.
+    await window.__df.ensureDestruction();
     window.__df.destruction.activeUntil = Infinity;
     window.__df.destruction.mesh.visible = true;
   }
-  window.__df.setAllDetail(${detail});
+  if (${JSON.stringify(forcedLod)} === null) window.__df.setAllDetail(${detail});
+  else {
+    window.__df.masonry.forceLod(${JSON.stringify(forcedLod)});
+    window.__df.gpuScene?.tick(window.__df.camera);
+  }
   if (${middleFull}) {
     let fullCourse = null;
     ctx.scene.traverse((o) => {
@@ -111,6 +135,18 @@ const expression = `(async () => {
     ctx.scene.traverse((o) => {
       if (o.isMesh && o.geometry?.name === "blockMiddleGeo") o.geometry = fullCourse;
     });
+  }
+  if (${occludeFirst}) {
+    let firstSlot;
+    ctx.scene.traverse((object) => {
+      if (firstSlot !== undefined || object.name !== "colsLo") return;
+      if (!object.userData?.gpuSceneManaged) return;
+      firstSlot = object.parent?.userData?.slot;
+    });
+    if (firstSlot !== undefined) {
+      window.__df.gpuScene?.setOccludingSlots(new Set([firstSlot]));
+      window.__df.gpuScene?.tick(window.__df.camera);
+    }
   }
   window.__df.controls.autoRotate = false;
   // Cinematic mode moves OrbitControls.target during the four-second pipeline
@@ -162,7 +198,24 @@ const expression = `(async () => {
     visibleRenderObjects++;
     const gpuSceneCount = o.name === "gpu-scene-masonry-high"
       ? gpuSceneValidation?.high
-      : o.name === "gpu-scene-masonry-mid" ? gpuSceneValidation?.middle : undefined;
+      : o.name === "gpu-scene-masonry-mid" ? gpuSceneValidation?.middle
+        : o.name === "gpu-scene-low-masonry-shadow" ? gpuSceneValidation?.lowMasonry?.shadow
+          : o.name === "gpu-scene-low-masonry-plain" ? gpuSceneValidation?.lowMasonry?.plain
+            : o.name === "gpu-scene-low-surface-tiles-shadow" ? gpuSceneValidation?.lowSurfaces?.tiles?.shadow
+              : o.name === "gpu-scene-low-surface-tiles-plain" ? gpuSceneValidation?.lowSurfaces?.tiles?.plain
+                : o.name === "gpu-scene-low-surface-steps-shadow" ? gpuSceneValidation?.lowSurfaces?.steps?.shadow
+                  : o.name === "gpu-scene-low-surface-steps-plain" ? gpuSceneValidation?.lowSurfaces?.steps?.plain
+                    : o.name === "gpu-scene-low-surface-columns-shadow" ? gpuSceneValidation?.lowSurfaces?.columns?.shadow
+                      : o.name === "gpu-scene-low-surface-columns-plain" ? gpuSceneValidation?.lowSurfaces?.columns?.plain
+                        : o.name === "gpu-scene-low-surface-planks-shadow" ? gpuSceneValidation?.lowSurfaces?.planks?.shadow
+                          : o.name === "gpu-scene-low-surface-planks-plain" ? gpuSceneValidation?.lowSurfaces?.planks?.plain
+                            : o.name === "gpu-scene-global-decor-banners"
+                              ? (gpuSceneValidation?.lowSurfaces?.banners?.plain ?? 0)
+                                + (gpuSceneValidation?.lowSurfaces?.banners?.shadow ?? 0)
+                              : o.name === "gpu-scene-global-decor-redTiles"
+                                ? (gpuSceneValidation?.lowSurfaces?.redTiles?.plain ?? 0)
+                                  + (gpuSceneValidation?.lowSurfaces?.redTiles?.shadow ?? 0)
+                                : undefined;
     const instanceCount = gpuSceneCount ?? (o.isInstancedMesh ? o.count : 1);
     if (o.isInstancedMesh) instances += instanceCount;
     const pos = o.geometry && o.geometry.getAttribute && o.geometry.getAttribute("position");
@@ -211,7 +264,7 @@ const values = data.samples.map((s) => s.frameMs);
 const result = {
   schema: 1,
   label,
-    workload: { rounds, warmup, drawsPerLoop, detail, middleFull, url: data.pageUrl },
+    workload: { rounds, warmup, drawsPerLoop, detail, forcedLod, farShadows, occludeFirst, middleFull, url: data.pageUrl },
   summary: {
     frameMedianMs: quantile(values, 0.5),
     frameP95Ms: quantile(values, 0.95),

@@ -155,18 +155,80 @@ export const nextFrame = (): Promise<void> => new Promise((resolve) => {
   requestAnimationFrame(() => { clearTimeout(t); settle(); });
 });
 
+/** Resume after the browser has had a chance to present the requested frame,
+ * not in the microtask checkpoint between two RAF callbacks. Used for the
+ * first-island handoff: resuming forge work inside that checkpoint delayed the
+ * renderer's own callback by the whole assembly budget. */
+const afterNextFrame = (): Promise<void> => new Promise((resolve) => {
+  let done = false;
+  const settle = () => { if (!done) { done = true; resolve(); } };
+  const fallback = setTimeout(settle, 60);
+  requestAnimationFrame(() => {
+    clearTimeout(fallback);
+    setTimeout(settle, 0);
+  });
+});
+
 /** Frame-budget pacer. Generation is subdivided into SMALL steps (one island
  *  build, one gate repair, one bridge, one pier set…) and `tick()` is awaited
  *  between them: once the budget is spent the rest of the frame goes back to
- *  the renderer. 6ms of a 16.7ms frame leaves render + browser overhead a
- *  full 10ms, so a forge reads as the rise animation, never as a hitch. */
+ *  the renderer. The active mode chooses the budget that leaves enough room
+ *  for its render path, so a forge reads as a rise animation, never a hitch. */
 export class Pacer {
   private used = performance.now();
   constructor(private budgetMs = 6) {}
-  async tick(): Promise<void> {
-    if (performance.now() - this.used > this.budgetMs) {
-      await nextFrame();
+  async tick(force = false): Promise<void> {
+    const elapsed = performance.now() - this.used;
+    if (force || elapsed > this.budgetMs) {
+      await (force ? afterNextFrame() : nextFrame());
       this.used = performance.now();
     }
   }
+}
+
+/** How far the entrance tower descends below the floor it arrives on.
+ *
+ *  Authored, not measured. A ground block sits near y=0 and the abyss floor's
+ *  plane is around -27 with ±11 of relief, so the natural drop is 16-38 units
+ *  and varies per seed — and the bedrock lives in ringGroup, which fit()
+ *  rescales with the chain, so deriving the climb from the terrain would tie
+ *  the tower's height to a presentation fit. Fixing it here makes the climb a
+ *  pacing decision the design owns. See docs/GROUND-ENTRANCE.md §5.1. */
+export const GROUND_CLIMB = 26;
+
+/** The way into the world, as a tower dock.
+ *
+ *  Unlike a stair court this joins one floor, not two: the upper end is the
+ *  shaft's landing inside the lowest block, and the lower end is the tower's
+ *  foot out in the open abyss, GROUND_CLIMB below it. There is no partner
+ *  layout to agree with, which is exactly why the generator refuses to move the
+ *  anchor — the foot and its doorway are sited against this, not against
+ *  another block. */
+export function groundStairDock(
+  block: { l: Layout } & Origin,
+  anchorId: number,
+): VerticalStairDock | null {
+  const a = block.l.verticalAnchors.find((v) => v.id === anchorId);
+  if (!a) return null;
+  const lx = a.x + [1, -1, 0, 0][a.dockDir];
+  const ly = a.y + [0, 0, 1, -1][a.dockDir];
+  const c = ly * block.l.N + lx;
+  if (block.l.kind[c] !== FLOOR) return null;
+
+  const x = block.ox + (a.x - (block.l.N - 1) / 2) * CELL;
+  const z = block.oz + (a.y - (block.l.N - 1) / 2) * CELL;
+  const upper = {
+    x: block.ox + (lx - (block.l.N - 1) / 2) * CELL,
+    y: block.oy + block.l.tier[c] * TH + 0.16,
+    z: block.oz + (ly - (block.l.N - 1) / 2) * CELL,
+  };
+  const y0 = upper.y - GROUND_CLIMB;
+  return {
+    x, z, y0, y1: upper.y,
+    side: a.dockDir ^ 1,
+    // The foot's doorway faces the way the landing docks, so arriving from
+    // below and walking out read as one axis.
+    lower: { x, y: y0, z },
+    upper,
+  };
 }

@@ -12,12 +12,29 @@ import type { Layout, Dir } from "../gen/dungeon";
 import { FLOOR, WALL, VOID, ABYSS, DX, DY } from "../gen/dungeon";
 import { hash2, hash3 } from "../gen/rng";
 import { TH, CELL, COURSE, linkArc, districtLinkArc } from "../config";
+import { setStoneDamage } from "./kit/materials";
 import { getKit } from "./kit";
+import { ABYSS_FLOOR, ABYSS_FLOOR_BASE_Y } from "./abyss-floor";
 import {
   getSlot, putInstanced, putInstancedCombined, putInstancedTwin,
   isDecorSuppressed, setSlotDetail, setSlotLodLevel,
 } from "./slots";
-import { InstArena, InstList } from "./instances";
+import {
+  COURSE_BASE, COURSE_CULLED, COURSE_FULL, COURSE_OPEN, COURSE_TOP,
+  InstArena, InstList, planColumn, writeColumnCodes, type CourseShell,
+} from "./instances";
+
+// Repeated façade/roof shells are a review layer, not part of the default
+// silhouette. One concrete InstancedMesh per island made the distant ring look
+// overbuilt and forced the cold WebGPU post graph to realize hundreds of
+// render-object-specific programs. Keep them available for A/B art review.
+const ARCHITECTURAL_SHELLS_ENABLED = typeof window !== "undefined"
+  && new URLSearchParams(window.location.search).get("facades") === "1";
+// Exact-output A/B for the allocation-free column planner and slow-walk hash
+// cache below. This stays at module scope so thousands of columns do not parse
+// location.search independently.
+const OPTIMIZED_MASONRY_BUILD = typeof window === "undefined"
+  || new URLSearchParams(window.location.search).get("masonryBuild") !== "legacy";
 
 export interface LightSpec { x: number; y: number; z: number; color: number; base: number; dist: number; ph: number }
 
@@ -244,7 +261,7 @@ export function buildBridgeLink(
     flames.pushY(end.x + perp.x * lanternSide, end.y + 0.85, end.z + perp.z * lanternSide, 0, 0.8, 0.85, 0.8, hex(0xffffff));
   }
   putInstanced(pool, "linkStones", R.blockGeo, R.stoneMat, stones, true);
-  putInstancedTwin(pool, "linkStonesLo", "linkStones", R.blockGeoLo, R.stoneLoMat, true);
+  putInstancedTwin(pool, "linkStonesLo", "linkStones", R.blockGeoLo, R.stoneLoMat, farShadows);
   putInstanced(pool, "linkBowls", R.bowlGeo, R.woodMat, bowls, false);
   putInstanced(pool, "linkFlames", R.flameGeo, R.flameWarm, flames, false);
   // A new/rebuilt companion slot must start in exactly one LOD. Leaving both
@@ -353,7 +370,7 @@ export function buildSupportPiers(
     blockers.push({ x: px, z: pz, y0: baseY, y1: topY, radius: CELL * 0.58, slot });
   }
   putInstanced(pool, "blocks", R.blockGeo, R.stoneMat, bricks, true);
-  putInstancedTwin(pool, "blocksLo", "blocks", R.blockGeoLo, R.stoneLoMat, true);
+  putInstancedTwin(pool, "blocksLo", "blocks", R.blockGeoLo, R.stoneLoMat, farShadows);
   setSlotDetail(slot, false);
   const rise = makeRise(pool.group, riseDelay);
   return { group: pool.group, lights: [], tick: rise, dispose() {}, blockers };
@@ -380,10 +397,35 @@ function makeRise(group: THREE.Group, delay = 0): (t: number) => void {
 // Per-layout build.
 // ---------------------------------------------------------------------------
 
+/** Runtime bisect for masonry see-through. The interior-course cull is a
+ *  purely horizontal test — it asks whether four neighbours hide a column's
+ *  flanks, and has no concept of being seen from below. Turning it off and
+ *  re-forging says definitively whether a reported hole is the cull or the
+ *  geometry. Exposed on __df.masonry. */
+let interiorCullEnabled = true;
+/** Experiment switch: draw every course with the sealed box. If see-through
+ *  banding disappears with this on, the open shells are the cause. */
+let DEBUG_CLOSED_COURSES = false;
+/** Far-LOD masonry casting shadows. Every caster is drawn a second time in the
+ *  shadow pass, and the far tier is where that pays least: the geometry is
+ *  already a collapsed box and its shadow lands far from the camera. Toggle to
+ *  compare — __df.masonry.setFarShadows(). */
+let farShadows = false;
+export function setFarShadows(on: boolean): void { farShadows = on; }
+export function getFarShadows(): boolean { return farShadows; }
+export function setClosedCourses(on: boolean): void { DEBUG_CLOSED_COURSES = on; }
+export function getClosedCourses(): boolean { return DEBUG_CLOSED_COURSES; }
+export function setInteriorCull(on: boolean): void { interiorCullEnabled = on; }
+export function getInteriorCull(): boolean { return interiorCullEnabled; }
+
 export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, rootScale = 1, riseDelay = 0): WorldHandle {
+  const buildStartedAt = performance.now();
   worldLists.reset();
   const list = (capacity = 64) => worldLists.take(capacity);
   const R = getKit();
+  // Point the texture-sampled fracture layer at this layout's decay, so the
+  // same shared material renders a pristine sanctum and a collapsed ossuary.
+  setStoneDamage(l.params?.decay ?? 0.5);
   const { N, kind, tier, wallTop, wallBase, support } = l;
   const gi = (x: number, y: number) => y * N + x;
   const worldCoord = new Float32Array(N);
@@ -406,6 +448,7 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   const blocks = list(N * N * 2);
   const blockMids = list(N * N * 3);
   const blockTops = list(N * N);
+  const blockBases = list(N * N);
   const blocksLow = list(N * N);
   const merlons = list(N * 4);
   const architecturalBays = list(N * 3);
@@ -470,9 +513,29 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   const breachByInstance = new Map<number, MasonryBreachCell>();
   const breachByMiddleInstance = new Map<number, MasonryBreachCell>();
   const breachByTopInstance = new Map<number, MasonryBreachCell>();
+  const breachByBaseInstance = new Map<number, MasonryBreachCell>();
   let masonryPotential = 0;
   let masonryInteriorCulled = 0;
   let masonryDoorCulled = 0;
+  // One reusable column workspace per island. The old path allocated a boolean
+  // array, a CoursePlan array and an object for every course of every column.
+  let courseRendered = new Uint8Array(64);
+  let courseSealed = new Uint8Array(64);
+  let courseDoorGap = new Uint8Array(64);
+  let courseBreach = new Uint8Array(64);
+  let courseBoundaryVisible = new Uint8Array(65);
+  let courseCodes = new Uint8Array(64);
+  const ensureCourseCapacity = (count: number) => {
+    if (courseCodes.length >= count) return;
+    let capacity = courseCodes.length;
+    while (capacity < count) capacity *= 2;
+    courseRendered = new Uint8Array(capacity);
+    courseSealed = new Uint8Array(capacity);
+    courseDoorGap = new Uint8Array(capacity);
+    courseBreach = new Uint8Array(capacity);
+    courseBoundaryVisible = new Uint8Array(capacity + 1);
+    courseCodes = new Uint8Array(capacity);
+  };
 
   // Occlusion tier: the height below which every side of a column is hidden by
   // its 4 neighbors — those courses never rasterize (topmost course always kept
@@ -506,20 +569,80 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
     const nCourses = Math.max(0, Math.round((topTier - baseTier) * TH / COURSE));
     const doorCell = l.doorMask[cell] === 1;
     const occlH = occlTier[cell] * TH;
+    // occlTier is a purely horizontal test — the minimum height at which all
+    // four neighbours hide this column's flanks. It has no concept of "below",
+    // so a mass overhanging the abyss needs its lowest course sealed.
+    const bottomExposed = wallBase[cell] === ABYSS;
+    const courseY0 = (k: number) => baseTier * TH + k * COURSE;
+    const inDoorGap = (k: number): boolean => {
+      if (!doorCell || !l.door) return false;
+      const yMid = courseY0(k) + COURSE / 2;
+      return yMid > l.door.tier * TH && yMid < l.door.tier * TH + 2.6;
+    };
+    const breachAt = (k: number): boolean => {
+      const floorTier = breachTier[cell];
+      if (floorTier === ABYSS) return false;
+      const yMid = courseY0(k) + COURSE / 2;
+      return yMid > floorTier * TH && yMid < floorTier * TH + 2.65;
+    };
+    // One decision for the whole column, so a course can never be left with a
+    // missing face because something else removed its neighbour.
+    const column = OPTIMIZED_MASONRY_BUILD ? null : planColumn({
+      courseCount: nCourses,
+      removed: (k) => {
+        if (inDoorGap(k)) return true;
+        if (!interiorCullEnabled) return false;
+        if (breachAt(k)) return false;
+        if (bottomExposed && k === 0) return false;
+        return k < nCourses - 1 && courseY0(k) + COURSE <= occlH - 0.01;
+      },
+      sealed: (k) => breachAt(k) || DEBUG_CLOSED_COURSES,
+      // A boundary below the occlusion height is hidden by the neighbours, so
+      // it needs no geometry even when the adjacent course is gone.
+      boundaryVisible: (k) => courseY0(k) > occlH - 0.01,
+      bottomExposed,
+    });
+    if (OPTIMIZED_MASONRY_BUILD) {
+      ensureCourseCapacity(nCourses);
+      const floorTier = breachTier[cell];
+      const doorFloor = doorCell && l.door ? l.door.tier * TH : 0;
+      const breachFloor = floorTier !== ABYSS ? floorTier * TH : 0;
+      for (let k = 0; k <= nCourses; k++) {
+        const y0 = baseTier * TH + k * COURSE;
+        courseBoundaryVisible[k] = y0 > occlH - 0.01 ? 1 : 0;
+        if (k === nCourses) continue;
+        const yMid = y0 + COURSE / 2;
+        const doorGap = Boolean(doorCell && l.door && yMid > doorFloor && yMid < doorFloor + 2.6);
+        const breach = floorTier !== ABYSS && yMid > breachFloor && yMid < breachFloor + 2.65;
+        const hidden = interiorCullEnabled && !breach && !(bottomExposed && k === 0)
+          && k < nCourses - 1 && y0 + COURSE <= occlH - 0.01;
+        courseDoorGap[k] = doorGap ? 1 : 0;
+        courseBreach[k] = breach ? 1 : 0;
+        courseRendered[k] = doorGap || hidden ? 0 : 1;
+        courseSealed[k] = breach || DEBUG_CLOSED_COURSES ? 1 : 0;
+      }
+      writeColumnCodes(
+        courseRendered, courseSealed, courseBoundaryVisible,
+        nCourses, bottomExposed, courseCodes,
+      );
+    }
+    let slowWalkCell = -1;
+    let slowX0 = 0, slowX1 = 0, slowZ0 = 0, slowZ1 = 0;
     for (let k = 0; k < nCourses; k++) {
       masonryPotential++;
       const y0 = baseTier * TH + k * COURSE;
       const yMid = y0 + COURSE / 2;
-      if (k < nCourses - 1 && y0 + COURSE <= occlH - 0.01) {
-        masonryInteriorCulled++;
-        continue; // fully hidden
-      }
-      if (doorCell && l.door) {
-        const gapLo = l.door.tier * TH, gapHi = l.door.tier * TH + 2.6;
-        if (yMid > gapLo && yMid < gapHi) {
-          masonryDoorCulled++;
-          continue; // doorway gap (lintel above survives)
-        }
+      const courseCode = OPTIMIZED_MASONRY_BUILD
+        ? courseCodes[k]
+        : (column![k].render
+          ? column![k].shell === "full" ? COURSE_FULL
+            : column![k].shell === "top" ? COURSE_TOP
+              : column![k].shell === "base" ? COURSE_BASE : COURSE_OPEN
+          : COURSE_CULLED);
+      if (courseCode === COURSE_CULLED) {
+        if (OPTIMIZED_MASONRY_BUILD ? courseDoorGap[k] : inDoorGap(k)) masonryDoorCulled++;
+        else masonryInteriorCulled++;
+        continue;
       }
       const h1 = hash3(seed, x * 131 + y, k, 1);
       const h2v = hash3(seed, x * 131 + y, k, 2);
@@ -543,25 +666,62 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
       if (palettePick < 0.46) stoneColor.lerp(_paintCool, 0.22 + (0.46 - palettePick) * 0.34);
       else if (palettePick > 0.76) stoneColor.lerp(_paintWarm, 0.12 + (palettePick - 0.76) * 0.25);
       if (yMid < refFloorTier * TH + COURSE && h1 < 0.12) stoneColor.lerp(MOSS_TINT, 0.45); // moss
-      const jx = (h2v - 0.5) * 0.12 + ((k % 2) ? 0.05 : -0.05);
-      const jz = (h3v - 0.5) * 0.12 + ((k % 2) ? -0.05 : 0.05);
+      // Hand-laid jitter has to stay inside what the course overlap can cover,
+      // or the uncovered ring shows as a dark ledge on every brick — the
+      // lattice Clay kept reporting. Measured: independent per-course jitter
+      // gave a worst-case ring of 0.165 units against a 0.022 margin.
+      //
+      // Two changes. The stagger no longer flips a full step every course; a
+      // running bond offsets ALONG a wall, and offsetting perpendicular to the
+      // face is what builds the ledge. And the random part is now a slow walk
+      // rather than an independent draw, so the column still wanders its full
+      // range over several courses while consecutive courses stay close.
+      const stagger = (k % 2 ? 1 : -1) * 0.015;
+      let walkX: number, walkZ: number;
+      if (OPTIMIZED_MASONRY_BUILD) {
+        const cell0 = Math.floor(k / 6);
+        if (cell0 !== slowWalkCell) {
+          slowWalkCell = cell0;
+          slowX0 = hash3(seed, x * 131 + y, cell0, 2);
+          slowX1 = hash3(seed, x * 131 + y, cell0 + 1, 2);
+          slowZ0 = hash3(seed, x * 131 + y, cell0, 3);
+          slowZ1 = hash3(seed, x * 131 + y, cell0 + 1, 3);
+        }
+        const t = (k % 6) / 6;
+        const smooth = t * t * (3 - 2 * t);
+        walkX = slowX0 + (slowX1 - slowX0) * smooth - 0.5;
+        walkZ = slowZ0 + (slowZ1 - slowZ0) * smooth - 0.5;
+      } else {
+        const walk = (salt: number) => {
+          const period = 6;
+          const cell0 = Math.floor(k / period);
+          const t = (k % period) / period;
+          const a = hash3(seed, x * 131 + y, cell0, salt);
+          const b = hash3(seed, x * 131 + y, cell0 + 1, salt);
+          const smooth = t * t * (3 - 2 * t);
+          return a + (b - a) * smooth - 0.5;
+        };
+        walkX = walk(2);
+        walkZ = walk(3);
+      }
+      const jx = walkX * 0.12 + stagger;
+      const jz = walkZ * 0.12 - stagger;
       // cornice ring every 5th course on towers — segmented silhouette
       const cornice = scaleXZ > 1.2 && k % 5 === 4 ? 1.14 : 1;
       const s = scaleXZ * cornice;
       const handSx = 0.965 + h1 * 0.07;
       const handSz = 0.965 + h3v * 0.07;
+      const breachCourse = OPTIMIZED_MASONRY_BUILD ? courseBreach[k] !== 0 : breachAt(k);
       const floorTier = breachTier[cell];
-      // Keep a passage band's companion courses in the same full source mesh:
-      // a single impact can collapse them atomically. Ordinary lower courses
-      // have masonry beneath them, so they join the open side-only pool; only
-      // the exposed top course needs a cap (and never a hidden bottom).
-      const breachCourse = floorTier !== ABYSS
-        && yMid > floorTier * TH && yMid < floorTier * TH + 2.65;
-      const topCourse = k === nCourses - 1 && !breachCourse;
-      const openCourse = k < nCourses - 1 && !breachCourse;
-      const target = topCourse ? blockTops : (openCourse || breachCourse) ? blockMids : blocks;
-      const targetBreaches = topCourse ? breachByTopInstance
-        : (openCourse || breachCourse) ? breachByMiddleInstance : breachByInstance;
+      const shell: CourseShell = courseCode === COURSE_FULL ? "full"
+        : courseCode === COURSE_TOP ? "top"
+          : courseCode === COURSE_BASE ? "base" : "open";
+      const target = shell === "full" ? blocks
+        : shell === "top" ? blockTops
+        : shell === "base" ? blockBases : blockMids;
+      const targetBreaches = shell === "full" ? breachByInstance
+        : shell === "top" ? breachByTopInstance
+        : shell === "base" ? breachByBaseInstance : breachByMiddleInstance;
       const instanceId = target.count;
       target.pushY(cx + jx, yMid, cz + jz, (h1 - 0.5) * 0.065, s * handSx * sx, 1, s * handSz * sz, stoneColor);
       if (breachCourse) {
@@ -1214,7 +1374,7 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
             ha * 6.28, sc, 1, sc, stoneColor,
           );
         }
-        // brambles (荆棘): thorny tangles sprawling over the castle's skin —
+        // brambles: thorny tangles sprawling over the castle's skin —
         // dense on the outer ramparts and ravine cliffs, sparse inside
         if (kind[c] === WALL && !l.doorMask[c]) {
           for (let d = 0 as Dir; d < 4; d++) {
@@ -1245,7 +1405,7 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
             );
           }
         }
-        // creeper patches (爬山虎) climbing the wall faces from the floor
+        // creeper patches climbing the wall faces from the floor
         if (kind[c] === WALL && !l.doorMask[c]) {
           for (let d = 0 as Dir; d < 4; d++) {
             const n = gi(x + DX[d], y + DY[d]);
@@ -1498,8 +1658,9 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   // ------------------------------------------------------- instanced meshes
   // created last so every section above could still contribute masonry/flames
   putInstanced(pool, "blocks", R.blockGeo, R.stoneMat, blocks);
-  putInstanced(pool, "blockMids", R.blockMiddleGeo, R.stoneMat, blockMids);
-  putInstanced(pool, "blockTops", R.blockTopGeo, R.stoneMat, blockTops);
+  putInstanced(pool, "blockMids", DEBUG_CLOSED_COURSES ? R.blockGeo : R.blockMiddleGeo, R.stoneMat, blockMids);
+  putInstanced(pool, "blockTops", DEBUG_CLOSED_COURSES ? R.blockGeo : R.blockTopGeo, R.stoneMat, blockTops);
+  putInstanced(pool, "blockBases", DEBUG_CLOSED_COURSES ? R.blockGeo : R.blockBaseGeo, R.stoneMat, blockBases);
   (pool.meshes.get("blocks")!.userData as {
     masonryCull?: { potential: number; interior: number; authoredGaps: number; emitted: number };
   }).masonryCull = {
@@ -1508,13 +1669,13 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
     authoredGaps: masonryDoorCulled,
     emitted: masonryPotential - masonryInteriorCulled - masonryDoorCulled,
   };
-  putInstanced(pool, "blocksLo", R.blockGeoLo, R.stoneLoMat, blocksLow);
+  putInstanced(pool, "blocksLo", R.blockGeoLo, R.stoneLoMat, blocksLow, farShadows);
   // Middle LOD keeps the exact authored transform/color of every visible
   // course. Only bevel topology and the expensive near material disappear;
   // the vertically collapsed blocksLo representation is reserved for far.
-  putInstancedTwin(pool, "blocksMidLo", "blocks", R.blockGeoLo, R.stoneLoMat, true);
-  putInstancedTwin(pool, "blockMidsLo", "blockMids", R.blockGeoLo, R.stoneLoMat, true);
-  putInstancedTwin(pool, "blockTopsLo", "blockTops", R.blockGeoLo, R.stoneLoMat, true);
+  putInstancedTwin(pool, "blocksMidLo", "blocks", R.blockGeoLo, R.stoneLoMat, farShadows);
+  putInstancedTwin(pool, "blockMidsLo", "blockMids", R.blockGeoLo, R.stoneLoMat, farShadows);
+  putInstancedTwin(pool, "blockTopsLo", "blockTops", R.blockGeoLo, R.stoneLoMat, farShadows);
   (pool.meshes.get("blocks")!.userData as { masonry?: MasonryStructureData }).masonry = {
     byInstance: breachByInstance,
   };
@@ -1527,9 +1688,17 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   putInstancedTwin(pool, "blocksFade", "blocks", R.blockGeo, R.stoneFadeMat, false);
   putInstancedTwin(pool, "blocksMidLoFade", "blocksMidLo", R.blockGeoLo, R.stoneLoFadeMat, false);
   putInstancedTwin(pool, "blocksLoFade", "blocksLo", R.blockGeoLo, R.stoneLoFadeMat, false);
-  putInstancedTwin(pool, "blockMidsFade", "blockMids", R.blockMiddleGeo, R.stoneFadeMat, false);
+  // Closed geometry for the fade twins, not the open shells the opaque pools
+  // use. The open meshes drop their top and bottom caps to save 46 of 68
+  // triangles, which is sound while a column is opaque and fully stacked. The
+  // reveal window makes masonry 13% opaque with alphaHash and DoubleSide, so
+  // you see through the front face into a hollow course with no lid and no
+  // floor — the horizontal see-through banding. Only instances inside the
+  // aperture draw these twins, so the extra triangles are a rounding error.
+  putInstancedTwin(pool, "blockMidsFade", "blockMids", R.blockGeo, R.stoneFadeMat, false);
   putInstancedTwin(pool, "blockMidsLoFade", "blockMidsLo", R.blockGeoLo, R.stoneLoFadeMat, false);
-  putInstancedTwin(pool, "blockTopsFade", "blockTops", R.blockTopGeo, R.stoneFadeMat, false);
+  putInstancedTwin(pool, "blockTopsFade", "blockTops", R.blockGeo, R.stoneFadeMat, false);
+  putInstancedTwin(pool, "blockBasesFade", "blockBases", R.blockGeo, R.stoneFadeMat, false);
   putInstancedTwin(pool, "blockTopsLoFade", "blockTopsLo", R.blockGeoLo, R.stoneLoFadeMat, false);
   pool.meshes.get("blocksFade")!.count = 0;
   pool.meshes.get("blocksMidLoFade")!.count = 0;
@@ -1539,11 +1708,27 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   pool.meshes.get("blockTopsFade")!.count = 0;
   pool.meshes.get("blockTopsLoFade")!.count = 0;
   putInstanced(pool, "merlons", R.merlonGeo, R.stoneMat, merlons);
-  putInstanced(pool, "architecturalBays", R.architecturalBayGeo, R.stoneMat, architecturalBays, false);
-  putInstanced(pool, "towerRoofs", R.towerRoofGeo, R.stoneMat, towerRoofs, false);
-  putInstanced(pool, "tiles", R.tileGeo, R.stoneMat, tiles, true);
-  putInstanced(pool, "tilesLo", R.tileGeoLo, R.stoneLoMat, tilesLow, true);
-  putInstancedTwin(pool, "tilesMidLo", "tiles", R.tileGeoLo, R.stoneLoMat, true);
+  if (ARCHITECTURAL_SHELLS_ENABLED) {
+    // Opt-in comparison only: the base masonry already carries the readable
+    // skyline, while these dense overlays are useful when inspecting the
+    // façade asset itself via ?facades=1.
+    putInstanced(pool, "architecturalBays", R.architecturalBayGeo, R.stoneLoMat, architecturalBays, false);
+    putInstanced(pool, "towerRoofs", R.towerRoofGeo, R.stoneLoMat, towerRoofs, false);
+  }
+  // Floors get the flagstone-scaled set; the wall set stamps a grid of
+  // stones onto every slab.
+  // Floors keep the FLOOR material at every tier.
+  //
+  // These three used to be stoneFloorMat / stoneLoMat / stoneLoMat, so crossing
+  // an LOD boundary swapped a floor from the floor stone set and its world-XZ
+  // projection to the wall set and its per-instance projection — a different
+  // image, mapped differently, on the same slab. That is the texture pop: it is
+  // not a mip transition, it is a different material. makeStoneLoMat already
+  // exists only to be the same graph as the near shader for exactly this
+  // reason; the floors were simply never given their own.
+  putInstanced(pool, "tiles", R.tileGeo, R.stoneFloorMat, tiles, true);
+  putInstanced(pool, "tilesLo", R.tileGeoLo, R.stoneFloorMat, tilesLow, farShadows);
+  putInstancedTwin(pool, "tilesMidLo", "tiles", R.tileGeoLo, R.stoneFloorMat, farShadows);
   // Every rebuilt slot starts in the cheap state. The main loop promotes at
   // most one nearby island per frame after the background high-detail compile.
   const blockHi = pool.meshes.get("blocks"), blockLo = pool.meshes.get("blocksLo");
@@ -1563,8 +1748,8 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
     tileLo.visible = tileLo.count > 0;
   }
   putInstanced(pool, "redTiles", R.tileGeo, R.redMat, redTiles, true);
-  putInstanced(pool, "steps", R.stepGeo, R.stoneMat, steps);
-  putInstancedTwin(pool, "stepsLo", "steps", R.stepGeo, R.stoneLoMat, true);
+  putInstanced(pool, "steps", R.stepGeo, R.stoneFloorMat, steps);
+  putInstancedTwin(pool, "stepsLo", "steps", R.stepGeo, R.stoneFloorMat, farShadows);
   pool.meshes.get("steps")!.count = 0;
   pool.meshes.get("steps")!.visible = false;
   putInstanced(pool, "cheeks", R.cheekGeo, R.stoneMat, cheeks, false);
@@ -1583,7 +1768,7 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   putInstanced(pool, "moss", R.mossGeo, R.mossMat, moss, false);
   putInstancedCombined(pool, "stains", R.stainGeo, R.stainMat, [bloodStains, greenGrime], false);
   putInstanced(pool, "cols", R.colGeo, R.stoneMat, cols, true);
-  putInstancedTwin(pool, "colsLo", "cols", R.colGeo, R.stoneLoMat, true);
+  putInstancedTwin(pool, "colsLo", "cols", R.colGeo, R.stoneLoMat, farShadows);
   putInstancedTwin(pool, "colsFade", "cols", R.colGeo, R.stoneFadeMat, false);
   putInstancedTwin(pool, "colsLoFade", "colsLo", R.colGeo, R.stoneLoFadeMat, false);
   pool.meshes.get("cols")!.count = 0;
@@ -1681,6 +1866,11 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
   // in one unambiguous far state after all three-tier twins exist.
   setSlotLodLevel(slot, 0);
   const rise = makeRise(group, riseDelay);
+  // Retained on the stable slot for browser A/B. Aggregate forge timing also
+  // includes scheduler waits, links and GPU uploads, so it cannot isolate this
+  // synchronous CPU builder on its own.
+  group.userData.buildMs = performance.now() - buildStartedAt;
+  group.userData.masonryBuild = OPTIMIZED_MASONRY_BUILD ? "compact" : "legacy";
   return {
     group,
     lights,
@@ -1693,4 +1883,157 @@ export function buildWorld(l: Layout, slot: number, sceneRoot: THREE.Object3D, r
     },
     dispose() { /* slots persist — pruneSlots() hides unused ones */ },
   };
+}
+
+export interface EntranceDaisHandle extends SupportPierHandle {
+  /** where the player starts: on the apron, outside the door, facing it */
+  spawn: { x: number; y: number; z: number };
+}
+
+/**
+ * The dais the entrance tower stands on, and the apron the player spawns on.
+ *
+ * Masonry placed in world space rather than a lift applied to the bedrock. The
+ * bedrock lives in ringGroup, which fit() recentres and rescales with the chain,
+ * so terrain sculpted under the tower would drift and resize with a camera fit.
+ * A built dais holds still — and everything else the player stands on out here
+ * is masonry anyway, so it is the more honest object.
+ *
+ * Its base sinks past the deepest relief abyssFloorHeight() can produce, so it
+ * is founded rather than floating no matter what the seed does to the floor
+ * underneath or what fit() does to the scale.
+ */
+export function buildEntranceDais(
+  dock: { x: number; z: number; y0: number; side: number },
+  doorDir: Dir,
+  slot: number, sceneRoot: THREE.Object3D, riseDelay = 0,
+): EntranceDaisHandle {
+  const R = getKit();
+  const pool = getSlot(slot, sceneRoot);
+  pool.group.name = "entrance-dais";
+  const bricks = new InstList();
+  const blockers: WorldBlocker[] = [];
+  const c = new THREE.Color();
+  const seed = (slot * 0x27d4eb2d) >>> 0;
+
+  // Deepest the floor can be: the plane's origin less every amplitude at once,
+  // plus margin. Cheaper and steadier than sampling a field that fit() rescales.
+  const foundation = ABYSS_FLOOR_BASE_Y -
+    (ABYSS_FLOOR.plateauAmplitude + ABYSS_FLOOR.weatherAmplitude + ABYSS_FLOOR.microAmplitude) / 2 - 10;
+
+  // Three stepped courses, widest at the bottom: a plinth reads as built at a
+  // distance where a flat slab reads as a texture error.
+  const steps = [
+    { half: CELL * 2.1, top: dock.y0 },
+    { half: CELL * 3.0, top: dock.y0 - COURSE * 2 },
+    // Wide enough to hold an approach, not just to carry the tower. The gate
+    // has to stand against open abyss to read at all — squeezed between the
+    // spawn and the tower it is always silhouetted against the rising steps
+    // behind it, and no amount of resizing wins that fight.
+    { half: CELL * 5.6, top: dock.y0 - COURSE * 4 },
+  ];
+  for (let s = 0; s < steps.length; s++) {
+    const { half, top } = steps[s];
+    const bottom = s === steps.length - 1 ? foundation : steps[s + 1].top;
+    const rows = Math.max(1, Math.ceil((top - bottom) / COURSE));
+    const cols = Math.max(2, Math.round((half * 2) / 1.05));
+    for (let k = 0; k < rows; k++) {
+      const y = top - (k + 0.5) * COURSE;
+      for (let a = 0; a < cols; a++) for (let b = 0; b < cols; b++) {
+        const px = dock.x - half + (a + 0.5) * (half * 2 / cols);
+        const pz = dock.z - half + (b + 0.5) * (half * 2 / cols);
+        // Hollow below the top course: only the shell is bricks, the inside is
+        // never seen and would triple the instance count for nothing.
+        const edge = a === 0 || b === 0 || a === cols - 1 || b === cols - 1;
+        if (!edge && k > 0) continue;
+        const h1 = hash3(seed, s * 97 + a, b, k);
+        setHsl(c, 0.60, 0.20, 0.29 + hash3(seed, a, b, k + 11) * 0.09);
+        bricks.pushY(
+          px + (h1 - 0.5) * 0.1, y, pz + (hash3(seed, b, a, k) - 0.5) * 0.1,
+          (h1 - 0.5) * 0.25, 1.02, 1.02, 1.02, c,
+        );
+      }
+    }
+    blockers.push({ x: dock.x, z: dock.z, y0: bottom, y1: top, radius: half * 1.02, slot });
+  }
+
+  // The spawn stands out along the door's axis, far enough that the tower and
+  // its doorway are both in frame on the first look — but it has to land on the
+  // widest step, not past it. The first version stood 5.5 cells out from a dais
+  // whose broadest course reaches 4.0, which put the player in mid-air beside
+  // their own front door at exactly the height of the stone they were not on.
+  const outer = steps[steps.length - 1];
+  const reach = outer.half - CELL * 0.75;
+  const spawn = {
+    x: dock.x + DX[doorDir] * reach,
+    y: outer.top,
+    z: dock.z + DY[doorDir] * reach,
+  };
+
+  // A threshold to walk through.
+  //
+  // There is no door to put in the tower: the core is solid and the flight
+  // winds around the outside of it, so there is no inside to enter. What the
+  // arrival lacked was not a door but a THRESHOLD — something that says the
+  // climb starts here. Two jambs and a lintel astride the path from the spawn
+  // to the first step, lit, in the same masonry as everything else.
+  // Between the middle step's edge and the spawn. A fraction of `reach` put it
+  // at 4.6 — which is exactly where the top step's edge is (4.62), so the jambs
+  // were buried inside the dais and rendered as nothing at all. Site it against
+  // the stack it stands on, not against the walk.
+  // Just inside the spawn, so the player's first step forward passes through it
+  // with the abyss behind it rather than the dais.
+  const gateAt = reach - CELL * 1.15;
+  const gx = dock.x + DX[doorDir] * gateAt;
+  const gz = dock.z + DY[doorDir] * gateAt;
+  // Jambs sit across the walking axis, so they straddle the path rather than
+  // stand in it.
+  const acrossX = DX[doorDir] === 0 ? 1 : 0;
+  const acrossZ = DY[doorDir] === 0 ? 1 : 0;
+  // Scale was the whole problem, not placement. Three passes went into moving
+  // this gate and reproportioning it while it stayed invisible; raising it to
+  // 14 courses as a test showed it had been rendering correctly the entire
+  // time and was simply too small to see — 3.7 units of gate against a 12-unit
+  // dais under a 26-unit tower reads as another step edge.
+  //
+  // 8 courses is about 7.4: a quarter of the tower, which registers at the
+  // foot without competing with it. The opening is 4.8 across under that head,
+  // near 1:1.5, so it stays a way-through rather than closing into a pier as
+  // the approach arc swings around.
+  const halfGap = 2.4;
+  const jambCourses = 8;
+  const lights: LightSpec[] = [];
+  for (const sign of [-1, 1]) {
+    const jx = gx + acrossX * sign * halfGap;
+    const jz = gz + acrossZ * sign * halfGap;
+    for (let k = 0; k < jambCourses; k++) {
+      const h1 = hash3(seed, sign + 2, k, 31);
+      setHsl(c, 0.60, 0.21, 0.31 + hash3(seed, k, sign + 2, 47) * 0.08);
+      bricks.pushY(jx + (h1 - 0.5) * 0.07, outer.top + (k + 0.5) * COURSE,
+        jz + (hash3(seed, k, sign, 53) - 0.5) * 0.07, (h1 - 0.5) * 0.18, 1.02, 1.02, 1.02, c);
+    }
+    // Flame on top of each jamb. Warm, short-range: it should pick out the
+    // threshold and the first steps, not light the abyss.
+    lights.push({
+      x: jx, y: outer.top + jambCourses * COURSE + 0.5, z: jz,
+      color: 0xff9340, base: 58, dist: 17, ph: sign > 0 ? 0.7 : 3.9,
+    });
+  }
+  // Lintel across the two jambs.
+  const lintelY = outer.top + (jambCourses + 0.5) * COURSE;
+  for (let t = -4; t <= 4; t++) {
+    const lx = gx + acrossX * t * 0.72;
+    const lz = gz + acrossZ * t * 0.72;
+    setHsl(c, 0.60, 0.22, 0.33 + hash3(seed, t + 4, 9, 71) * 0.07);
+    bricks.pushY(lx, lintelY, lz, 0, 1.02, 0.9, 1.02, c);
+  }
+  blockers.push({ x: gx, z: gz, y0: outer.top, y1: lintelY, radius: 0.55, slot });
+
+  putInstanced(pool, "blocks", R.blockGeo, R.stoneMat, bricks, true);
+  putInstancedTwin(pool, "blocksLo", "blocks", R.blockGeoLo, R.stoneLoMat, farShadows);
+  setSlotDetail(slot, false);
+  const rise = makeRise(pool.group, riseDelay);
+  // World coords already — the dais is not an island and has no origin to be
+  // offset by, unlike the per-island specs the forge translates.
+  return { group: pool.group, lights, tick: rise, dispose() {}, blockers, spawn };
 }

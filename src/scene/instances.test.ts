@@ -3,8 +3,15 @@
 
 import { describe, it, expect } from "vitest";
 import { Matrix4, Quaternion, Vector3, Euler } from "three";
-import { InstArena, InstList } from "./instances";
-import { getSlot, putInstanced, putInstancedTwin } from "./slots";
+import {
+  COURSE_BASE, COURSE_CULLED, COURSE_FULL, COURSE_OPEN, COURSE_TOP,
+  InstArena, InstList, planColumn, writeColumnCodes,
+} from "./instances";
+import {
+  getSlot, putInstanced, putInstancedTwin, revealDecor,
+  setDecorSuppressed, setSlotLodLevel, cancelDecorReveal, isDecorSuppressed,
+  setGpuSceneManaged, startupDecorRenderObjectCount,
+} from "./slots";
 import * as THREE from "three/webgpu";
 
 describe("InstList", () => {
@@ -107,5 +114,253 @@ describe("instanced render-object twins", () => {
     geometry.dispose();
     sourceMaterial.dispose();
     twinMaterial.dispose();
+  });
+
+  it("refreshes shadow flags when a pooled source and twin are reused", () => {
+    const pool = getSlot(98_328);
+    const geometry = new THREE.BoxGeometry(1, 1, 1);
+    const sourceMaterial = new THREE.MeshBasicMaterial();
+    const twinMaterial = new THREE.MeshBasicMaterial();
+    const list = makeList(2);
+
+    putInstanced(pool, "source", geometry, sourceMaterial, list, false);
+    putInstancedTwin(pool, "twin", "source", geometry, twinMaterial, false);
+    const source = pool.meshes.get("source")!;
+    const twin = pool.meshes.get("twin")!;
+    expect(source.castShadow).toBe(false);
+    expect(twin.castShadow).toBe(false);
+
+    putInstanced(pool, "source", geometry, sourceMaterial, list, true);
+    putInstancedTwin(pool, "twin", "source", geometry, twinMaterial, true);
+    expect(pool.meshes.get("source")).toBe(source);
+    expect(pool.meshes.get("twin")).toBe(twin);
+    expect(source.castShadow).toBe(true);
+    expect(source.receiveShadow).toBe(true);
+    expect(twin.castShadow).toBe(true);
+    expect(twin.receiveShadow).toBe(true);
+
+    geometry.dispose();
+    sourceMaterial.dispose();
+    twinMaterial.dispose();
+  });
+});
+
+describe("progressive decor reveal", () => {
+  const makeList = (count: number) => {
+    const list = new InstList(count);
+    for (let i = 0; i < count; i++) {
+      list.pushY(i, 0, 0, 0, 1, 1, 1, { r: 1, g: 1, b: 1 });
+    }
+    return list;
+  };
+
+  it("keeps populated far-LOD details invisible while their draw count is zero", () => {
+    setDecorSuppressed(true);
+    const pool = getSlot(98_401);
+    const geometry = new THREE.BoxGeometry(1, 1, 1);
+    const material = new THREE.MeshBasicMaterial();
+    putInstanced(pool, "merlons", geometry, material, makeList(3));
+    setSlotLodLevel(pool.slot, 0);
+
+    const mesh = pool.meshes.get("merlons")!;
+    expect(mesh.count).toBe(0);
+    expect(mesh.visible).toBe(false);
+    expect(revealDecor(1)).toBe(true);
+    expect(mesh.count).toBe(0);
+    expect(mesh.visible).toBe(false);
+
+    geometry.dispose();
+    material.dispose();
+  });
+
+  it("reveals at most one drawable decoration per requested frame", () => {
+    setDecorSuppressed(true);
+    const geometry = new THREE.BoxGeometry(1, 1, 1);
+    const material = new THREE.MeshBasicMaterial();
+    const first = getSlot(98_402);
+    const second = getSlot(98_403);
+    putInstanced(first, "redTiles", geometry, material, makeList(1));
+    putInstanced(second, "redTiles", geometry, material, makeList(1));
+    const firstMesh = first.meshes.get("redTiles")!;
+    const secondMesh = second.meshes.get("redTiles")!;
+
+    expect(revealDecor(1)).toBe(false);
+    expect(Number(firstMesh.visible) + Number(secondMesh.visible)).toBe(1);
+    expect(revealDecor(1)).toBe(true);
+    expect(firstMesh.visible).toBe(true);
+    expect(secondMesh.visible).toBe(true);
+
+    geometry.dispose();
+    material.dispose();
+  });
+
+  it("cancels a stale startup queue without flashing its hidden objects", () => {
+    setDecorSuppressed(true);
+    const geometry = new THREE.BoxGeometry(1, 1, 1);
+    const material = new THREE.MeshBasicMaterial();
+    const pool = getSlot(98_404);
+    putInstanced(pool, "redTiles", geometry, material, makeList(1));
+    const mesh = pool.meshes.get("redTiles")!;
+
+    expect(mesh.visible).toBe(false);
+    cancelDecorReveal();
+    expect(isDecorSuppressed()).toBe(false);
+    expect(mesh.visible).toBe(false);
+    expect(revealDecor(1)).toBe(true);
+    expect(mesh.visible).toBe(false);
+
+    // The replacement forge is no longer suppressed when it refills the pool.
+    putInstanced(pool, "redTiles", geometry, material, makeList(1));
+    expect(mesh.visible).toBe(true);
+
+    geometry.dispose();
+    material.dispose();
+  });
+
+  it("leaves GPU-managed decoration to its global presentation bucket", () => {
+    setDecorSuppressed(true);
+    const geometry = new THREE.BoxGeometry(1, 1, 1);
+    const material = new THREE.MeshBasicMaterial();
+    const pool = getSlot(98_405);
+    putInstanced(pool, "redTiles", geometry, material, makeList(2));
+    const mesh = pool.meshes.get("redTiles")!;
+    setGpuSceneManaged(mesh, true);
+
+    expect(revealDecor(Infinity)).toBe(true);
+    expect(mesh.count).toBe(0);
+    expect(mesh.visible).toBe(false);
+
+    setGpuSceneManaged(mesh, false);
+    geometry.dispose();
+    material.dispose();
+  });
+
+  it("does not reserve an empty startup frame for far or GPU-managed decor", () => {
+    setDecorSuppressed(true);
+    const before = startupDecorRenderObjectCount();
+    const geometry = new THREE.BoxGeometry(1, 1, 1);
+    const material = new THREE.MeshBasicMaterial();
+
+    const farPool = getSlot(98_406);
+    putInstanced(farPool, "merlons", geometry, material, makeList(3));
+    setSlotLodLevel(farPool.slot, 0);
+    expect(startupDecorRenderObjectCount()).toBe(before);
+
+    const shellPool = getSlot(98_407);
+    putInstanced(shellPool, "architecturalBays", geometry, material, makeList(2));
+    setSlotLodLevel(shellPool.slot, 0);
+    expect(startupDecorRenderObjectCount()).toBe(before + 1);
+
+    const managedPool = getSlot(98_408);
+    putInstanced(managedPool, "redTiles", geometry, material, makeList(2));
+    setGpuSceneManaged(managedPool.meshes.get("redTiles")!, true);
+    expect(startupDecorRenderObjectCount()).toBe(before + 1);
+
+    cancelDecorReveal();
+    geometry.dispose();
+    material.dispose();
+  });
+});
+
+describe("planColumn", () => {
+  it("matches the allocation-free column-code writer across varied masks", () => {
+    const codeFor = { open: COURSE_OPEN, top: COURSE_TOP, base: COURSE_BASE, full: COURSE_FULL } as const;
+    for (let sample = 0; sample < 400; sample++) {
+      const n = 1 + (sample * 17 % 23);
+      const rendered = new Uint8Array(n);
+      const sealed = new Uint8Array(n);
+      const boundaries = new Uint8Array(n + 1);
+      for (let k = 0; k < n; k++) {
+        rendered[k] = ((sample * 31 + k * 19) % 11) > 2 ? 1 : 0;
+        sealed[k] = ((sample * 13 + k * 23) % 17) === 0 ? 1 : 0;
+      }
+      for (let k = 0; k <= n; k++) boundaries[k] = ((sample * 7 + k * 29) % 9) > 1 ? 1 : 0;
+      const bottomExposed = sample % 3 === 0;
+      const expected = planColumn({
+        courseCount: n,
+        removed: (k) => rendered[k] === 0,
+        sealed: (k) => sealed[k] !== 0,
+        boundaryVisible: (k) => boundaries[k] !== 0,
+        bottomExposed,
+      });
+      const actual = new Uint8Array(n);
+      writeColumnCodes(rendered, sealed, boundaries, n, bottomExposed, actual);
+      expect([...actual]).toEqual(expected.map((entry) => entry.render ? codeFor[entry.shell] : COURSE_CULLED));
+    }
+  });
+
+  const plain = (courseCount: number, over: Partial<Parameters<typeof planColumn>[0]> = {}) =>
+    planColumn({ courseCount, removed: () => false, ...over });
+
+  it("opens every course that is enclosed both ways", () => {
+    const plan = plain(4);
+    expect(plan.slice(0, 3).map((p) => p.shell)).toEqual(["open", "open", "open"]);
+  });
+
+  it("caps the topmost course", () => {
+    expect(plain(4)[3].shell).toBe("top");
+  });
+
+  it("seals a single course that hangs in the air", () => {
+    // Nothing above and nothing below: it needs both faces.
+    expect(plain(1, { bottomExposed: true })[0].shell).toBe("full");
+  });
+
+  it("floors the lowest course when the column overhangs the void", () => {
+    const plan = plain(4, { bottomExposed: true });
+    expect(plan[0].shell).toBe("base");
+    expect(plan[3].shell).toBe("top");
+  });
+
+  it("gives the course above a doorway gap a floor", () => {
+    // The regression that four patches missed: removing a course mid-column
+    // leaves its neighbours with faces they do not have.
+    const plan = plain(6, { removed: (k) => k === 2 });
+    expect(plan[2].render).toBe(false);
+    expect(plan[3].shell).toBe("base"); // open air below it now
+    expect(plan[1].shell).toBe("top");  // open air above it now
+  });
+
+  it("seals a course isolated on both sides", () => {
+    const plan = plain(5, { removed: (k) => k === 1 || k === 3 });
+    expect(plan[2].shell).toBe("full");
+  });
+
+  it("keeps breach bands sealed regardless of neighbours", () => {
+    const plan = plain(5, { sealed: (k) => k === 2 });
+    expect(plan[2].shell).toBe("full");
+  });
+
+  it("skips faces at boundaries the occlusion cull proved hidden", () => {
+    // If a neighbour was dropped because it sits below the occlusion height,
+    // the shared boundary is hidden too and needs no geometry.
+    const plan = planColumn({
+      courseCount: 4,
+      removed: (k) => k === 0,
+      boundaryVisible: (k) => k > 1,
+    });
+    expect(plan[1].shell).toBe("open"); // boundary 1 hidden, so no floor
+  });
+
+  it("never leaves a rendered course missing a face it needs", () => {
+    // Exhaustive over small columns and every removal pattern.
+    for (let n = 1; n <= 6; n++) {
+      for (let mask = 0; mask < (1 << n); mask++) {
+        for (const bottomExposed of [false, true]) {
+          const removed = (k: number) => (mask & (1 << k)) !== 0;
+          const plan = planColumn({ courseCount: n, removed, bottomExposed });
+          for (let k = 0; k < n; k++) {
+            if (!plan[k].render) continue;
+            const aboveMissing = k + 1 >= n || removed(k + 1);
+            const belowMissing = k === 0 ? bottomExposed : removed(k - 1);
+            const shell = plan[k].shell;
+            const hasCap = shell === "top" || shell === "full";
+            const hasFloor = shell === "base" || shell === "full";
+            if (aboveMissing) expect(hasCap, `n=${n} mask=${mask} k=${k} needs cap`).toBe(true);
+            if (belowMissing) expect(hasFloor, `n=${n} mask=${mask} k=${k} needs floor`).toBe(true);
+          }
+        }
+      }
+    }
   });
 });

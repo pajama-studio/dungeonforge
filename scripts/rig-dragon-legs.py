@@ -29,7 +29,9 @@ if len(args) < 3:
 input_path, output_path, report_path = args[:3]
 use_draco = "--no-draco" not in args[3:]
 bpy.ops.wm.read_factory_settings(use_empty=True)
-bpy.ops.import_scene.gltf(filepath=str(Path(input_path).resolve()))
+# Weld on import: glTF splits vertices at every UV seam, and rigging an
+# unwelded mesh binds the two sides of each seam independently.
+bpy.ops.import_scene.gltf(filepath=str(Path(input_path).resolve()), merge_vertices=True)
 meshes = [obj for obj in bpy.context.scene.objects if obj.type == "MESH"]
 if len(meshes) != 1:
     raise RuntimeError(f"expected one dragon mesh, found {len(meshes)}")

@@ -130,6 +130,84 @@ export function openCourseGeometry(
   return geometry;
 }
 
+/** A course sealed at both ends, built from the same octagonal ring rather
+ *  than reusing the general-purpose chamfer box.
+ *
+ *  Why this exists: courses are deliberately jittered — each is offset by up to
+ *  0.11 and scaled 0.965..1.035 for the hand-laid look — so the course above
+ *  covers perhaps 90% of the one below. The uncovered ring around the edge is
+ *  exactly where a missing cap becomes a window into the hollow interior. No
+ *  neighbour test can fix that, because "has a course above" was never the same
+ *  question as "is covered".
+ *
+ *  16 side triangles + 6 top + 6 bottom = 28, against 68 for chamferBoxGeometry
+ *  which spends most of its budget on corner and cap bevel planes nobody sees
+ *  at this size.
+ */
+export function sealedCourseGeometry(
+  width: number, height: number, depth: number, bevel: number,
+): THREE.BufferGeometry {
+  // Sides once, from the open course; caps from the two slab variants with
+  // their own side rings discarded, so the ring is not tripled.
+  const sides = openCourseGeometry(width, height, depth, bevel);
+  const top = capOnly(openChamferSlabGeometry(width, height, depth, bevel), 1);
+  const base = capOnly(openBaseGeometry(width, height, depth, bevel), -1);
+  const merged = BufferGeometryUtils.mergeGeometries([sides, top, base]);
+  merged.computeBoundingBox();
+  merged.computeBoundingSphere();
+  return merged;
+}
+
+/** Keep only the triangles whose normal points along +Y or -Y — the cap of a
+ *  slab, discarding its vertical ring. */
+function capOnly(source: THREE.BufferGeometry, sign: number): THREE.BufferGeometry {
+  const position = source.getAttribute("position");
+  const normal = source.getAttribute("normal");
+  const positions: number[] = [];
+  const normals: number[] = [];
+  for (let i = 0; i < position.count; i += 3) {
+    if (normal.getY(i) * sign < 0.5) continue;
+    for (let v = 0; v < 3; v++) {
+      positions.push(position.getX(i + v), position.getY(i + v), position.getZ(i + v));
+      normals.push(normal.getX(i + v), normal.getY(i + v), normal.getZ(i + v));
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
+  return geometry;
+}
+
+/** Mirror of openChamferSlabGeometry: bottom cap plus the vertical ring, no
+ *  top. Needed by the column planner for a course that has masonry above it
+ *  but open air below — the case that produced see-through banding when the
+ *  only options were "sealed", "capped" and "open at both ends".
+ */
+export function openBaseGeometry(
+  width: number, height: number, depth: number, bevel: number,
+): THREE.BufferGeometry {
+  const source = openChamferSlabGeometry(width, height, depth, bevel);
+  const position = source.getAttribute("position") as THREE.BufferAttribute;
+  const normal = source.getAttribute("normal") as THREE.BufferAttribute;
+  // Flip through the XZ plane, then reverse winding so faces still point out.
+  for (let i = 0; i < position.count; i++) {
+    position.setY(i, -position.getY(i));
+    normal.setY(i, -normal.getY(i));
+  }
+  for (let i = 0; i < position.count; i += 3) {
+    for (const attr of [position, normal]) {
+      const ax = attr.getX(i + 1), ay = attr.getY(i + 1), az = attr.getZ(i + 1);
+      attr.setXYZ(i + 1, attr.getX(i + 2), attr.getY(i + 2), attr.getZ(i + 2));
+      attr.setXYZ(i + 2, ax, ay, az);
+    }
+  }
+  position.needsUpdate = true;
+  normal.needsUpdate = true;
+  source.computeBoundingBox();
+  source.computeBoundingSphere();
+  return source;
+}
+
 /** A floor slab only exposes its chamfered top and outer vertical ring. The
  * old general-purpose chamfer box spent 46 of 68 triangles on a sealed bottom
  * and corner/cap planes hidden inside supporting masonry. */
@@ -269,6 +347,7 @@ export interface GeoKit {
   blockGeoLo: THREE.BufferGeometry;
   blockMiddleGeo: THREE.BufferGeometry;
   blockTopGeo: THREE.BufferGeometry;
+  blockBaseGeo: THREE.BufferGeometry;
   debrisGeo: THREE.BufferGeometry;
   tileGeo: THREE.BufferGeometry;
   tileGeoLo: THREE.BufferGeometry;
@@ -450,7 +529,7 @@ export function makeGeometries(): GeoKit {
     return merged;
   })();
 
-  // creeper patch (爬山虎): a wall-hugging carpet of small leaves that climbs
+  // creeper patch: a wall-hugging carpet of small leaves that climbs
   // up from the floor — dense at the base, thinning and narrowing upward,
   // with a few runner leaves straggling past the fringe
   const creeperGeo = (() => {
@@ -535,11 +614,14 @@ export function makeGeometries(): GeoKit {
     // Same 68/16/22-triangle topology, but a broader hand-cut arris. The old
     // 0.06 bevel was sub-pixel in ordinary gameplay and left the masonry
     // reading as perfectly extruded cubes even with a detailed shader.
-    blockGeo: shadeFaces(chamferBoxGeometry(CELL * 1.02, COURSE * 1.02, CELL * 1.02, 0.11)),
-    blockGeoLo: shadeFaces(new THREE.BoxGeometry(CELL * 1.02, COURSE * 1.02, CELL * 1.02)),
-    blockMiddleGeo: shadeFaces(openCourseGeometry(CELL * 1.02, COURSE * 1.02, CELL * 1.02, 0.11)),
-    blockTopGeo: shadeFaces(openChamferSlabGeometry(CELL * 1.02, COURSE * 1.02, CELL * 1.02, 0.11)),
-    debrisGeo: fracturedBlockGeometry(CELL * 1.02, COURSE * 1.02, CELL * 1.02),
+    blockGeo: shadeFaces(chamferBoxGeometry(CELL * 1.08, COURSE * 1.06, CELL * 1.08, 0.11)),
+    blockGeoLo: shadeFaces(new THREE.BoxGeometry(CELL * 1.08, COURSE * 1.06, CELL * 1.08)),
+    // Sealed, not open: jittered courses only partially cover each other, so
+    // an uncapped middle course shows its hollow interior through the gap.
+    blockMiddleGeo: shadeFaces(sealedCourseGeometry(CELL * 1.08, COURSE * 1.06, CELL * 1.08, 0.11)),
+    blockTopGeo: shadeFaces(sealedCourseGeometry(CELL * 1.08, COURSE * 1.06, CELL * 1.08, 0.11)),
+    blockBaseGeo: shadeFaces(sealedCourseGeometry(CELL * 1.08, COURSE * 1.06, CELL * 1.08, 0.11)),
+    debrisGeo: fracturedBlockGeometry(CELL * 1.08, COURSE * 1.06, CELL * 1.08),
     tileGeo: shadeFaces(openChamferSlabGeometry(CELL * 0.985, 0.15, CELL * 0.985, 0.065)),
     tileGeoLo: shadeFaces(new THREE.BoxGeometry(CELL * 0.985, 0.15, CELL * 0.985)),
     merlonGeo: shadeFaces(openChamferSlabGeometry(0.72, 0.55, 0.72, 0.07)),

@@ -10,7 +10,14 @@ import {
   Fn, If, atomicAdd, atomicStore, instanceIndex, max, storage, uniform, uint, vec4,
 } from "three/tsl";
 import { getKit } from "../scene/kit";
+import { LOD_TIERS, packInstanceMeta } from "./instance-meta";
 import { makeStoneLoMat, makeStoneMat } from "../scene/kit/materials";
+import {
+  GpuLowMasonryScene, type GpuLowMasonryStats, type GpuLowMasonryValidation,
+} from "./gpu-low-masonry";
+import {
+  GpuLowSurfaces, type GpuLowSurfacesStats, type GpuLowSurfacesValidation,
+} from "./gpu-low-surfaces";
 import {
   gpuSceneSlotPools, setGpuSceneManaged, setSlotLodLevel,
   type SlotPool,
@@ -20,9 +27,27 @@ const CAPACITY = 65_536;
 const SLOT_CAPACITY = 128;
 const DEAD_ID = 0xffff_ffff;
 const CULL_MARGIN = 5;
-const MANAGED_KEYS = [
-  "blockMids", "blockMidsLo", "blockMidsFade", "blockMidsLoFade",
+/** Geometry groups the GPU pass owns. One today; the structure exists because
+ *  the measured win is extending it — the scene submits ~719 InstancedMeshes
+ *  where merging across slots would submit ~72, and this pass already proves
+ *  the shape on blockMids: 20 islands, 32k instances, 2 indirect draws.
+ *
+ *  Adding a group means an entry here plus its bucket pair. The instance
+ *  metadata already carries the group index, and packInstanceMeta is
+ *  exhaustively tested against the shader's decode. */
+const MANAGED_GROUPS = [
+  {
+    name: "masonry-middle",
+    /** The pool whose instances feed this group. */
+    source: "blockMids",
+    /** Every mesh key the CPU must stop drawing once the group is managed. */
+    keys: ["blockMids", "blockMidsLo", "blockMidsFade", "blockMidsLoFade"],
+  },
 ] as const;
+
+const GROUP_COUNT = MANAGED_GROUPS.length;
+
+const MANAGED_KEYS = MANAGED_GROUPS.flatMap((group) => group.keys);
 
 type ComputeNode = any;
 
@@ -61,6 +86,8 @@ export interface GpuSceneStats {
   hiddenInstances: number;
   capacity: number;
   fallbackReason: string;
+  lowMasonry: GpuLowMasonryStats;
+  lowSurfaces: GpuLowSurfacesStats;
 }
 
 export interface GpuSceneReadbackValidation {
@@ -71,6 +98,8 @@ export interface GpuSceneReadbackValidation {
   authoritativeMismatches: number;
   maxAuthoritativeTranslationDelta: number;
   bounds: { min: [number, number, number]; max: [number, number, number] } | null;
+  lowMasonry: GpuLowMasonryValidation;
+  lowSurfaces: GpuLowSurfacesValidation;
 }
 
 const _local = new THREE.Matrix4();
@@ -98,6 +127,8 @@ export class GpuMasonryScene {
   private readonly buckets: [GpuBucket, GpuBucket];
   private readonly resetNode: ComputeNode;
   private readonly cullNode: ComputeNode;
+  private readonly lowMasonry: GpuLowMasonryScene;
+  private readonly lowSurfaces: GpuLowSurfaces;
   private readonly sourceToGlobal = new WeakMap<THREE.InstancedMesh, Uint32Array>();
   private managedMeshes: THREE.InstancedMesh[] = [];
   private compactSlots: CompactSlot[] = [];
@@ -115,7 +146,10 @@ export class GpuMasonryScene {
     private readonly scene: THREE.Scene,
     private readonly renderer: THREE.WebGPURenderer,
     requested = true,
+    private readonly deferInactiveBuckets = true,
   ) {
+    this.lowMasonry = new GpuLowMasonryScene(scene, renderer, requested);
+    this.lowSurfaces = new GpuLowSurfaces(scene, renderer, requested);
     this.requested = requested;
     this.group.name = "gpu-scene-masonry";
     this.group.visible = false;
@@ -157,9 +191,11 @@ export class GpuMasonryScene {
       // Destroyed items encode zero. Clamp before unsigned subtraction so a
       // dead item can never form an out-of-bounds slot index, even though its
       // final visibility predicate is false.
+      // Mirrors unpackInstanceMeta: group varies fastest, then LOD, then slot.
       const encoded = uint(max(sourceColor.w, 1)).sub(uint(1));
-      const slotIndex = encoded.div(uint(4));
-      const lod = encoded.mod(uint(4));
+      const withoutGroup = encoded.div(uint(GROUP_COUNT));
+      const slotIndex = withoutGroup.div(uint(LOD_TIERS));
+      const lod = withoutGroup.mod(uint(LOD_TIERS));
       const worldMatrix = slotMatrices.element(slotIndex).mul(sourceMatrices.element(sourceIndex));
       const center = worldMatrix.mul(vec4(0, 0, 0, 1)).xyz;
       let visible: any = sourceColor.w.greaterThan(0.5).and(lod.greaterThan(uint(0)));
@@ -191,6 +227,8 @@ export class GpuMasonryScene {
       hiddenInstances: 0,
       capacity: CAPACITY,
       fallbackReason: requested ? "not built" : "disabled by ?gpuscene=0",
+      lowMasonry: this.lowMasonry.stats,
+      lowSurfaces: this.lowSurfaces.stats,
     };
   }
 
@@ -267,6 +305,13 @@ export class GpuMasonryScene {
     this.stats.submittedBuckets = 0;
     this.stats.hiddenInstances = 0;
 
+    // This is an independent compute pass so each kernel remains within
+    // WebGPU's portable eight-storage-binding limit. Rebuild it even if the
+    // high/middle pass has no source: low-only support and bridge slots are
+    // still valid work.
+    this.lowMasonry.rebuild();
+    this.lowSurfaces.rebuild();
+
     if (!this.requested || this.failed) return false;
     const pools = gpuSceneSlotPools().filter((pool) => pool.meshes.has("blockMids"));
     if (pools.length > SLOT_CAPACITY) return this.fail(`slot capacity ${pools.length}/${SLOT_CAPACITY}`);
@@ -279,7 +324,7 @@ export class GpuMasonryScene {
 
     for (let slotIndex = 0; slotIndex < pools.length; slotIndex++) {
       const pool = pools[slotIndex];
-      const source = pool.meshes.get("blockMids")!;
+      const source = pool.meshes.get(MANAGED_GROUPS[0].source)!;
       const count = (source.userData as { n?: number }).n ?? 0;
       if (cursor + count > CAPACITY) return this.fail(`instance capacity ${cursor + count}/${CAPACITY}`);
       pool.group.updateWorldMatrix(true, true);
@@ -305,9 +350,12 @@ export class GpuMasonryScene {
         colors[colorOffset] = _color.r;
         colors[colorOffset + 1] = _color.g;
         colors[colorOffset + 2] = _color.b;
-        // 0 is destroyed. Alive metadata packs slot + two-bit LOD in one float
-        // and remains exact far beyond SLOT_CAPACITY.
-        colors[colorOffset + 3] = slotIndex * 4 + level + 1;
+        // 0 is destroyed. Everything alive packs slot + LOD tier + geometry
+        // group through the same helper the decode below mirrors, so the two
+        // cannot drift.
+        colors[colorOffset + 3] = packInstanceMeta(
+          { slot: slotIndex, lod: level, group: 0 }, GROUP_COUNT,
+        );
         mapping[localIndex] = cursor++;
       }
 
@@ -331,7 +379,13 @@ export class GpuMasonryScene {
 
     this.active = cursor > 0;
     this.group.visible = this.active;
-    this.applyBucketVisibility();
+    // Every default wide-shot slot starts at LOD0, so both high/middle
+    // indirect commands contain zero instances. Keeping their meshes visible
+    // nevertheless made Three build two complete storage-material pipelines
+    // in the first ScenePass. Defer those zero-draw render objects until a
+    // real LOD1/2 request; the low-masonry owner already supplies the complete
+    // distant silhouette in the meantime.
+    this.applyBucketVisibility(activeSourceInstances > 0);
     this.stats.enabled = this.active;
     this.stats.sourceInstances = cursor;
     this.stats.activeSourceInstances = activeSourceInstances;
@@ -379,6 +433,7 @@ export class GpuMasonryScene {
   /** CPU-authoritative destruction clears packed metadata. The next cull
    * naturally excludes that stable id from both buckets. */
   hideSourceInstance(source: THREE.InstancedMesh, localIndex: number): void {
+    this.lowMasonry.hideSourceInstance(source, localIndex);
     if (!this.active) return;
     const globalIndex = this.sourceToGlobal.get(source)?.[localIndex] ?? DEAD_ID;
     if (globalIndex === DEAD_ID || globalIndex >= this.sourceCount) return;
@@ -403,6 +458,8 @@ export class GpuMasonryScene {
   /** Benchmark-only integrity probe. It checks stable source IDs and authored
    * transforms within GPU float tolerance; never used by the live path. */
   async readbackValidation(): Promise<GpuSceneReadbackValidation> {
+    const lowMasonry = await this.lowMasonry.readbackValidation();
+    const lowSurfaces = await this.lowSurfaces.readbackValidation();
     const counts = await this.readbackDrawCounts();
     const [highBytes, middleBytes, highColorBytes, middleColorBytes] = await Promise.all([
       this.renderer.getArrayBufferAsync(this.buckets[0].matrices),
@@ -488,6 +545,8 @@ export class GpuMasonryScene {
       nonFiniteMatrices,
       authoritativeMismatches,
       maxAuthoritativeTranslationDelta,
+      lowMasonry,
+      lowSurfaces,
       bounds: total > 0
         ? { min: min as [number, number, number], max: max as [number, number, number] }
         : null,
@@ -498,6 +557,8 @@ export class GpuMasonryScene {
    * actually obscuring the player back to its per-slot fade twin. This avoids
    * fading the whole dungeon just because one wall crosses the sight line. */
   setOccludingSlots(next: ReadonlySet<number>): void {
+    this.lowMasonry.setOccludingSlots(next);
+    this.lowSurfaces.setOccludingSlots(next);
     let changed = next.size !== this.occludingSlots.size;
     if (!changed) for (const slot of next) if (!this.occludingSlots.has(slot)) { changed = true; break; }
     if (!changed) return;
@@ -515,17 +576,39 @@ export class GpuMasonryScene {
     this.dirty = true;
   }
 
-  private applyBucketVisibility(): void {
-    for (const bucket of this.buckets) bucket.mesh.visible = this.active;
+  enableLowMasonryShadows(): boolean {
+    const masonry = this.lowMasonry.enableShadows();
+    const surfaces = this.lowSurfaces.enableShadows();
+    return masonry || surfaces;
+  }
+
+  setLowSurfacesVisible(visible: boolean): void {
+    this.lowSurfaces.setVisible(visible);
+  }
+
+  setCompactedDecorVisible(visible: boolean): boolean {
+    return this.lowSurfaces.setDecorVisible(visible);
+  }
+
+  hasCompactedDecor(): boolean {
+    return this.lowSurfaces.hasDecor();
+  }
+
+  private applyBucketVisibility(hasActiveInstances: boolean): void {
+    const visible = this.active && (!this.deferInactiveBuckets || hasActiveInstances);
+    for (const bucket of this.buckets) bucket.mesh.visible = visible;
   }
 
   /** Must run after CPU LOD decisions and before the render pass. */
   tick(camera: THREE.Camera): void {
+    this.lowMasonry.tick(camera);
+    this.lowSurfaces.tick(camera);
     if (!this.active) return;
     try {
       const { activeSourceInstances, changed: lodChanged } = this.syncSlotLevels();
       const transformsChanged = this.syncSlotTransforms();
       this.stats.activeSourceInstances = activeSourceInstances;
+      this.applyBucketVisibility(activeSourceInstances > 0);
       if (activeSourceInstances === 0) {
         if (this.indirectHasDraws) {
           this.renderer.compute(this.resetNode);
@@ -606,12 +689,16 @@ export class GpuMasonryScene {
   }
 
   dispose(): void {
+    this.lowMasonry.dispose();
+    this.lowSurfaces.dispose();
     this.releaseManagedMeshes();
     this.group.removeFromParent();
     for (const bucket of this.buckets) {
       bucket.mesh.dispose();
       bucket.geometry.dispose();
-      bucket.mesh.material.dispose();
+      const material = bucket.mesh.material;
+      if (Array.isArray(material)) material.forEach((m) => m.dispose());
+      else material.dispose();
       bucket.matrices.dispose();
       bucket.colors.dispose();
     }

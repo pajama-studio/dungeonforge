@@ -33,7 +33,10 @@ ws.addEventListener("message", (event) => {
     const line = message.params.entry.text;
     if (/GPUValidationError|Invalid CommandBuffer|Instance range/.test(line)) gpuErrors.push(line);
   } else if (message.method === "Runtime.exceptionThrown") {
-    failures.push(message.params.exceptionDetails.text);
+    failures.push(
+      message.params.exceptionDetails.exception?.description
+        ?? message.params.exceptionDetails.text,
+    );
   }
   if (!message.id) return;
   const job = pending.get(message.id);
@@ -51,6 +54,7 @@ const call = (method, params = {}) => new Promise((resolve, reject) => {
 await call("Runtime.enable");
 await call("Log.enable");
 await call("Page.enable");
+await call("Page.bringToFront");
 const pageLoaded = new Promise((resolve) => { pageLoadResolve = resolve; });
 await call("Page.reload", { ignoreCache: true });
 await Promise.race([

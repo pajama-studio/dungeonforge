@@ -156,4 +156,74 @@ describe("dungeon generator", () => {
     }
     expect(seen).toEqual(new Set(FOOTPRINT_KINDS));
   });
+
+  it("keeps optional chambers connected inside an L-court satellite", () => {
+    // Hot-reforge regression: the red chamber landed in the L-court's missing
+    // quadrant. Preserving its mask through footprint trimming created a
+    // detached floor island, so all six deterministic attempts failed and the
+    // worker request used to remain pending forever.
+    const l = generate({
+      seed: 3_669_432_622,
+      size: 11,
+      gateSides: [0, 2, 3],
+      verticalAnchors: [{ id: 8, x: 13, y: 12, dockDir: 3 }],
+      narrativeRole: "sanctum",
+      districtId: 6,
+      storyLandmark: false,
+      footprint: "l-court",
+      rot: 2,
+      templeOn: false,
+      ravineOn: true,
+      plazas: 2,
+      totems: 2,
+      decay: 0.2928,
+      heightAmp: 3.6992,
+      newest: 0.939,
+      mound: 0.925,
+    });
+    expect(bfsReachAll(l)).toBe(true);
+  });
+});
+
+describe("ground shaft", () => {
+  const request = { id: -1, x: 9, y: 19, dockDir: 2 as const };
+
+  it("is reserved, reachable, and reported on the layout", () => {
+    const l = generate({ seed: 4242, size: 13, verticalAnchors: [request], groundAnchorId: -1 });
+    expect(l.groundAnchorId).toBe(-1);
+    const anchor = l.verticalAnchors.find((a) => a.id === -1)!;
+    expect(anchor).toBeDefined();
+    // core is the solid navigation column, not a walkable cell
+    expect(l.shaftMask[anchor.y * l.N + anchor.x]).toBe(1);
+    // the landing it docks to is floor, and joins the same world as the entrance
+    const lx = anchor.x + DX[anchor.dockDir], ly = anchor.y + DY[anchor.dockDir];
+    expect(l.kind[ly * l.N + lx]).toBe(FLOOR);
+  });
+
+  it("survives rotation as an id, with its anchor moved", () => {
+    const base = generate({ seed: 4242, size: 13, verticalAnchors: [request], groundAnchorId: -1 });
+    for (const rot of [1, 2, 3]) {
+      const turned = generate({ seed: 4242, size: 13, verticalAnchors: [request], groundAnchorId: -1, rot });
+      expect(turned.groundAnchorId).toBe(-1);
+      expect(turned.verticalAnchors.some((a) => a.id === -1)).toBe(true);
+      expect(turned.N).toBe(base.N);
+    }
+  });
+
+  it("stays deterministic for a seed", () => {
+    const a = generate({ seed: 909, size: 13, verticalAnchors: [request], groundAnchorId: -1 });
+    const b = generate({ seed: 909, size: 13, verticalAnchors: [request], groundAnchorId: -1 });
+    expect(checksum(a)).toBe(checksum(b));
+    expect(a.verticalAnchors).toEqual(b.verticalAnchors);
+  });
+
+  it("refuses to be quietly re-sited when the request is out of bounds", () => {
+    // Stage 4 clamps a stair court inward; for the ground shaft that would break
+    // the agreement with the plinth and door sited under it, so it must fail
+    // through the re-roll path instead of moving. Six attempts all fail => throw.
+    expect(() => generate({
+      seed: 77, size: 13, groundAnchorId: -1,
+      verticalAnchors: [{ id: -1, x: 0, y: 0, dockDir: 2 }],
+    })).toThrow(/ground shaft outside footprint/);
+  });
 });

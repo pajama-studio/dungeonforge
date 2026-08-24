@@ -6,10 +6,11 @@
 // MeshBasicNodeMaterial: they skip the whole light loop per fragment — crucial,
 // since additive quads are the overdraw.
 
+import { assetUrl } from "../../assets";
 import * as THREE from "three/webgpu";
 import {
   color, vec2, vec3, uv, time, sin, cos, positionLocal, positionWorld, positionView, normalLocal,
-  instanceIndex, hash, smoothstep, length, fract, abs, mix, float, atan, max, step,
+  instanceIndex, hash, smoothstep, length, fract, abs, mix, float, floor, atan, max, step,
   triNoise3D, transformNormalToView, attribute, uniform, texture as textureNode,
   varyingProperty,
 } from "three/tsl";
@@ -84,25 +85,192 @@ export const stoneStyle = {
   pits: uniform(0.07),
   crack: uniform(0.50),
   warmEdge: uniform(0.31),
+  /** Strength of the atlas-derived surface relief. This is what separates
+   *  hand-carved stone from a machined bevel. */
+  paintedRelief: uniform(1.0),
+  /** Contrast of the generated albedo and cavity, both centred on 1.0 so they
+   *  add surface without changing overall value. */
+  stoneDetail: uniform(0.85),
+  /** The per-instance tint stair towers never get, because they are plain
+   *  Meshes rather than instanced masonry. Matches build.ts's class-3 wall
+   *  colour, setHsl(0.60, 0.22, 0.405) — luma 0.380. Live via
+   *  __df.stoneStyle.stairTint.value. */
+  stairTint: uniform(new THREE.Color().setHSL(0.60, 0.22, 0.405)),
+  /** How pale the worn band inside a flagstone's edge goes. The paving read
+   *  lives here now rather than in a texture, so this is the dial that decides
+   *  whether floors look laid or poured. */
+  flagWear: uniform(0.30),
+  /** Depth of the tile-local brush strokes across the middle of a slab. */
+  flagBrush: uniform(0.22),
+  /** Floor grain frequency, in texture repeats per world unit.
+   *
+   *  This sets how coarse the stone *surface* reads, and nothing else. It used
+   *  to set paving density too, which is why every value was wrong: the flagstone
+   *  layout is not in the texture, it comes from the tile's own edges via
+   *  `ex`/`ez`, so one stone always fills one cell no matter what this is.
+   *
+   *  Free to dial for taste — a repeat every ~2.9m at 0.35. Live via
+   *  __df.stoneStyle.floorScale.value. */
+  floorScale: uniform(0.35),
+  stoneCavity: uniform(0.55),
+  // Texture-sampled fracture, separate from the noise-based `crack` above.
+  // Driven from the layout's decay so one material covers pristine to ruined.
+  damage: uniform(0.5),
 };
 
-// One 76 KB hand-painted albedo is shared by every masonry material. A neutral
-// 1×1 placeholder keeps startup I/O off the first-visible critical path; the
-// real image swaps into the same texture object after first paint, so no TSL
-// pipeline recompilation is required.
-const handPaintedStoneTexture = new THREE.DataTexture(
-  new Uint8Array([154, 154, 154, 255]), 1, 1, THREE.RGBAFormat,
-);
-handPaintedStoneTexture.colorSpace = THREE.SRGBColorSpace;
-handPaintedStoneTexture.needsUpdate = true;
+/** Point the fracture layer at the generator's decay. Called once per forge. */
+export function setStoneDamage(decay: number): void {
+  stoneStyle.damage.value = Math.max(0, Math.min(1, decay));
+}
+
+// Compact 512px painted maps remain available to explicit review tools. The
+// live scene starts on neutral 1×1 residents: swapping a shared texture after
+// WebGPU has realized the level invalidates every concrete masonry object.
+const STREAMED_TEXTURE_SIZE = 1;
+const streamedPlaceholder = (rgb: readonly [number, number, number], colorSpace: THREE.ColorSpace) => {
+  const data = new Uint8Array(STREAMED_TEXTURE_SIZE * STREAMED_TEXTURE_SIZE * 4);
+  for (let i = 0; i < data.length; i += 4) {
+    data[i] = rgb[0];
+    data[i + 1] = rgb[1];
+    data[i + 2] = rgb[2];
+    data[i + 3] = 255;
+  }
+  const texture = new THREE.DataTexture(
+    data, STREAMED_TEXTURE_SIZE, STREAMED_TEXTURE_SIZE, THREE.RGBAFormat,
+  );
+  texture.colorSpace = colorSpace;
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.anisotropy = 1;
+  texture.generateMipmaps = false;
+  texture.needsUpdate = true;
+  return texture;
+};
+const handPaintedStoneTexture = streamedPlaceholder([154, 154, 154], THREE.SRGBColorSpace);
 let activeHandPaintedStoneTexture: THREE.Texture = handPaintedStoneTexture;
 const handPaintedStoneNodes: Array<{ value: THREE.Texture }> = [];
 let handPaintedStoneLoad: Promise<void> | null = null;
 
+// Brush texture: surface character lifted from the statue albedo, high-passed
+// so it carries brushwork rather than tentacles, and made seamless so it can
+// wrap in hardware. Variation comes from the per-instance UV transform, not
+// from atlas tiles — an atlas addressed by fract draws mip seams.
+const brushPlaceholder = streamedPlaceholder([128, 128, 128], THREE.SRGBColorSpace);
+let activeBrushTexture: THREE.Texture = brushPlaceholder;
+const brushNodes: Array<{ value: THREE.Texture }> = [];
+let brushLoad: Promise<void> | null = null;
+
+// Procedural stone set: albedo, normal and AO generated by
+// scripts/make-stone-atlas.py from one height field, so the three agree by
+// construction. Roughness and the mask maps are generated too but unused —
+// masonry is MeshLambert, diffuse only, and switching to Standard for a
+// roughness map would cost more per fragment than the look is worth here.
+type StoneMaps = { albedo: THREE.Texture; normal: THREE.Texture; ao: THREE.Texture };
+type StoneSet = "wall" | "floor";
+const makeSet = (): StoneMaps => ({
+  albedo: streamedPlaceholder([128, 128, 128], THREE.SRGBColorSpace),
+  normal: streamedPlaceholder([128, 128, 255], THREE.NoColorSpace),
+  ao: streamedPlaceholder([128, 128, 128], THREE.NoColorSpace),
+});
+// Walls and floors need different stone counts, not just different UVs. A wall
+// brick is 2.2 x 0.925 and reads as ONE face; a floor slab is 2.2 x 2.2 and
+// reads as flagstones. Sampling one texture for both stamps a 2x2 grid of
+// stones onto every floor tile, which is exactly what it looked like.
+// Wall and floor projections deliberately use the same jointless image set;
+// only their procedural UV scales differ. Share the three GPU textures rather
+// than uploading identical copies under separate bindings.
+const sharedStoneSet = makeSet();
+const stoneSets: Record<StoneSet, StoneMaps> = { wall: sharedStoneSet, floor: sharedStoneSet };
+const stoneMapNodes: Array<{ set: StoneSet; key: keyof StoneMaps; node: { value: THREE.Texture } }> = [];
+let stoneSetLoad: Promise<void> | null = null;
+
+// Both sets are `face`: a JOINTLESS stone surface, generated with
+// --joint-depth 0.
+//
+// Painted joints cannot be made to land on the model's seams. The texture does
+// not know where the block ends, so every scale change slides its mortar to a
+// new wrong place — through the middle of a brick, or doubled up beside the
+// real edge. Chasing that alignment is what produced the cross through every
+// brick and the eight courses stamped on one 2.4m face.
+//
+// The joints are already derived from the geometry a few hundred lines below:
+// `ex`/`ez` fade in at the block's own half-extents and `line` follows the
+// world course grid, so they sit exactly on the seam by construction. The
+// texture only has to carry stone — grain and mineral mottle — and it can be
+// scaled freely because nothing about it needs to line up with anything.
+//
+// Generated from `clean`, not `ruined`:
+//
+//     python3 scripts/make-stone-atlas.py --style clean --seed 21 \
+//         --cells 1 --bond irregular --joint-depth 0 --out-dir ...
+//
+// With the joints gone, whatever is left owns the whole height field, and
+// ruined's crack=0.85 ridged noise turned into winding worm veins across every
+// wall — mean normal deviation 0.017 against clean's 0.008. The painted joints
+// had been hiding it.
+export function loadStoneSet(style = "face"): Promise<void> {
+  if (stoneSetLoad) return stoneSetLoad;
+  const loader = new THREE.TextureLoader();
+  const one = (set: StoneSet, map: keyof StoneMaps, srgb: boolean) => new Promise<void>((resolve) => {
+    // Both sets are the same jointless surface. This used to pick `floor-*`,
+    // a running-bond lattice, which is why the paving kept tiling wrong however
+    // the scale was dialled — the lattice is in the image, so no UV can put its
+    // joints on the tile seams.
+    const name = style;
+    loader.load(assetUrl(`textures/stone/${name}-${map}-512.webp`), (tex) => {
+      // Only albedo is colour; normal and AO are data and must not be
+      // gamma-decoded or the relief comes out wrong.
+      tex.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      tex.minFilter = THREE.LinearMipmapLinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.anisotropy = 4;
+      tex.generateMipmaps = true;
+      tex.needsUpdate = true;
+      stoneSets[set][map] = tex;
+      for (const entry of stoneMapNodes) {
+        if (entry.set === set && entry.key === map) entry.node.value = tex;
+      }
+      resolve();
+    }, undefined, () => resolve());
+  });
+  const sets: StoneSet[] = ["wall"];
+  stoneSetLoad = Promise.all(sets.flatMap((set) => [
+    one(set, "albedo", true), one(set, "normal", false), one(set, "ao", false),
+  ])).then(() => undefined);
+  return stoneSetLoad;
+}
+
+function sampleStone(set: StoneSet, map: keyof StoneMaps, uvNode: any): any {
+  const node = textureNode(stoneSets[set][map], uvNode);
+  stoneMapNodes.push({ set, key: map, node: node as unknown as { value: THREE.Texture } });
+  return node;
+}
+
+export function loadBrushAtlas(): Promise<void> {
+  if (brushLoad) return brushLoad;
+  brushLoad = new Promise((resolve, reject) => {
+    new THREE.TextureLoader().load(assetUrl("textures/hand-painted-brush-512.webp"), (loaded) => {
+      loaded.colorSpace = THREE.SRGBColorSpace;
+      loaded.wrapS = loaded.wrapT = THREE.RepeatWrapping;
+      loaded.minFilter = THREE.LinearMipmapLinearFilter;
+      loaded.magFilter = THREE.LinearFilter;
+      loaded.anisotropy = 4;
+      loaded.generateMipmaps = true;
+      loaded.needsUpdate = true;
+      activeBrushTexture = loaded;
+      for (const node of brushNodes) node.value = loaded;
+      resolve();
+    }, undefined, reject);
+  });
+  return brushLoad;
+}
+
 export function loadHandPaintedStoneTexture(): Promise<void> {
   if (handPaintedStoneLoad) return handPaintedStoneLoad;
   handPaintedStoneLoad = new Promise((resolve, reject) => {
-    new THREE.TextureLoader().load("/assets/textures/hand-painted-stone-1024.webp", (loaded) => {
+    new THREE.TextureLoader().load(assetUrl("textures/hand-painted-stone-512.webp"), (loaded) => {
       loaded.colorSpace = THREE.SRGBColorSpace;
       loaded.wrapS = THREE.RepeatWrapping;
       loaded.wrapT = THREE.RepeatWrapping;
@@ -122,6 +290,84 @@ export function loadHandPaintedStoneTexture(): Promise<void> {
 /** Eight dihedral UV variants plus continuous scale/offset jitter make a
  * single texture read differently on adjacent instances. One texture sample
  * replaces adding an atlas, per-brick material, or extra draw call. */
+/** The per-instance projected UV every masonry sample shares.
+ *
+ *  Dominant-axis local projection: tops use XZ, X-facing sides ZY, Z-facing
+ *  sides XY. Works on blocks, rubble and columns with no UV attribute, and
+ *  costs one sample rather than full triplanar three. `salt` picks a different
+ *  hash family so grain, fracture and relief decorrelate. */
+function paintedUv(stableId: any, scale: number, salt: number): any {
+  const id = stableId;
+  const an = abs(normalLocal);
+  const useX = step(an.y, an.x).mul(step(an.z, an.x));
+  const useY = step(an.x, an.y).mul(step(an.z, an.y));
+  const xy = vec2(positionLocal.x, positionLocal.y);
+  const zy = vec2(positionLocal.z, positionLocal.y);
+  const xz = vec2(positionLocal.x, positionLocal.z);
+  const projected = mix(mix(xy, zy, useX), xz, useY).mul(scale);
+  const swap = step(0.5, hash(id.add(salt + 1.17)));
+  const swapped = mix(projected, vec2(projected.y, projected.x), swap);
+  const flipX = step(0.5, hash(id.add(salt + 11.71))).mul(2).sub(1);
+  const flipY = step(0.5, hash(id.add(salt + 27.03))).mul(2).sub(1);
+  const scaleJitter = hash(id.add(salt + 38.91)).mul(0.42).add(0.82);
+  const offset = vec2(hash(id.add(salt + 47.13)), hash(id.add(salt + 59.37)));
+  return swapped.mul(vec2(flipX, flipY)).mul(scaleJitter).add(offset);
+}
+
+function sampleAtlas(uvNode: any): any {
+  const sampled = textureNode(activeHandPaintedStoneTexture, uvNode);
+  handPaintedStoneNodes.push(sampled as unknown as { value: THREE.Texture });
+  return sampled;
+}
+
+/** Relief taken from the painted atlas rather than from analytic bands.
+ *
+ *  The masonry already had a normal — mortar joints and a ripple, both
+ *  analytic, which is exactly why it read as machined bevels next to the
+ *  statues. The statues look hand-carved because their normal map was baked
+ *  off a real sculpt: irregular, chunky, chiselled. Deriving a bump from the
+ *  same image that paints the albedo gives the bricks that character, and the
+ *  two agree because they are the same texture.
+ *
+ *  Two extra samples for a finite-difference gradient. Cheaper than a second
+ *  texture and it needs no tangents, which instanced masonry does not carry.
+ */
+function paintedRelief(stableId: any, strength: any): any {
+  // One seamless tile with hardware REPEAT, not an atlas addressed by fract.
+  //
+  // The atlas version drew a dark lattice across every wall: the GPU takes
+  // texture derivatives across the fract discontinuity, reads them as an
+  // enormous UV step, and drops to the lowest mip along that line. It repeated
+  // in world space every 1/0.55 units, which is what gave it away. Hardware
+  // wrapping has no discontinuity to trip over, and the per-instance
+  // swap/flip/scale/offset already supplies the variation the atlas was for.
+  const uvBase = paintedUv(stableId, 0.55, 91);
+
+  const step0 = 0.0035;
+  const sampleBrush = (at: any) => {
+    const node = textureNode(activeBrushTexture, at);
+    brushNodes.push(node as unknown as { value: THREE.Texture });
+    return node;
+  };
+  const here = sampleBrush(uvBase);
+  const right = sampleBrush(uvBase.add(vec2(step0, 0)));
+  const down = sampleBrush(uvBase.add(vec2(0, step0)));
+  const luma = (n: any) => n.r.mul(0.34).add(n.g.mul(0.5)).add(n.b.mul(0.16));
+  const gain = float(0.0016 / step0);
+  const dx = luma(right).sub(luma(here)).mul(gain).mul(strength);
+  const dy = luma(down).sub(luma(here)).mul(gain).mul(strength);
+
+  // Rebuild the gradient in local space along whichever axes the projection
+  // used, so relief follows the painted planes on every face.
+  const an = abs(normalLocal);
+  const useX = step(an.y, an.x).mul(step(an.z, an.x));
+  const useY = step(an.x, an.y).mul(step(an.z, an.y));
+  const gXY = vec3(dx, dy, 0);
+  const gZY = vec3(0, dy, dx);
+  const gXZ = vec3(dx, 0, dy);
+  return mix(mix(gXY, gZY, useX), gXZ, useY);
+}
+
 function handPaintedStoneFactor(stableId = instanceIndex.toFloat()): any {
   const id = stableId;
   // Dominant-axis local projection: tops use XZ, X-facing sides use ZY and
@@ -148,6 +394,60 @@ function handPaintedStoneFactor(stableId = instanceIndex.toFloat()): any {
   return painted.rgb.mul(1.35).add(0.58);
 }
 
+/** Cracks and chipping, sampled from the same authored atlas at a much higher
+ *  frequency and thresholded to its dark veins.
+ *
+ *  The point is unlimited variation from one texture: each instance gets its
+ *  own swap/flip/scale/offset, exactly like handPaintedStoneFactor, but from a
+ *  different hash family so the crack pattern is uncorrelated with the stone
+ *  grain underneath. No crack atlas to author or ship, and no per-variant
+ *  geometry — a thousand blocks share one mesh and never repeat visibly.
+ *
+ *  `damage` is the generator's decay, so a pristine sanctum stays clean and a
+ *  collapsed ossuary shatters, from the same material.
+ */
+function crackFactor(stableId: any, damage: any): any {
+  const id = stableId;
+  const an = abs(normalLocal);
+  const useX = step(an.y, an.x).mul(step(an.z, an.x));
+  const useY = step(an.x, an.y).mul(step(an.z, an.y));
+  const xy = vec2(positionLocal.x, positionLocal.y);
+  const zy = vec2(positionLocal.z, positionLocal.y);
+  const xz = vec2(positionLocal.x, positionLocal.z);
+  // 3.1x the grain frequency: cracks are a finer feature than the brush planes,
+  // and the higher rate also decorrelates the two samples of the same image.
+  const projected = mix(mix(xy, zy, useX), xz, useY).mul(1.7);
+  const swap = step(0.5, hash(id.add(113.29)));
+  const swapped = mix(projected, vec2(projected.y, projected.x), swap);
+  const flipX = step(0.5, hash(id.add(127.41))).mul(2).sub(1);
+  const flipY = step(0.5, hash(id.add(151.07))).mul(2).sub(1);
+  const scaleJitter = hash(id.add(163.93)).mul(0.55).add(0.75);
+  const offset = vec2(hash(id.add(179.11)), hash(id.add(191.57)));
+  const uv = swapped.mul(vec2(flipX, flipY)).mul(scaleJitter).add(offset);
+
+  const sampled = textureNode(activeHandPaintedStoneTexture, uv);
+  handPaintedStoneNodes.push(sampled as unknown as { value: THREE.Texture });
+
+  // Keep only the dark tail of the atlas as fracture. smoothstep's edges set
+  // how much of the image counts as a crack; widening them with damage is what
+  // makes the same block read as chipped or shattered.
+  const luma = sampled.r.mul(0.34).add(sampled.g.mul(0.5)).add(sampled.b.mul(0.16));
+  // Thresholds must come from the atlas's real distribution, not from taste.
+  // Measured over the hand-painted stone source: luma is tightly clustered at
+  // 0.244 +/- 0.024, spanning 0.150 to 0.475, with p5 = 0.214 and p10 = 0.219.
+  //
+  // Two earlier guesses both failed for the same reason — they sat outside that
+  // band. 0.38/0.56 is entirely above it, so every pixel read as fracture and
+  // whole faces dimmed; 0.085/0.165 is entirely below it, so nothing did.
+  // A 0.024 standard deviation leaves very little room, so the window has to be
+  // narrow and centred just under the median.
+  const bite = damage.mul(0.016).add(0.206); // p5 at rest, ~p20 fully ruined
+  const crack = smoothstep(bite.add(0.012), bite.sub(0.014), luma);
+  // Darken into the fracture rather than lightening: a crack is a shadow.
+  // Deeper per-pixel than before precisely because it now covers far less area.
+  return float(1).sub(crack.mul(damage).mul(0.8));
+}
+
 /** Hero-landmark version of the same authored surface. It avoids instanceIndex
  * so streamed single meshes (dragon now, future statues later) share the exact
  * brush texture without pretending to be masonry blocks. */
@@ -172,7 +472,16 @@ export function makeHandPaintedLandmarkStoneMaterial(): THREE.MeshStandardNodeMa
   // Keep hero stone neutral enough for authored lights to establish hierarchy.
   // The previous strong blue multiplier made the dragon, oracle and fog share
   // one value/hue family before lighting was even evaluated.
-  const stoneColor = painted.rgb.mul(1.48).add(0.22).mul(vec3(0.88, 0.93, 0.99));
+  // The cool bias used to be (0.88, 0.93, 0.99), a 12% blue push. That was set
+  // when the rock's own vertex ramp was saturated blue, and it compounded with
+  // it: the two together put the rock near saturation 0.2 while both streamed
+  // statues are painted at 0.05-0.165. With the ramp now taken from the statue
+  // albedo, this only has to carry the last hint of cold.
+  // Hero shells sit against the darkest part of the sky and need a slightly
+  // higher diffuse floor than masonry. This is albedo lift, not emission: the
+  // authored key/rim lights still shape the form, but the planted dragon legs
+  // no longer collapse into the skull as a single black value.
+  const stoneColor = painted.rgb.mul(1.62).add(0.3).mul(vec3(0.96, 0.98, 1.0));
   material.colorNode = stoneColor;
   return material;
 }
@@ -213,6 +522,7 @@ export interface StoneMaterialTransform {
 export function makeStoneMat(
   transform?: StoneMaterialTransform,
   stableInstanceId = instanceIndex.toFloat(),
+  set: StoneSet = "wall",
 ): THREE.MeshLambertNodeMaterial {
   // Lambert = diffuse-only lighting: matte stone doesn't need GGX, and it
   // halves the per-light fragment cost across the entire masonry fill.
@@ -259,15 +569,43 @@ export function makeStoneMat(
   const fy = fract(positionWorld.y.div(COURSE));
   const dSeam = fy.min(float(1).sub(fy));
   const line = smoothstep(0.11, 0.02, dSeam).mul(sideMask);
-  // fake running-bond: an extra vertical seam at a per-instance offset
-  const off = hash(idf.add(0.13)).sub(0.5).mul(1.3);
-  const vseam = smoothstep(0.06, 0.015, abs(pl.x.sub(off)))
-    .add(smoothstep(0.06, 0.015, abs(pl.z.sub(off.mul(-0.7)))))
-    .mul(sideMask);
+  // No fake running-bond seam here. It drew a joint at a random offset across
+  // the middle of a brick, which is a seam the geometry does not have — the
+  // cross through the centre of a block. Bond variation is the layout's job.
+  // FLAGSTONE SURFACE, from the tile's own coordinates.
+  //
+  // Trying to map a paving image onto floors never worked: the texture does not
+  // know where a tile begins, so every scale slid its joints somewhere new. This
+  // takes the layout out of the image entirely — wear is a function of distance
+  // to the tile's own edge, and the middle is brushed with noise in tile-local
+  // space. Nothing repeats, so nothing can repeat wrongly.
+  //
+  const topMask = smoothstep(0.35, 0.62, abs(nl.y)); // 1 on tops and floors
+  // Distance in metres from this fragment to each of the tile's own borders.
+  const dEdgeX = float(hw).sub(abs(pl.x));
+  const dEdgeZ = float(hw).sub(abs(pl.z));
+  // Abraded arris: a worn band just inside the joint, doubled at the corners
+  // where two edges meet and traffic cuts the angle off. This is the paving
+  // read — a slab you can tell is a slab because its edges are rounded off,
+  // not because an image drew a line there.
+  const flagWear = smoothstep(0.34, 0.02, dEdgeX.min(dEdgeZ))
+    .add(smoothstep(0.52, 0.06, dEdgeX).mul(smoothstep(0.52, 0.06, dEdgeZ)).mul(0.8))
+    .clamp(0, 1)
+    .mul(topMask);
+  // Procedural brush for the middle: noise stretched hard along one axis makes
+  // strokes rather than clouds, and rotating that axis per instance gives every
+  // slab its own direction. Tile-local, so there is no repeat at all.
+  const brushAngle = hash(idf.add(3.77)).mul(Math.PI * 2);
+  const bc = cos(brushAngle), bs = sin(brushAngle);
+  const brushU = pl.x.mul(bc).sub(pl.z.mul(bs));
+  const brushV = pl.x.mul(bs).add(pl.z.mul(bc));
+  const flagBrush = triNoise3D(
+    vec3(brushU.mul(stoneStyle.floorScale.mul(9)), 0, brushV.mul(stoneStyle.floorScale.mul(1.5))), 0, 0,
+  ).sub(0.5).mul(topMask);
   // hand-cut seams: modulate the mortar so joints vary in depth along their run
   const cutRaw = triNoise3D(positionWorld.mul(2.2), 0, 0);
   const cut = cutRaw.mul(0.5).add(0.65);
-  const mortar = ex.add(ez).add(line).add(vseam).clamp(0, 1).mul(cut);
+  const mortar = ex.add(ez).add(line).clamp(0, 1).mul(cut);
   // weathered grain: three FINE scales only — a macro (low-frequency) term just
   // smears meaningless light/dark clouds across whole walls
   const g46 = triNoise3D(positionWorld.mul(4.6), 0, 0);
@@ -322,7 +660,34 @@ export function makeStoneMat(
   const gT = g.sub(nl.mul(g.dot(nl)));
   // worn edges round toward the corner direction — under raking moonlight the
   // arris softens instead of staying a machine-crisp bevel
-  const carvedNormal = nl.sub(gT).add(pl.normalize().mul(wear.mul(0.55))).normalize();
+  // Relief from the generated normal map. It was a finite difference over a
+  // brush image, which is a bump approximation; this is a real tangent-space
+  // normal baked from the same height field that produced the albedo and AO,
+  // so the three agree instead of merely coexisting.
+  //
+  // One stone per brick face: each brick is already its own instance, so a
+  // texture full of stones would put dozens on a single 2.2m face.
+  // Walls project per instance: a brick IS one stone, so every brick sampling
+  // the same UV range is correct and the per-instance transform breaks up the
+  // repeat.
+  //
+  // Floors must not. Paving runs continuously under your feet, and projecting
+  // per instance stamps an identical layout onto every tile — visible as the
+  // same brick pattern repeating slab after slab. World XZ makes the courses
+  // flow across the floor, and neighbouring tiles line up because they share
+  // the same coordinate frame rather than each restarting at zero.
+  const stoneUv = set === "floor"
+    ? vec2(positionWorld.x, positionWorld.z).mul(stoneStyle.floorScale)
+    : paintedUv(idf, 0.42, 91);
+  const stoneNormal = sampleStone(set, "normal", stoneUv).xyz.mul(2).sub(1);
+  const reliefLocal = vec3(
+    stoneNormal.x.mul(stoneStyle.paintedRelief),
+    float(0),
+    stoneNormal.y.mul(stoneStyle.paintedRelief),
+  );
+  const reliefT = reliefLocal.sub(nl.mul(reliefLocal.dot(nl)));
+  const carvedNormal = nl.sub(gT).sub(reliefT)
+    .add(pl.normalize().mul(wear.mul(0.55))).normalize();
   mat.normalNode = transformNormalToView(
     transform?.normal ? transform.normal(carvedNormal).normalize() : carvedNormal,
   );
@@ -348,16 +713,86 @@ export function makeStoneMat(
   // The generated target used a restrained ochre dry-brush on worn arrises.
   // A single tunable vector accent captures that cue without a texture fetch.
   const warmEdge = vec3(0.11, 0.045, -0.018).mul(wear).mul(stoneStyle.warmEdge);
-  mat.colorNode = vec3(albedo).mul(handPaintedStoneFactor(idf)).add(warmEdge);
+  // The generated set replaces the fine-grain image for surface character and
+  // supplies its own cavity. handPaintedStoneFactor stays for the per-instance
+  // value break-up that keeps a wall of identical bricks from reading as one.
+  // Modulate around 1.0, never below it on average. The maps are written
+  // centred on 0.5, so (s - 0.5) * k + 1 keeps the mean at unity whatever the
+  // style is, and the contrast is the only thing being chosen here.
+  const stoneAlbedo = sampleStone(set, "albedo", stoneUv).rgb.sub(0.5).mul(stoneStyle.stoneDetail).add(1);
+  const stoneAo = sampleStone(set, "ao", stoneUv).r.sub(0.5).mul(stoneStyle.stoneCavity).add(1);
+  mat.colorNode = vec3(albedo)
+    .mul(handPaintedStoneFactor(idf))
+    .mul(stoneAlbedo)
+    .mul(stoneAo)
+    .mul(float(1).add(flagWear.mul(stoneStyle.flagWear)))
+    .mul(float(1).add(flagBrush.mul(stoneStyle.flagBrush)))
+    .mul(crackFactor(idf, stoneStyle.damage))
+    .add(warmEdge);
   return mat;
 }
 
+/** Drowned briar on the basin bed. */
+export const brambleStyle = {
+  /** Lateral drift at the crown, in world units. Standing water, not wind —
+   *  this is a slow lean, and anything springy reads as grass. */
+  sway: uniform(0.055),
+  swaySpeed: uniform(0.33),
+  /** Multiplies the baked cane ramp. Cold and desaturated so the briar stays a
+   *  silhouette against the teal water rather than competing with it. */
+  tint: uniform(new THREE.Color(0.46, 0.52, 0.50)),
+};
+
+/** Thorn thicket material: baked value ramp, drift in the vertex shader.
+ *
+ *  Amplitude squares with height above the root, so the base stays planted in
+ *  the silt and only the crown moves. A linear falloff lets the roots skate,
+ *  which is the tell that a plant is a shader trick. */
+export function makeBrambleMat(
+  stableInstanceId = instanceIndex.toFloat(),
+): THREE.MeshLambertNodeMaterial {
+  const mat = new THREE.MeshLambertNodeMaterial({ vertexColors: true });
+  const pl = positionLocal;
+  const phase = hash(stableInstanceId.add(5.19)).mul(Math.PI * 2);
+  const h = pl.y.max(0);
+  const amp = h.mul(h).mul(brambleStyle.sway);
+  const t = time.mul(brambleStyle.swaySpeed).add(phase);
+  mat.positionNode = pl.add(vec3(sin(t).mul(amp), float(0), cos(t.mul(0.77)).mul(amp)));
+  mat.colorNode = brambleStyle.tint;
+  mat.name = "drowned-briar";
+  return mat;
+}
+
+/** Floors and steps: same shader, flagstone-scaled stone set. */
+export function makeStoneFloorMat(
+  stableInstanceId = instanceIndex.toFloat(),
+): THREE.MeshLambertNodeMaterial {
+  const material = makeStoneMat(undefined, stableInstanceId, "floor");
+  material.name = "masonry-floor";
+  return material;
+}
+
 export function makeStoneLoMat(stableInstanceId = instanceIndex.toFloat()): THREE.MeshLambertNodeMaterial {
-  const material = new THREE.MeshLambertNodeMaterial({ color: 0xe0ded8, vertexColors: true });
-  material.colorNode = handPaintedStoneFactor(stableInstanceId).mul(0.94);
+  // Same graph as the near shader, deliberately.
+  //
+  // The LOD system does two separable things: it collapses geometry, which
+  // saves real draw calls, and it swapped the shader, which bought nothing
+  // measurable and cost a visible value pop on every zoom — 16% at the
+  // high-to-middle switch before any of today's tuning.
+  //
+  // Measuring the shader alone is awkward because the frame is vsync-bound at
+  // 16.67ms in this scene, so frame time cannot see it either way. What is not
+  // in doubt is the pop, and no amount of matching constants fixes it properly:
+  // the two shaders perturb normals differently, so they respond to light
+  // differently, and only agreeing on the graph makes them agree.
+  //
+  // One graph also means one pipeline to compile rather than two, which was the
+  // original argument for keeping this material minimal.
+  const material = makeStoneMat(undefined, stableInstanceId);
   material.name = "distant-masonry-painted";
   return material;
 }
+
 
 /** ONE material for every teleport plaza — per-plaza identity rides in two
  *  constant geometry attributes ('color' + 'plazaSeed', see build.ts), so a
@@ -412,6 +847,7 @@ export interface MatKit {
   stoneFadeMat: THREE.MeshLambertNodeMaterial;
   stoneLoMat: THREE.MeshLambertNodeMaterial;
   stoneLoFadeMat: THREE.MeshLambertNodeMaterial;
+  stoneFloorMat: THREE.MeshLambertNodeMaterial;
   stairMat: THREE.MeshLambertNodeMaterial;
   stairFadeMat: THREE.MeshLambertNodeMaterial;
   redMat: THREE.MeshStandardNodeMaterial;
@@ -446,6 +882,7 @@ export interface MatKit {
 
 export function makeMaterials(): MatKit {
   const stoneMat = makeStoneMat();
+  const stoneFloorMat = makeStoneFloorMat();
   const stoneFadeMat = stoneMat.clone();
   applyLocalOcclusionWindow(stoneFadeMat);
   stoneFadeMat.name = "occluding-architecture-fade";
@@ -460,15 +897,27 @@ export function makeMaterials(): MatKit {
   const stoneLoFadeMat = stoneLoMat.clone();
   applyLocalOcclusionWindow(stoneLoFadeMat);
   stoneLoFadeMat.name = "distant-occluding-architecture-fade";
-  const stairMat = new THREE.MeshLambertNodeMaterial({ color: 0x8a7a62, vertexColors: true });
+  const stairMat = new THREE.MeshLambertNodeMaterial({ color: 0xffffff, vertexColors: true });
   // Stair towers are regular Meshes, so unlike the instanced masonry they do
   // not receive a per-instance tint. The former near-white multiplier also
   // replaced their material color, producing chalk-white debug-looking
   // spirals. Bake the face value back in and keep the same cool slate family.
-  const stairFace = vec3(attribute("color", "vec3") as never);
+  // Stair towers are cut from the same rock as everything else, and two things
+  // were stopping them from looking it.
+  //
+  // First, the baked face colour was applied twice: NodeMaterial multiplies the
+  // geometry's vertex colour on top of colorNode whenever vertexColors is set,
+  // so the explicit .mul(stairFace) here was redundant.
+  //
+  // Second — and this is why the spiral read chalk-white against blue walls —
+  // a tower is a plain Mesh, so it never receives the per-instance tint that
+  // puts every masonry block in the cool slate family. It carried only the
+  // neutral shadeFaces value, mean 0.763 against the wall tint's 0.380 luma,
+  // and with no hue at all. stairTint is that missing tint, taken from the
+  // masonry's own class-3 wall colour rather than picked by eye.
   stairMat.colorNode = handPaintedStoneFactor()
-    .mul(stairFace)
-    .mul(vec3(0.34, 0.405, 0.52));
+    .mul(stoneStyle.stairTint)
+    .mul(stoneStyle.base);
   const stairFadeMat = stairMat.clone();
   applyLocalOcclusionWindow(stairFadeMat);
   stairFadeMat.name = "occluding-stair-fade";
@@ -504,7 +953,11 @@ export function makeMaterials(): MatKit {
     const flick = sin(time.mul(8.9).add(ph)).mul(0.1).add(sin(time.mul(14.7).add(ph.mul(1.9))).mul(0.06))
       .mul(flickerDamp).add(0.86);
     const fall = smoothstep(0.5, 0.04, length(uv().sub(vec2(0.5, 0.42))));
-    wallGlowMat.colorNode = color(0xff8a35).mul(fall).mul(flick).mul(0.42);
+    // Carries the "lit city" read at wide framings. The cavern lid shadows
+    // everything outside the beam, so at distance a point light has fallen
+    // off to nothing and these emissive cards are the ONLY thing saying the
+    // maze is inhabited — they have to be generous.
+    wallGlowMat.colorNode = color(0xff8a35).mul(fall).mul(flick).mul(0.9);
     wallGlowMat.opacityNode = fall;
   }
 
@@ -516,7 +969,7 @@ export function makeMaterials(): MatKit {
     const flick = sin(time.mul(8.3).add(ph)).mul(0.09).add(sin(time.mul(13.9).add(ph.mul(2.3))).mul(0.05))
       .mul(flickerDamp).add(0.88);
     const fall = smoothstep(0.5, 0.03, length(uv().sub(0.5)));
-    floorGlowMat.colorNode = color(0xff9440).mul(fall).mul(flick).mul(0.5);
+    floorGlowMat.colorNode = color(0xff9440).mul(fall).mul(flick).mul(1.05);
     floorGlowMat.opacityNode = fall;
   }
 
@@ -691,6 +1144,7 @@ export function makeMaterials(): MatKit {
     stoneLoMat,
     stoneLoFadeMat,
     // spiral stair towers share the masonry face-shading via vertex colors
+    stoneFloorMat,
     stairMat,
     stairFadeMat,
     redMat,

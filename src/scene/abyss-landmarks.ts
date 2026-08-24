@@ -1,19 +1,261 @@
 // Code-native abyss landmarks reconstructed from the admitted img2threejs
 // references.  The hero geometry is deliberately silhouette-heavy and keeps
 // the whole exterior layer to a small, fixed draw-call count: stone/cavity
-// pairs for the instanced wardens, buried skull and distant oracle, plus the
+// pairs for the instanced wardens and distant oracle, plus the
 // shared arch, rubble and chain batches.
 
+import { assetUrl } from "../assets";
 import * as THREE from "three/webgpu";
 import * as BufferGeometryUtils from "three/addons/utils/BufferGeometryUtils.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
-import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
 import { CCDIKSolver } from "three/addons/animation/CCDIKSolver.js";
-import { color } from "three/tsl";
+import {
+  attribute, color, uv, smoothstep, sin, cos, time, mix, float, vec2, vec3,
+  positionLocal, length, fract, triNoise3D, positionWorld, mx_noise_float,
+} from "three/tsl";
+import {
+  abyssFloorHeight, abyssFloorRingScale, ABYSS_FLOOR_BASE_Y,
+} from "./abyss-floor";
 import { hash2 } from "../gen/rng";
 import { ABYSS } from "../gen/dungeon";
 import { TH } from "../config";
-import { makeHandPaintedLandmarkStoneMaterial } from "./kit/materials";
+import { makeBrambleMat } from "./kit/materials";
+import { brambleClumpGeometry, scatterBrambles } from "./brambles";
+import { erodeGeometry, subdivideGeometry } from "./kit/erode";
+import { createGltfDracoLoader } from "./gltf-draco";
+
+/** Layered ghost-fire for the oracle's eye sockets. The torch flame material
+ *  reads fine at prop scale but falls apart on a hero close-up, so the gaze
+ *  gets its own build: a breathing radial halo, two turbulence octaves that
+ *  tear real licking tongues into the flame edge, and a hot core ramp. All
+ *  layers emit >1 linear values so bloom finishes the effect. */
+function makeEyeFireMat(
+  coreHex = 0xeafff6, midHex = 0x5ef2d6, deepHex = 0x0b8071,
+): THREE.MeshBasicNodeMaterial {
+  const mat = new THREE.MeshBasicNodeMaterial({
+    transparent: true, depthWrite: false, side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+  });
+  const u = uv().x;
+  const v = uv().y;
+  const cx = u.sub(0.5).abs().mul(2);
+  const n1 = triNoise3D(vec3(u.mul(2.2), v.mul(2.7).sub(time.mul(0.6)), 0.37), 0.35, time);
+  const n2 = triNoise3D(vec3(u.mul(4.9).add(3.1), v.mul(5.3).sub(time.mul(1.15)), 1.91), 0.6, time);
+  const turb = n1.mul(0.66).add(n2.mul(0.34));
+  // tongue mask: tall teardrop eroded by scrolling turbulence
+  const shape = smoothstep(0.08, 1.0, v.add(cx.pow(1.4).mul(1.05)).add(turb.mul(0.58).sub(0.28)))
+    .oneMinus()
+    .mul(smoothstep(0.0, 0.16, float(1).sub(cx)));
+  const ramp = mix(
+    color(coreHex),
+    mix(color(midHex), color(deepHex), smoothstep(0.25, 0.95, v)),
+    smoothstep(0.04, 0.6, v.add(turb.mul(0.2))),
+  );
+  const sway = sin(time.mul(6.3).add(v.mul(4.2))).mul(v).mul(0.05);
+  mat.positionNode = positionLocal.add(vec3(sway, 0, sway.mul(0.7)));
+  mat.colorNode = ramp.mul(shape).mul(3.4);
+  mat.opacityNode = shape.clamp(0, 1);
+  return mat;
+}
+
+/** Bioluminescent water for the abyss basin: flat additive discs whose
+ *  radial falloff is rippled by slow noise, so the floor reads as glowing
+ *  water lapping the statue base and pooling under the maze (painted ref). */
+/** Viscous internal churn — the liquid rolling over inside itself.
+ *
+ *  Surface patterns were the wrong model. A flow map advects a texture ACROSS
+ *  a surface, which is right for a river seen from above and wrong for a body
+ *  of luminous liquid: what reads as "deep" is turbulence happening at
+ *  several depths at once, slowly folding into itself.
+ *
+ *  This is Iñigo Quilez's domain warping: noise sampled at a position that
+ *  has itself been displaced by noise, twice. Each warp folds the field over
+ *  and the result churns rather than scrolls. Time enters as a slow drift on
+ *  the warp offsets, not as a scroll on the final lookup, so the pattern
+ *  rolls in place instead of sliding past.
+ *
+ *  Returns the field in [-1, 1] plus the warp magnitude, which says how
+ *  violently a given spot is being folded — the emissive cores are hung off
+ *  that, so the light lives where the liquid is actually moving. */
+function liquidChurn(scale: number, speed: number, fold: number) {
+  const p = positionWorld.xz.mul(scale);
+  const t = time.mul(speed);
+
+  // first displacement: two independent noise fields as an offset vector
+  const q = vec2(
+    mx_noise_float(p.add(vec2(float(0), t))),
+    mx_noise_float(p.add(vec2(float(5.2), t.negate().add(1.3)))),
+  );
+  // second displacement, sampled at the already-warped position: this is the
+  // fold that turns drift into churn
+  const warped = p.add(q.mul(fold));
+  const r = vec2(
+    mx_noise_float(warped.add(vec2(t.mul(0.4).add(1.7), float(9.2)))),
+    mx_noise_float(warped.add(vec2(float(8.3), t.mul(-0.3).add(2.8)))),
+  );
+  return {
+    value: mx_noise_float(p.add(r.mul(fold))),
+    turbulence: r.x.abs().add(r.y.abs()).mul(0.5),
+  };
+}
+
+/** How deep the water has to be before it draws at full strength. */
+const POOL_FADE_DEPTH = 2.4;
+
+/**
+ * Fade a water sheet out as its own bed rises to meet it.
+ *
+ * The sheets are flat discs seated at hand-tuned offsets above a bedrock plane
+ * whose relief swings ±2.2 units, so the bed crosses them. Left to the depth
+ * test that crossing is binary — the water fragment is either drawn or
+ * discarded — and the bedrock draws its terrace risers as straight one-quad
+ * cliffs (see abyss-floor.ts), so the discard contour inherited them and the
+ * pool showed a ruler-straight crack. Fading by depth means the sheet has
+ * already reached zero before it reaches the intersection, so there is no
+ * contour left to inherit, and shores read as shallows instead of as cuts.
+ *
+ * Depth is baked per vertex in fit(), analytically, from the same
+ * `abyssFloorHeight()` every other consumer asks — no readback, no raycast.
+ */
+function poolDepthFade() {
+  return smoothstep(0, POOL_FADE_DEPTH, attribute("waterDepth", "float"));
+}
+
+/** A disc with enough radial rings to carry a per-vertex depth ramp. A
+ *  `CircleGeometry` fan cannot: it is one centre vertex and a rim, so the
+ *  fade would interpolate straight across the whole pool. */
+function poolDiscGeometry(): THREE.BufferGeometry {
+  const geo = new THREE.RingGeometry(0.001, 1, 96, 28);
+  geo.rotateX(-Math.PI / 2);
+  return geo;
+}
+
+function makeAbyssPoolMat(): THREE.MeshBasicNodeMaterial {
+  // Pure additive glow ACCENT layered on the basin water body. There must be
+  // exactly ONE dark normal-blended sheet (the basin): a second one overlaps
+  // it, flips transparent sort order with camera motion and flickers as a
+  // big dark blob. This layer only ever adds light, so ordering is safe.
+  const mat = new THREE.MeshBasicNodeMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  const fall = smoothstep(0.06, 1.0, length(uv().sub(0.5)).mul(2)).oneMinus();
+  // Faster and tighter than the basin: this is the pool the statue stands in,
+  // where the bloom concentrates and the liquid is most agitated.
+  const churn = liquidChurn(0.06, 0.1, 2.6);
+  const level = churn.value.mul(0.5).add(0.5);
+  const core = smoothstep(0.52, 0.86, level);
+  const spark = smoothstep(0.5, 0.92, churn.turbulence).mul(core);
+  const depth = poolDepthFade();
+  mat.colorNode = color(0x1fd4b4).mul(core).mul(1.2)
+    .add(color(0x9dffe8).mul(spark).mul(2.0))
+    .mul(fall.pow(1.6)).mul(depth);
+  mat.opacityNode = fall.mul(0.85).mul(depth);
+  return mat;
+}
+
+/** The broad basin sheet under the maze: much dimmer and PATCHY — dark
+ *  water with drifting glowing blooms, not a uniform lit floor. */
+function makeAbyssBasinMat(): THREE.MeshBasicNodeMaterial {
+  // Same normal-blended water body as the root pool: dark surface with
+  // drifting emissive blooms. Near-opaque so pillars and ruins get a clean
+  // waterline instead of ghosting through an additive mist.
+  const mat = new THREE.MeshBasicNodeMaterial({
+    transparent: true, depthWrite: false,
+  });
+  // A contained lagoon, not an ocean. In the reference the lit water is a
+  // pocket that falls off hard into black; a sheet of even brightness to the
+  // horizon is what made this read as a patterned floor.
+  const radial = smoothstep(0.05, 1.0, length(uv().sub(0.5)).mul(2)).oneMinus();
+  const fall = radial.pow(2.2);
+  const churn = liquidChurn(0.019, 0.05, 3.4);
+  const level = churn.value.mul(0.5).add(0.5);
+
+  // Emission is gated TWICE, because a surface that glows everywhere stops
+  // reading as dark water with light in it.
+  //  1. a very low-frequency mask, so only some stretches of the basin are
+  //     alive at all — the rest is just black water;
+  //  2. a high threshold inside those stretches, so within a lit stretch the
+  //     glow still sits in cores rather than washing the whole area.
+  const alive = smoothstep(0.30, 0.82,
+    mx_noise_float(positionWorld.xz.mul(0.0042)).mul(0.5).add(0.5));
+
+  // The churn MODULATES brightness; it does not draw a pattern. Thresholding
+  // it produced legible swirls — decorated lino, not water. In the reference
+  // the surface is a luminous gradient whose detail comes from bloom and from
+  // the silhouettes standing in it, so the light is driven by the radial
+  // falloff and the churn only breathes over the top of it.
+  const modulation = level.mul(0.55).add(0.62);
+  const pool = fall.mul(alive).mul(modulation);
+
+  // Discrete motes. The reference's water is dotted with tiny hard points,
+  // and they are what sells "alive" rather than merely "lit" — a very high
+  // threshold on high-frequency noise leaves only isolated specks.
+  const speckNoise = mx_noise_float(positionWorld.xz.mul(0.7)).mul(0.5).add(0.5);
+  const drift = mx_noise_float(positionWorld.xz.mul(0.06).add(time.mul(0.05)))
+    .mul(0.5).add(0.5);
+  const specks = smoothstep(0.88, 0.99, speckNoise).mul(smoothstep(0.4, 0.85, drift));
+
+  const body = color(0x0a2e2b).mul(radial.mul(modulation))
+    .add(color(0x051917));
+  const depth = poolDepthFade();
+  mat.colorNode = color(0x2ad6b2).mul(pool).mul(2.3)
+    .add(color(0xd6fff5).mul(specks).mul(alive).mul(radial).mul(4.0))
+    .add(body);
+  mat.opacityNode = radial.mul(0.9).mul(depth);
+  return mat;
+}
+
+/** Bright shimmering shoreline band where the glowing water meets the
+ *  statue's tentacle roots — the hottest teal edge in the reference. */
+function makeAbyssShoreMat(): THREE.MeshBasicNodeMaterial {
+  const mat = new THREE.MeshBasicNodeMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  const r = length(uv().sub(0.5)).mul(2);
+  const band = smoothstep(0.74, 0.87, r).mul(smoothstep(0.94, 1.0, r).oneMinus());
+  // the shoreline rides the same current as the water it edges, so the two
+  // never look like separate effects laid on top of each other
+  const wash = liquidChurn(0.13, 0.14, 2.2).value.mul(0.35).add(0.72);
+  mat.colorNode = color(0x3af2cf).mul(band).mul(wash).mul(2.8);
+  mat.opacityNode = band.mul(0.9);
+  return mat;
+}
+
+/** The light the water puts INTO the air above it.
+ *
+ *  This is the layer the reference has and a flat lit plane never can: the
+ *  lagoon's glow hangs in the air as a low bank of luminous haze, which is
+ *  what makes the light feel like it has a source in the world rather than
+ *  being a texture on the floor. A shallow dome over the water, additive and
+ *  soft, fading out both at its rim and toward its top. */
+function makeWaterHazeMat(): THREE.MeshBasicNodeMaterial {
+  const mat = new THREE.MeshBasicNodeMaterial({
+    transparent: true, depthWrite: false, side: THREE.BackSide,
+    blending: THREE.AdditiveBlending,
+  });
+  // v runs 0 at the dome's rim to 1 at its top: the haze is densest just
+  // above the surface and thins out with height, like real ground mist
+  const height = smoothstep(0.0, 0.62, uv().y).oneMinus();
+  const breath = mx_noise_float(positionWorld.xz.mul(0.02).add(time.mul(0.05)))
+    .mul(0.35).add(0.7);
+  const alive = smoothstep(0.34, 0.80,
+    mx_noise_float(positionWorld.xz.mul(0.0042)).mul(0.5).add(0.5));
+  mat.colorNode = color(0x1fbfa4).mul(height).mul(breath).mul(alive).mul(0.95);
+  mat.opacityNode = height.mul(alive).mul(0.62);
+  return mat;
+}
+
+function makeEyeGlowMat(): THREE.MeshBasicNodeMaterial {
+  const mat = new THREE.MeshBasicNodeMaterial({
+    transparent: true, depthWrite: false, side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+  });
+  const fall = smoothstep(0.04, 1.0, length(uv().sub(0.5)).mul(2)).oneMinus();
+  const breathe = sin(time.mul(2.1)).mul(0.16).add(0.84);
+  mat.colorNode = color(0x2fe8c8).mul(fall.pow(1.7)).mul(breathe).mul(1.1);
+  mat.opacityNode = fall;
+  return mat;
+}
 
 type AddPart = (
   geometry: THREE.BufferGeometry,
@@ -237,85 +479,6 @@ function guardianVoidGeometry(): THREE.BufferGeometry {
   });
 }
 
-function dragonSkullStoneGeometry(): THREE.BufferGeometry {
-  const geometry = mergedParts((add) => {
-    // Cranium and progressively tapered muzzle volumes.
-    add(new THREE.IcosahedronGeometry(1, 2), [0, 14.2, -1.5], [13.5, 9.2, 10.0], [0.02, 0, 0.02]);
-    add(new THREE.IcosahedronGeometry(1, 2), [0, 11.0, 8.5], [10.5, 6.2, 7.8]);
-    add(new THREE.IcosahedronGeometry(1, 1), [0, 8.4, 18.0], [7.5, 4.5, 7.3]);
-    add(new THREE.IcosahedronGeometry(1, 1), [0, 7.0, 26.0], [4.9, 3.2, 6.0]);
-    add(facetedTube([[0, 10.0, 24.0], [0, 13.6, 27.2], [0, 18.2, 27.8]], [1.5, 1.0, 0.08], 8, 6), [0, 0, 0]);
-    add(new THREE.TorusGeometry(3.7, 1.05, 6, 12), [-5.2, 15.7, 12.05], [1.08, 0.92, 1], [0, 0, -0.10]);
-    add(new THREE.TorusGeometry(3.7, 1.05, 6, 12), [5.2, 15.7, 12.05], [1.08, 0.92, 1], [0, 0, 0.10]);
-    for (const side of [-1, 1]) {
-      add(facetedTube([
-        [side * 5.4, 8.0, 8.2], [side * 5.1, 7.1, 15.5], [side * 4.4, 6.5, 23.0], [side * 3.3, 6.0, 29.0],
-      ], [1.25, 1.05, 0.85, 0.5], 14, 7), [0, 0, 0]);
-      add(facetedTube([
-        [side * 5.0, 2.8, 7.5], [side * 4.8, 2.0, 15.0], [side * 4.0, 1.8, 22.0], [side * 2.9, 2.0, 27.0],
-      ], [1.15, 1.0, 0.75, 0.42], 13, 7), [0, 0, 0]);
-    }
-
-    // Real side arches around the orbit; these keep an open socket from front
-    // and three-quarter views instead of painting a black circle on a sphere.
-    for (const side of [-1, 1]) {
-      add(facetedTube([
-        [side * 5.2, 20.2, 2.2], [side * 9.2, 18.8, 5.8], [side * 11.0, 14.2, 10.5], [side * 8.6, 10.0, 14.2],
-      ], [1.9, 1.65, 1.35, 1.1], 11, 7), [0, 0, 0]);
-      add(facetedTube([
-        [side * 5.0, 6.1, 8.8], [side * 6.2, 4.6, 14.6], [side * 5.8, 3.7, 21.8], [side * 4.2, 3.0, 28.0],
-      ], [1.75, 1.55, 1.2, 0.72], 13, 7), [0, 0, 0]);
-    }
-
-    // One dominant swept rear horn, one damaged partner and four cheek spikes.
-    add(facetedTube([[5, 20, -5], [8, 25, -10], [10, 31, -17], [9, 37, -27]], [3.0, 2.5, 1.55, 0.12], 18, 7), [0, 0, 0]);
-    add(facetedTube([[-6, 20, -5], [-10, 24, -10], [-12, 28, -16], [-12, 31, -20]], [2.8, 2.2, 1.25, 0.18], 14, 7), [0, 0, 0]);
-    const spikeRoots: Array<[number, number, number, number]> = [
-      [-11, 15, 0, -1], [11, 15, 0, 1], [-10, 10, 10, -1], [10, 10, 10, 1],
-    ];
-    for (const [x, y, z, side] of spikeRoots) {
-      add(facetedTube([[x, y, z], [x + side * 4, y + 3, z - 1], [x + side * 7, y + 5, z - 2]], [1.6, 0.9, 0.08], 7, 6), [0, 0, 0]);
-    }
-
-    // Broken jaw hinge blocks and a few fossil chips that bridge into rubble.
-    add(new THREE.IcosahedronGeometry(1, 1), [-7.6, 5.4, 5.0], [3.2, 3.1, 3.6]);
-    add(new THREE.IcosahedronGeometry(1, 1), [7.6, 5.4, 5.0], [3.2, 3.1, 3.6]);
-    for (let k = 0; k < 9; k++) {
-      const a = -0.45 + k * 0.46;
-      add(new THREE.IcosahedronGeometry(1, 1), [Math.cos(a) * (10 + k % 3), 0.8 + k % 2, 5 + Math.sin(a) * 12], [2.2 + k % 2, 1.5 + (k % 3) * 0.4, 2.0]);
-    }
-  });
-  paintFacets(geometry, 0x34445a, 0x758299, 113);
-  return geometry;
-}
-
-function dragonSkullTeethGeometry(): THREE.BufferGeometry {
-  const geometry = mergedParts((add) => {
-    // Teeth are a separate merged colour batch. They keep the inherited fossil
-    // material family but stay readable against the near-black mouth gap.
-    for (let k = 0; k < 12; k++) {
-      const side = k & 1 ? 1 : -1;
-      const row = Math.floor(k / 2);
-      const z = 8.8 + row * 3.45;
-      const height = 3.0 + (row % 3) * 0.68;
-      add(new THREE.ConeGeometry(0.82 + (row % 2) * 0.12, height, 7), [side * (5.1 - row * 0.36), 6.0 - height / 2, z], [1, 1, 0.82], [0, 0, Math.PI + side * 0.08]);
-      if (row < 5) add(new THREE.ConeGeometry(0.68, height * 0.78, 7), [side * (4.9 - row * 0.31), 2.8 + height * 0.32, z + 0.62], [1, 1, 0.82], [0, 0, side * 0.08]);
-    }
-  });
-  paintFacets(geometry, 0x66758b, 0xa7b1c0, 139);
-  return geometry;
-}
-
-function dragonSkullVoidGeometry(): THREE.BufferGeometry {
-  return mergedParts((add) => {
-    add(new THREE.CircleGeometry(1, 12), [-5.2, 15.7, 11.9], [4.5, 4.15, 1], [0, 0, -0.10]);
-    add(new THREE.CircleGeometry(1, 12), [5.2, 15.7, 11.9], [4.5, 4.15, 1], [0, 0, 0.10]);
-    add(new THREE.CircleGeometry(1, 7), [-1.45, 8.7, 32.1], [0.72, 1.0, 1], [0, 0, -0.08]);
-    add(new THREE.CircleGeometry(1, 7), [1.45, 8.7, 32.1], [0.72, 1.0, 1], [0, 0, 0.08]);
-    add(new THREE.BoxGeometry(9.4, 2.9, 21), [0, 4.3, 19.0]);
-  });
-}
-
 const ORACLE_TENTACLES: Array<Array<[number, number, number]>> = [
   [[-6.4, 37, 10], [-11.5, 31, 13], [-14.5, 22, 15], [-10.5, 11, 14], [-18.5, 0, 10]],
   [[-4.7, 37, 12], [-7.8, 30, 16], [-3.2, 21, 18], [-9.0, 10, 16], [-5.4, -4, 12]],
@@ -397,11 +560,47 @@ function brokenArchGeometry(): THREE.BufferGeometry {
  * cliff, not a statue pedestal: a broad centre shelf guarantees the model's
  * back penetrates stone, while staggered buttresses break the top/side outline
  * so it can merge into the environment's larger horseshoe wall. */
+/** One rock palette, taken from the statues rather than chosen beside them.
+ *
+ *  The dragon, the rock and the oracle were reading as three separate
+ *  materials, and measuring the shipped albedo says why. Both Tripo statues are
+ *  painted almost neutral and dark — the oracle at saturation 0.165 and the
+ *  dragon at 0.050, both around 0.176 luma — while the rock was hand-authored
+ *  blue at saturation 0.21-0.43, up to eight times more saturated, and the
+ *  perch's light end sat at 0.394 luma, more than twice the statues.
+ *
+ *  These are the statues' own hue (0.586) and mean saturation (0.108), with a
+ *  dark-to-light ramp centred on their value so the rock keeps its form without
+ *  becoming a different stone. Anything wanting to be part of this family
+ *  should read from here rather than pick its own blue.
+ */
+export const ROCK_DARK = 0x131518;
+export const ROCK_LIGHT = 0x353b42;
+/** The perch carries a slightly wider ramp: it is a hero silhouette read
+ *  against open abyss, where the cliff is read against the basin behind it. */
+export const PERCH_DARK = 0x2b3035;
+export const PERCH_LIGHT = 0x66717a;
+
+// Exact A/B for the old over-tessellated procedural landmarks. The default
+// keeps enough silhouette for the distant permanent cliff and the sub-second
+// skull placeholder without spending the cold-start budget on vertices that
+// cannot be seen or are immediately replaced by the streamed sculpt.
+const legacyLandmarkGeometry = typeof location !== "undefined"
+  && new URLSearchParams(location.search).get("landmarkGeometry") === "legacy";
+
 function oracleBackingCliffGeometry(): THREE.BufferGeometry {
+  // Segment counts, not decoration: this wall is 335 world units across, and at
+  // one quad per box face its facets were tens of units wide — folded paper, at
+  // any range where you can see the oracle's hands. The masses stay authored
+  // (silhouette is the point), but each carries enough vertices for the erosion
+  // pass below to actually cut into it. The default is ~10k triangles for the
+  // whole cliff, one mesh, one draw; the former subdivided result exceeded
+  // 100k and spent tens of milliseconds on invisible sub-pixel erosion.
+  const SEG = legacyLandmarkGeometry ? 8 : 6;
   const geometry = mergedParts((add) => {
-    add(new THREE.BoxGeometry(86, 92, 26), [0, 44, 0]);
-    add(new THREE.BoxGeometry(62, 34, 34), [-12, 100, -2], [1, 1, 1], [0.02, 0.04, -0.04]);
-    add(new THREE.BoxGeometry(44, 28, 30), [25, 116, -3], [1, 1, 1], [-0.03, -0.08, 0.08]);
+    add(new THREE.BoxGeometry(86, 92, 26, SEG, SEG, SEG), [0, 44, 0]);
+    add(new THREE.BoxGeometry(62, 34, 34, SEG, SEG, SEG), [-12, 100, -2], [1, 1, 1], [0.02, 0.04, -0.04]);
+    add(new THREE.BoxGeometry(44, 28, 30, SEG, SEG, SEG), [25, 116, -3], [1, 1, 1], [-0.03, -0.08, 0.08]);
     const strata = [
       [-58, 20, 18, 43, 28], [-49, 61, 24, 78, 24], [-61, 99, 16, 45, 22],
       [58, 19, 20, 41, 30], [50, 60, 25, 75, 24], [62, 101, 17, 48, 22],
@@ -410,7 +609,7 @@ function oracleBackingCliffGeometry(): THREE.BufferGeometry {
     for (let i = 0; i < strata.length; i++) {
       const [x, y, w, h, d] = strata[i];
       add(
-        new THREE.BoxGeometry(w, h, d), [x, y, -2 - (i % 3) * 2],
+        new THREE.BoxGeometry(w, h, d, SEG, SEG, SEG), [x, y, -2 - (i % 3) * 2],
         [1, 1, 1], [(i % 2 ? 1 : -1) * 0.035, (i - 4) * 0.018, (i % 3 - 1) * 0.055],
       );
     }
@@ -419,11 +618,24 @@ function oracleBackingCliffGeometry(): THREE.BufferGeometry {
     for (let i = 0; i < 14; i++) {
       const x = -66 + i * 10.2;
       const h = 15 + (i * 13 % 19);
-      add(new THREE.IcosahedronGeometry(1, 1), [x, h * 0.42 - 4, 7 + (i % 4) * 2], [7 + (i % 3) * 2, h * 0.72, 8 + (i % 2) * 3], [i * 0.07, i * 0.19, (i % 3 - 1) * 0.12]);
+      add(new THREE.IcosahedronGeometry(1, legacyLandmarkGeometry ? 3 : 2), [x, h * 0.42 - 4, 7 + (i % 4) * 2], [7 + (i % 3) * 2, h * 0.72, 8 + (i % 2) * 3], [i * 0.07, i * 0.19, (i % 3 - 1) * 0.12]);
     }
   });
-  paintFacets(geometry, 0x111a2b, 0x34465f, 419);
-  return geometry;
+  // Weathering comes last. It moves vertices, so it changes which way faces
+  // point — painting the face values before this would colour the old normals.
+  // subdivideGeometry returns a NEW geometry rather than mutating in place, so
+  // the weathered result is what gets painted and returned — painting the
+  // original here would colour a mesh nobody ever sees.
+  const weatheringSource = legacyLandmarkGeometry
+    ? subdivideGeometry(geometry, 1)
+    : geometry;
+  const weathered = erodeGeometry(weatheringSource, {
+    seed: 419, amplitude: 1.5, frequency: 0.055,
+    octaves: legacyLandmarkGeometry ? 4 : 3, strata: 0.6,
+  });
+  if (weatheringSource !== geometry) geometry.dispose();
+  paintFacets(weathered, ROCK_DARK, ROCK_LIGHT, 419);
+  return weathered;
 }
 
 /** A grounded fan of monumental slate blades. The dominant blade climbs from
@@ -460,6 +672,8 @@ export const DRAGON_PERCH_STRATA: DragonPerchStrataProfile = {
 // size-dependent fit continue to work unchanged underneath it.
 export const DRAGON_LANDMARK_DEFAULT_OFFSET = [-110.4, 58.2, -210.4] as const;
 const DRAGON_RENDER_SCALE = 24.6 * 0.7;
+const BATCHED_PERCH_SAMPLER = typeof window === "undefined"
+  || new URLSearchParams(window.location.search).get("perchSampler") !== "legacy";
 
 const DRAGON_LEG_CONTACTS = [
   { name: "fore_left", forward: 0.65, lateral: 1.28 },
@@ -475,7 +689,32 @@ interface DragonPerchFrame {
   surfaceRadius: number;
 }
 
-function dragonPerchFrameAt(profile: DragonPerchStrataProfile): DragonPerchFrame {
+function dragonPerchFrameAt(
+  profile: DragonPerchStrataProfile,
+  geometry?: THREE.BufferGeometry,
+): DragonPerchFrame {
+  // The streamed titan skull is centred during import, so its crown sits over
+  // the centre of its local X/Z bounds. The previous code kept the procedural
+  // slate blade's distal support point (z = -lean) after swapping the visual
+  // geometry; that point lies outside the skull and left the dragon hovering
+  // roughly one skull-length away. Resolve the live crown from the actual
+  // surface instead, while retaining the zero-I/O slate frame for first paint.
+  if (geometry?.userData.source === "tripo-v3.1-titan-skull-direct-30k") {
+    if (!geometry.boundingBox) geometry.computeBoundingBox();
+    const bounds = geometry.boundingBox;
+    if (bounds) {
+      const x = (bounds.min.x + bounds.max.x) * 0.5;
+      const z = (bounds.min.z + bounds.max.z) * 0.5;
+      const crown = samplePerchSurfaceXZ(geometry, x, z);
+      if (crown) {
+        const up = crown.normal.clone().normalize();
+        const tangent = new THREE.Vector3(0, 0, -1)
+          .addScaledVector(up, up.z)
+          .normalize();
+        return { point: crown.point, tangent, up, surfaceRadius: 0 };
+      }
+    }
+  }
   return {
     point: new THREE.Vector3(0, profile.height, -profile.lean),
     // The authored dragon faces local -Z while standing on a nearly level
@@ -835,38 +1074,179 @@ function triangleCount(geometry: THREE.BufferGeometry): number {
   return geometry.index ? geometry.index.count / 3 : geometry.getAttribute("position").count / 3;
 }
 
-const TRIPO_ORACLE_RENDER = "/assets/abyss/oracle/oracle-render-30k.glb";
-const TRIPO_ORACLE_DESTRUCTION_PROXY = "/assets/abyss/oracle/oracle-destruction-proxy-2500.glb";
-const TRIPO_WARDEN_RENDER = "/assets/abyss/warden/warden-render-30k.glb";
-const TRIPO_WARDEN_RANK_RENDER = "/assets/abyss/warden/warden-rank-render-8k.glb";
-const TRIPO_WARDEN_DESTRUCTION_PROXY = "/assets/abyss/warden/warden-destruction-proxy-2500.glb";
-const TRIPO_DRAGON_RENDER = "/assets/abyss/dragon/dragon-render-45k-rigged-runtime.glb";
-const TRIPO_DRAGON_PERCH_RENDER = "/assets/abyss/dragon/dragon-slate-perch-qr1k.glb?v=adaptive100-scale70-contact-6";
+/** Resident landmark stone reads only position/normal/color. Keeping unused
+ * GLB UV/tangent streams changes WebGPU's vertex-layout cache key, so visually
+ * identical shells compile separate pipelines. Strip them before painting. */
+function stripUnusedLandmarkAttributes(geometry: THREE.BufferGeometry): void {
+  for (const attribute of Object.keys(geometry.attributes)) {
+    if (attribute !== "position" && attribute !== "normal" && attribute !== "color") {
+      geometry.deleteAttribute(attribute);
+    }
+  }
+  // Draco frequently emits one interleaved position/normal buffer, while a
+  // different decimation emits two plain buffers. Shader inputs are identical
+  // but RenderObject includes stride/offset in its geometry cache key; flatten
+  // both layouts so the 30k pair and 8k rank share the same pipeline.
+  BufferGeometryUtils.deinterleaveGeometry(geometry);
+}
+
+const TRIPO_ORACLE_RENDER = assetUrl("abyss/oracle/oracle-render-30k.glb");
+const TRIPO_ORACLE_DESTRUCTION_PROXY = assetUrl("abyss/oracle/oracle-destruction-proxy-2500.glb");
+const TRIPO_WARDEN_RENDER = assetUrl("abyss/warden/warden-render-30k.glb");
+const TRIPO_WARDEN_RANK_RENDER = assetUrl("abyss/warden/warden-rank-render-8k.glb");
+const TRIPO_WARDEN_DESTRUCTION_PROXY = assetUrl("abyss/warden/warden-destruction-proxy-2500.glb");
+const TRIPO_DRAGON_RENDER = assetUrl("abyss/dragon/dragon-render-45k-rigged-runtime.glb");
+// The dragon stands on a titan skull now, not a slate spire. Tripo v3.1,
+// decimated to 30k with its UVs intact — zero boundary and zero non-manifold
+// edges at every LOD — and its textures resized to 1024, which is what keeps a
+// hero rock at 1.3MB.
+//
+// The "?v=titan-skull-1" this carried is gone: the URL is content-addressed
+// now, so re-exporting the skull changes the hash and nothing has to remember
+// to bump a query string.
+const TRIPO_DRAGON_PERCH_RENDER = assetUrl("abyss/dragon/titan-skull-perch-30k.glb");
 
 // Neural landmark shells are Draco-compressed and streamed only after the
 // first visible frame. Keeping one shared decoder avoids three independent
 // WASM compilations while preserving the no-I/O startup path.
-const tripoDracoLoader = new DRACOLoader();
-const tripoGltfLoader = new GLTFLoader();
+// One glTF-only decoder pool for all hero landmarks. The helper uses Three's
+// own content-hashed assets, so decoder and loader versions cannot drift and
+// production does not need a second public/draco copy.
+const tripoDracoLoader = createGltfDracoLoader();
+/** Every landmark stream, and what became of it.
+ *
+ *  None of the `load()` calls below passed an error callback, so three's
+ *  default did the only thing it can — nothing. A decoder that answered with
+ *  HTML took out the oracle, both warden ranks and the dragon at once, and the
+ *  scene reported no problem at all: the slots were in the graph, just empty.
+ *  Wrapping `load` once here means a failure can never be silent again, and
+ *  `__df.landmarkStreams()` says whether a request was even made. */
+interface LandmarkStreamEntry {
+  label: string;
+  url: string;
+  state: string;
+  detail?: string;
+  requestedAt?: number;
+  fetchedAt?: number;
+  loadedAt?: number;
+}
+const landmarkStreamLog: LandmarkStreamEntry[] = [];
+
+export function landmarkStreamStatus(): LandmarkStreamEntry[] {
+  return landmarkStreamLog.map((entry) => ({ ...entry }));
+}
+
+function traceStreams(loader: GLTFLoader, label: string): GLTFLoader {
+  const original = loader.load.bind(loader);
+  loader.load = (url, onLoad, onProgress, onError) => {
+    const entry: LandmarkStreamEntry = {
+      label, url: String(url), state: "requested", requestedAt: performance.now(),
+    };
+    landmarkStreamLog.push(entry);
+    original(
+      url,
+      (gltf) => { entry.state = "loaded"; entry.loadedAt = performance.now(); onLoad?.(gltf); },
+      onProgress,
+      (error) => {
+        entry.state = "failed";
+        entry.detail = String((error as Error)?.message ?? error);
+        console.error(`[landmark] ${label} failed to stream ${url}`, error);
+        onError?.(error);
+      },
+    );
+  };
+  return loader;
+}
+
+const tripoGltfLoader = traceStreams(new GLTFLoader(), "tripo");
 tripoGltfLoader.setDRACOLoader(tripoDracoLoader);
 // Dragon carries four leg chains plus a restrained neck-look chain.
 // A dedicated loader prevents the other streamed landmarks from starving its
 // decode or coupling their cancellation state.
-const dragonGltfLoader = new GLTFLoader();
+const dragonGltfLoader = traceStreams(new GLTFLoader(), "dragon");
 dragonGltfLoader.setDRACOLoader(tripoDracoLoader);
 
-function disposeLoadedGraph(group: THREE.Object3D): void {
+// Start only the hero dragon's transfer during module evaluation. The bytes,
+// parsing and IK overlap WebGPU initialization and the CPU forge, and none of
+// them are awaited by the coarse first paint. Previously the 1 MB
+// content-addressed request itself started 350 ms after two painted frames, so
+// the first cinematic frame showed an empty skull for roughly half a second.
+// Holding one immutable ArrayBuffer also makes later parsing independent of a
+// second fetch without bundling this studio asset into the application chunk.
+const dragonPrefetchEntry: LandmarkStreamEntry | null = typeof window === "undefined" ? null : {
+  label: "dragon-prefetch",
+  url: TRIPO_DRAGON_RENDER,
+  state: "requested",
+  requestedAt: performance.now(),
+};
+if (dragonPrefetchEntry) landmarkStreamLog.push(dragonPrefetchEntry);
+const dragonRenderBuffer: Promise<ArrayBuffer> | null = dragonPrefetchEntry
+  ? fetch(TRIPO_DRAGON_RENDER, { mode: "cors" }).then(async (response) => {
+    if (!response.ok) throw new Error(`dragon prefetch ${response.status}`);
+    const bytes = await response.arrayBuffer();
+    dragonPrefetchEntry.state = "fetched";
+    dragonPrefetchEntry.fetchedAt = performance.now();
+    return bytes;
+  }).catch((error) => {
+    dragonPrefetchEntry.state = "failed";
+    dragonPrefetchEntry.detail = String((error as Error)?.message ?? error);
+    throw error;
+  })
+  : null;
+
+// Transfer the skull beside the dragon, but keep its Draco parse behind the
+// first-frame delay in streamTripoDragonPerch(). The dragon's final foot solve
+// depends on the streamed crown, so starting this 1.3 MB request only after two
+// RAFs plus 120 ms left an otherwise-complete scene waiting on network. This
+// moves bytes, not CPU work, into module evaluation. Keep an exact A/B escape
+// hatch for startup profiling rather than maintaining a benchmark-only path.
+const perchPrefetchEnabled = typeof location === "undefined"
+  || new URLSearchParams(location.search).get("perchPrefetch") !== "0";
+const perchPrefetchEntry: LandmarkStreamEntry | null = typeof window === "undefined"
+  || !perchPrefetchEnabled ? null : {
+    label: "perch-prefetch",
+    url: TRIPO_DRAGON_PERCH_RENDER,
+    state: "requested",
+    requestedAt: performance.now(),
+  };
+if (perchPrefetchEntry) landmarkStreamLog.push(perchPrefetchEntry);
+const perchRenderBuffer: Promise<ArrayBuffer> | null = perchPrefetchEntry
+  ? fetch(TRIPO_DRAGON_PERCH_RENDER, { mode: "cors" }).then(async (response) => {
+    if (!response.ok) throw new Error(`perch prefetch ${response.status}`);
+    const bytes = await response.arrayBuffer();
+    perchPrefetchEntry.state = "fetched";
+    perchPrefetchEntry.fetchedAt = performance.now();
+    return bytes;
+  }).catch((error) => {
+    perchPrefetchEntry.state = "failed";
+    perchPrefetchEntry.detail = String((error as Error)?.message ?? error);
+    throw error;
+  })
+  : null;
+
+/** Free a streamed glTF graph.
+ *
+ *  `keep` exempts materials the caller has adopted onto a resident mesh. Without
+ *  it, adopting a loaded material and then disposing the graph frees that
+ *  material AND its textures out from under the mesh still using them, and the
+ *  asset renders untextured with nothing logged anywhere. */
+function disposeLoadedGraph(group: THREE.Object3D, keep?: ReadonlySet<THREE.Material>): void {
   const textures = new Set<THREE.Texture>();
+  const kept = new Set<THREE.Texture>();
   group.traverse((object) => {
     const mesh = object as THREE.Mesh;
     mesh.geometry?.dispose();
     const materials = mesh.material ? (Array.isArray(mesh.material) ? mesh.material : [mesh.material]) : [];
     for (const material of materials) {
-      for (const value of Object.values(material)) if (value instanceof THREE.Texture) textures.add(value);
-      material.dispose();
+      const retained = keep?.has(material) ?? false;
+      for (const value of Object.values(material)) {
+        if (value instanceof THREE.Texture) (retained ? kept : textures).add(value);
+      }
+      if (!retained) material.dispose();
     }
   });
-  for (const texture of textures) texture.dispose();
+  // A texture shared between a kept material and a discarded one must survive.
+  for (const texture of textures) if (!kept.has(texture)) texture.dispose();
 }
 
 interface PerchSurfaceHit {
@@ -875,10 +1255,10 @@ interface PerchSurfaceHit {
   triangle: number;
 }
 
-/** Highest upward-facing triangle under a local X/Z query. The retopologized
- * perch is only 2,386 triangles, so four exact CPU samples when fit() changes
- * are cheaper and more reliable than maintaining a second collision mesh. */
-function samplePerchSurfaceXZ(
+/** Highest upward-facing triangle under one local X/Z query. Kept as the
+ * reference implementation and as a diagnostic fallback; production batches
+ * the four feet because the current titan skull is 30k triangles. */
+export function samplePerchSurfaceXZ(
   geometry: THREE.BufferGeometry,
   x: number,
   z: number,
@@ -938,13 +1318,97 @@ function samplePerchSurfaceXZ(
   return best;
 }
 
+/** Batch variant for the four planted feet. A 30k-triangle skull used to be
+ * traversed independently for every contact, repeating 90k attribute reads and
+ * barycentric tests. One triangle pass answers every X/Z query while retaining
+ * the exact highest-upward-triangle rule and interpolated normals. */
+export function samplePerchSurfacesXZ(
+  geometry: THREE.BufferGeometry,
+  queries: ReadonlyArray<Readonly<{ x: number; z: number }>>,
+): Array<PerchSurfaceHit | null> {
+  const position = geometry.getAttribute("position");
+  if (!position || queries.length === 0) return queries.map(() => null);
+  const normal = geometry.getAttribute("normal");
+  const index = geometry.index;
+  const triangleCount = (index ? index.count : position.count) / 3;
+  const bestTriangle = new Int32Array(queries.length).fill(-1);
+  const bestY = new Float64Array(queries.length).fill(-Infinity);
+  const bestWa = new Float64Array(queries.length);
+  const bestWb = new Float64Array(queries.length);
+  const bestWc = new Float64Array(queries.length);
+  const edgeA = new THREE.Vector3();
+  const edgeB = new THREE.Vector3();
+  const faceNormal = new THREE.Vector3();
+
+  for (let triangle = 0; triangle < triangleCount; triangle++) {
+    const ia = index ? index.getX(triangle * 3) : triangle * 3;
+    const ib = index ? index.getX(triangle * 3 + 1) : triangle * 3 + 1;
+    const ic = index ? index.getX(triangle * 3 + 2) : triangle * 3 + 2;
+    const ax = position.getX(ia), ay = position.getY(ia), az = position.getZ(ia);
+    const bx = position.getX(ib), by = position.getY(ib), bz = position.getZ(ib);
+    const cx = position.getX(ic), cy = position.getY(ic), cz = position.getZ(ic);
+    const denominator = (bz - cz) * (ax - cx) + (cx - bx) * (az - cz);
+    if (Math.abs(denominator) < 1e-6) continue;
+    let upward: boolean | null = null;
+
+    for (let query = 0; query < queries.length; query++) {
+      const { x, z } = queries[query];
+      const wa = ((bz - cz) * (x - cx) + (cx - bx) * (z - cz)) / denominator;
+      const wb = ((cz - az) * (x - cx) + (ax - cx) * (z - cz)) / denominator;
+      const wc = 1 - wa - wb;
+      if (wa < -1e-4 || wb < -1e-4 || wc < -1e-4) continue;
+      if (upward === null) {
+        edgeA.set(bx - ax, by - ay, bz - az);
+        edgeB.set(cx - ax, cy - ay, cz - az);
+        faceNormal.crossVectors(edgeA, edgeB).normalize();
+        upward = faceNormal.y >= 0.08;
+      }
+      if (!upward) break;
+      const y = ay * wa + by * wb + cy * wc;
+      if (y <= bestY[query]) continue;
+      bestY[query] = y;
+      bestTriangle[query] = triangle;
+      bestWa[query] = wa;
+      bestWb[query] = wb;
+      bestWc[query] = wc;
+    }
+  }
+
+  return queries.map(({ x, z }, query) => {
+    const triangle = bestTriangle[query];
+    if (triangle < 0) return null;
+    const ia = index ? index.getX(triangle * 3) : triangle * 3;
+    const ib = index ? index.getX(triangle * 3 + 1) : triangle * 3 + 1;
+    const ic = index ? index.getX(triangle * 3 + 2) : triangle * 3 + 2;
+    const a = new THREE.Vector3().fromBufferAttribute(position, ia);
+    const b = new THREE.Vector3().fromBufferAttribute(position, ib);
+    const c = new THREE.Vector3().fromBufferAttribute(position, ic);
+    edgeA.subVectors(b, a);
+    edgeB.subVectors(c, a);
+    faceNormal.crossVectors(edgeA, edgeB).normalize();
+    const wa = bestWa[query], wb = bestWb[query], wc = bestWc[query];
+    const hitNormal = normal
+      ? new THREE.Vector3(
+        normal.getX(ia) * wa + normal.getX(ib) * wb + normal.getX(ic) * wc,
+        normal.getY(ia) * wa + normal.getY(ib) * wb + normal.getY(ic) * wc,
+        normal.getZ(ia) * wa + normal.getZ(ib) * wb + normal.getZ(ic) * wc,
+      ).normalize()
+      : faceNormal.clone();
+    if (hitNormal.y < 0.08) hitNormal.copy(faceNormal);
+    return { point: new THREE.Vector3(x, bestY[query], z), normal: hitNormal, triangle };
+  });
+}
+
 function paintPerchStone(geometry: THREE.BufferGeometry): void {
   const position = geometry.getAttribute("position");
   const normal = geometry.getAttribute("normal");
   if (!position) return;
   const colors = new Float32Array(position.count * 3);
-  const dark = new THREE.Color(0x111c2d);
-  const light = new THREE.Color(0x53677c);
+  // Same family as every other rock — see ROCK_DARK. This used to be its own
+  // blue ramp, which is the third tone that made the dragon, its perch and the
+  // oracle read as three materials.
+  const dark = new THREE.Color(PERCH_DARK);
+  const light = new THREE.Color(PERCH_LIGHT);
   const value = new THREE.Color();
   for (let i = 0; i < position.count; i++) {
     const x = position.getX(i);
@@ -963,8 +1427,9 @@ function paintPerchStone(geometry: THREE.BufferGeometry): void {
 }
 
 /** Replace the zero-I/O procedural first-frame proxy with the watertight
- * QuadRemesher shell. It reuses the resident hand-painted stone material, so
- * the swap adds no texture upload or shader/material permutation. */
+ * QuadRemesher shell. Keep the resident vertex-painted landmark material so
+ * the swap adds geometry only — adopting the GLB's PBR material forced a cold
+ * shader/pipeline compile that blocked the first visible skull for ~2.3 s. */
 function streamTripoDragonPerch(target: THREE.Mesh, onReady: () => void): () => void {
   let cancelled = false;
   let timeoutId = 0;
@@ -973,7 +1438,8 @@ function streamTripoDragonPerch(target: THREE.Mesh, onReady: () => void): () => 
   const start = () => {
     if (cancelled) return;
     target.userData.streamState = "loading";
-    tripoGltfLoader.load(TRIPO_DRAGON_PERCH_RENDER, (gltf) => {
+    target.userData.streamStartedAt = performance.now();
+    const accept = (gltf: Awaited<ReturnType<GLTFLoader["parseAsync"]>>) => {
       if (cancelled) {
         disposeLoadedGraph(gltf.scene);
         return;
@@ -987,37 +1453,79 @@ function streamTripoDragonPerch(target: THREE.Mesh, onReady: () => void): () => 
       if (!source) {
         target.userData.streamState = "fallback";
         disposeLoadedGraph(gltf.scene);
+        onReady();
         return;
       }
 
       const sourceMesh = source as THREE.Mesh;
-      let geometry = sourceMesh.geometry.clone();
+      const geometry = sourceMesh.geometry.clone();
       geometry.applyMatrix4(sourceMesh.matrixWorld);
-      for (const attribute of Object.keys(geometry.attributes)) {
-        if (attribute !== "position" && attribute !== "normal") geometry.deleteAttribute(attribute);
-      }
+      stripUnusedLandmarkAttributes(geometry);
       if (!geometry.getAttribute("normal")) geometry.computeVertexNormals();
       geometry.computeBoundingBox();
+
+      // Normalise to the profile height instead of trusting the asset's own.
+      //
+      // blender-optimize-tripo.py normalises everything it emits to height 10,
+      // while the perch this replaces shipped at 145 units tall and the fit math
+      // divides by DRAGON_PERCH_STRATA.height (128). Dropping an optimised model
+      // in raw puts a 10-unit skull under a dragon expecting a 128-unit spire —
+      // roughly thirteen times too small, and nothing warns. Deriving the scale
+      // from the box means any future perch asset drops in at the right size
+      // whatever pipeline produced it.
+      const raw = geometry.boundingBox!;
+      const rawHeight = raw.max.y - raw.min.y;
+      if (rawHeight > 1e-6) {
+        const fit = DRAGON_PERCH_STRATA.height / rawHeight;
+        geometry.translate(
+          -(raw.min.x + raw.max.x) / 2,
+          -raw.min.y,
+          -(raw.min.z + raw.max.z) / 2,
+        );
+        geometry.scale(fit, fit, fit);
+        geometry.userData.fitScale = fit;
+      }
+      geometry.computeBoundingBox();
       geometry.computeBoundingSphere();
-      paintPerchStone(geometry);
-      geometry.userData.source = "tripo-v3.1-quadremesher-1k";
-      geometry.userData.quadFaces = 986;
+      // No subdivide/erode either: those existed to rescue a thousand-triangle
+      // remesh. This is 30,000 triangles of sculpted skull and needs neither.
+      geometry.userData.source = "tripo-v3.1-titan-skull-direct-30k";
       geometry.userData.triangles = triangleCount(geometry);
+      paintPerchStone(geometry);
 
       const fallbackGeometry = target.geometry;
       target.geometry = geometry;
       fallbackGeometry.dispose();
       target.userData.streamState = "ready";
+      target.userData.streamReadyAt = performance.now();
       target.userData.renderUrl = TRIPO_DRAGON_PERCH_RENDER;
       target.userData.renderTriangles = triangleCount(geometry);
       target.userData.renderVertices = geometry.getAttribute("position").count;
       target.userData.surfaceSampler = "highest-upward-triangle-xz";
       disposeLoadedGraph(gltf.scene);
       onReady();
-    }, undefined, (error) => {
+    };
+    const reject = (error: unknown) => {
       target.userData.streamState = "fallback";
       console.warn("Deferred Tripo dragon perch load failed; retaining procedural fallback", error);
-    });
+      onReady();
+    };
+    const prefetchEntry = perchPrefetchEntry;
+    if (perchRenderBuffer && prefetchEntry && prefetchEntry.state !== "failed") {
+      void perchRenderBuffer.then((bytes) => {
+        if (cancelled) return;
+        prefetchEntry.state = "parsing";
+        tripoGltfLoader.parse(bytes, "", (gltf) => {
+          prefetchEntry.state = "loaded";
+          prefetchEntry.loadedAt = performance.now();
+          accept(gltf);
+        }, reject);
+      }).catch(() => {
+        if (!cancelled) tripoGltfLoader.load(TRIPO_DRAGON_PERCH_RENDER, accept, undefined, reject);
+      });
+    } else {
+      tripoGltfLoader.load(TRIPO_DRAGON_PERCH_RENDER, accept, undefined, reject);
+    }
   };
 
   target.userData.streamState = "deferred";
@@ -1035,12 +1543,21 @@ function streamTripoDragonPerch(target: THREE.Mesh, onReady: () => void): () => 
   };
 }
 
-function paintDragonStone(geometry: THREE.BufferGeometry): void {
+function paintDragonStone(
+  geometry: THREE.BufferGeometry,
+  darkHex = 0x27333d,
+  lightHex = 0x71828d,
+): void {
   const position = geometry.getAttribute("position");
   if (!position) return;
   const colors = new Float32Array(position.count * 3);
-  const dark = new THREE.Color(0x18263a);
-  const light = new THREE.Color(0x53677e);
+  // A hero silhouette needs one value step above its support. Reusing the
+  // near-black perch ramp here made the dragon vanish wherever the warm key
+  // fell off, even though the skull beneath remained readable. Keep the same
+  // neutral stone family with a narrower, lifted range so scales and planted
+  // legs survive the scene's teal fog without looking self-illuminated.
+  const dark = new THREE.Color(darkHex);
+  const light = new THREE.Color(lightHex);
   const value = new THREE.Color();
   for (let i = 0; i < position.count; i++) {
     const x = position.getX(i);
@@ -1049,7 +1566,17 @@ function paintDragonStone(geometry: THREE.BufferGeometry): void {
     const raw = Math.sin(x * 5.71 + y * 2.93 + z * 4.17) * 43758.5453;
     const chip = raw - Math.floor(raw);
     const strata = Math.sin(y * 2.45 + Math.sin(x * 0.7) * 0.8) * 0.5 + 0.5;
-    const shade = THREE.MathUtils.clamp(0.18 + chip * 0.28 + strata * 0.24, 0, 1);
+    // Albedo only. The ramp used to bake a fixed key and rim off the vertex
+    // normal, which is what an unlit shell needed; the shells are lit now, so
+    // baking a second light here would cross-fade against the real one and
+    // shade the sculpt from a direction the moon is not in. Keep the chip and
+    // strata mottling — that is stone colour, not stone lighting — and centre
+    // the range on the mid value the old lit-and-baked result averaged to.
+    const shade = THREE.MathUtils.clamp(
+      0.34 + chip * 0.18 + strata * 0.16,
+      0,
+      1,
+    );
     value.copy(dark).lerp(light, shade);
     colors[i * 3] = value.r;
     colors[i * 3 + 1] = value.g;
@@ -1151,19 +1678,85 @@ function configureDragonLegIk(slot: THREE.Group, loaded: THREE.Group): () => voi
   };
 }
 
+/** Freeze the solved landmark pose into a regular mesh. The dragon never
+ * animates after placement, so submitting skinning matrices forever only buys
+ * a 2s+ cold WebGPU pipeline. The hidden rig remains in the graph for contact
+ * diagnostics, while the visible baked shell reuses the resident stone pass. */
+function bakeSolvedDragonPose(loaded: THREE.Group): void {
+  const skinnedMeshes: THREE.SkinnedMesh[] = [];
+  loaded.traverse((object) => {
+    const mesh = object as THREE.SkinnedMesh;
+    if (mesh.isSkinnedMesh) skinnedMeshes.push(mesh);
+  });
+  const point = new THREE.Vector3();
+  for (const skinned of skinnedMeshes) {
+    const sourcePosition = skinned.geometry.getAttribute("position");
+    if (!sourcePosition || !skinned.parent) continue;
+    // Use the SkinnedMesh override, not Object3D.updateWorldMatrix(). Attached
+    // skinning updates bindMatrixInverse inside this override. Skipping it made
+    // applyBoneTransform() alternate between world- and local-space output
+    // depending on whether a renderer pass happened to touch the mesh first.
+    skinned.updateMatrixWorld(true);
+    const geometry = skinned.geometry.clone();
+    const position = geometry.getAttribute("position");
+    for (let i = 0; i < position.count; i++) {
+      point.fromBufferAttribute(sourcePosition, i);
+      skinned.applyBoneTransform(i, point);
+      // With bindMatrixInverse synchronized above, applyBoneTransform() returns
+      // the posed vertex in the skinned mesh's LOCAL frame. The replacement
+      // inherits the exact same parent/local transform.
+      position.setXYZ(i, point.x, point.y, point.z);
+    }
+    position.needsUpdate = true;
+    geometry.deleteAttribute("skinIndex");
+    geometry.deleteAttribute("skinWeight");
+    stripUnusedLandmarkAttributes(geometry);
+    geometry.computeVertexNormals();
+    // Repaint after skinning: the copied bind-pose normals no longer describe
+    // the solved leg/wing surfaces, while the rebuilt normals do.
+    paintDragonStone(geometry);
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+    const baked = new THREE.Mesh(geometry, skinned.material);
+    baked.name = `${skinned.name || "dragon-shell"}-baked-pose`;
+    baked.position.copy(skinned.position);
+    baked.quaternion.copy(skinned.quaternion);
+    baked.scale.copy(skinned.scale);
+    baked.renderOrder = skinned.renderOrder;
+    baked.castShadow = false;
+    baked.receiveShadow = false;
+    baked.userData.source = "ik-baked-static-dragon";
+    skinned.parent.add(baked);
+    skinned.visible = false;
+  }
+  loaded.userData.renderPolicy = "ik-solved-once-baked-static";
+}
+
 /** Stream the neural render shell only after the browser has produced its
  * first frame. The code-native oracle remains a zero-I/O fallback and is
  * swapped out with a short material fade; the closed QuadRemesher proxy stays
  * unloaded until destruction/physics asks for it. */
-function streamTripoOracle(slot: THREE.Group, fallback: THREE.Group | null): () => void {
+function streamTripoOracle(
+  slot: THREE.Group,
+  fallback: THREE.Group | null,
+  renderMaterial: THREE.Material,
+  onLoaded?: (loaded: THREE.Group) => void,
+): () => void {
   let cancelled = false;
   let timeoutId = 0;
   let deferFrameId = 0;
   let loaded: THREE.Group | null = null;
-  let frameId = 0;
+  const requestedDelay = typeof window !== "undefined"
+    ? Number(new URLSearchParams(window.location.search).get("oracleDelay"))
+    : Number.NaN;
+  const heroPriorityDelay = Number.isFinite(requestedDelay)
+    ? THREE.MathUtils.clamp(Math.round(requestedDelay), 0, 500)
+    : 120;
 
   const start = () => {
     if (cancelled) return;
+    slot.userData.streamState = "loading";
+    slot.userData.streamStartedAt = performance.now();
     tripoGltfLoader.load(TRIPO_ORACLE_RENDER, (gltf) => {
       loaded = gltf.scene;
       if (cancelled) {
@@ -1181,88 +1774,66 @@ function streamTripoOracle(slot: THREE.Group, fallback: THREE.Group | null): () 
       loaded.userData.renderTriangles = 30_000;
       loaded.userData.destructionProxyUrl = TRIPO_ORACLE_DESTRUCTION_PROXY;
 
-      const faded: Array<{
-        material: THREE.Material;
-        opacity: number;
-        transparent: boolean;
-        depthWrite: boolean;
-      }> = [];
+      const discardedMaterials = new Set<THREE.Material>();
+      const discardedTextures = new Set<THREE.Texture>();
       loaded.traverse((object) => {
         const mesh = object as THREE.Mesh;
         if (!mesh.isMesh) return;
         mesh.castShadow = false;
         mesh.receiveShadow = false;
         mesh.frustumCulled = true;
-        const prepare = (source: THREE.Material) => {
-          const material = source.clone();
-          const stoneMaterial = material as THREE.MeshStandardMaterial;
-          if (stoneMaterial.isMeshStandardMaterial) {
-            // Tripo's baked stone is intentionally dark. The face is revealed
-            // by the fixed cinematic spotlight, never by self-illumination.
-            stoneMaterial.color.multiplyScalar(1.35);
-            stoneMaterial.metalness = 0;
-            stoneMaterial.roughness = Math.max(0.86, stoneMaterial.roughness);
-            stoneMaterial.emissive.set(0x000000);
-            stoneMaterial.emissiveIntensity = 0;
+        stripUnusedLandmarkAttributes(mesh.geometry);
+        const originals = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const material of originals) {
+          discardedMaterials.add(material);
+          for (const value of Object.values(material)) {
+            if (value instanceof THREE.Texture) discardedTextures.add(value);
           }
-          faded.push({
-            material,
-            opacity: material.opacity,
-            transparent: material.transparent,
-            depthWrite: material.depthWrite,
-          });
-          material.transparent = true;
-          material.opacity = 0;
-          material.depthWrite = false;
-          return material;
-        };
-        mesh.material = Array.isArray(mesh.material)
-          ? mesh.material.map(prepare)
-          : prepare(mesh.material);
+        }
+        paintDragonStone(mesh.geometry, 0x313940, 0x717e88);
+        mesh.material = renderMaterial;
       });
+      for (const material of discardedMaterials) material.dispose();
+      for (const texture of discardedTextures) texture.dispose();
       slot.add(loaded);
-
-      const fadeStart = performance.now();
-      const fade = (now: number) => {
-        if (cancelled || !loaded) return;
-        const alpha = THREE.MathUtils.smoothstep((now - fadeStart) / 520, 0, 1);
-        for (const entry of faded) entry.material.opacity = entry.opacity * alpha;
-        if (alpha < 1) {
-          frameId = requestAnimationFrame(fade);
-          return;
-        }
-        if (fallback) {
-          fallback.visible = false;
-          slot.remove(fallback);
-          fallback.traverse((object) => {
-            const mesh = object as THREE.Mesh;
-            mesh.geometry?.dispose();
-          });
-        }
-        for (const entry of faded) {
-          entry.material.opacity = entry.opacity;
-          entry.material.transparent = entry.transparent;
-          entry.material.depthWrite = entry.depthWrite;
-          entry.material.needsUpdate = true;
-        }
-        slot.userData.streamState = "ready";
-      };
-      slot.userData.streamState = "fading";
-      frameId = requestAnimationFrame(fade);
+      onLoaded?.(loaded);
+      if (fallback) {
+        fallback.visible = false;
+        slot.remove(fallback);
+        fallback.traverse((object) => {
+          const mesh = object as THREE.Mesh;
+          mesh.geometry?.dispose();
+        });
+      }
+      slot.userData.streamState = "ready";
+      slot.userData.streamReadyAt = performance.now();
     }, undefined, (error) => {
       slot.userData.streamState = "fallback";
+      slot.userData.streamReadyAt = performance.now();
       console.warn("Deferred Tripo oracle load failed; retaining procedural fallback", error);
     });
   };
 
   slot.userData.streamState = "deferred";
   slot.userData.destructionProxyUrl = TRIPO_ORACLE_DESTRUCTION_PROXY;
-  // requestIdleCallback may fire while the GPU is still compiling the first
-  // scene. Two painted frames plus a short delay make the stream provably
-  // post-first-visible instead of competing with startup for CPU/GPU time.
+  // Two animation turns keep the oracle out of the coarse paint. The dragon
+  // transfer already starts during module evaluation and therefore owns a
+  // 250ms+ head start; the former extra 220ms hold no longer protected it and
+  // only delayed the second authored subject. The measured 120ms default keeps
+  // decode work away from the first useful paint, overlaps the Oracle transfer
+  // with forge/post setup, and leaves it ready before the ~680ms scene-layer
+  // gate without measurably delaying first paint. `oracleDelay` retains exact
+  // A/B.
+  // The stamps below are load-bearing diagnostics, not scaffolding: they are
+  // the difference between "the stream was never scheduled", "it is waiting out
+  // the delay" and "it was cancelled". Stuck on "deferred" means neither frame
+  // ever ran — which is what a hidden tab looks like, since requestAnimationFrame
+  // does not fire there at all.
   deferFrameId = requestAnimationFrame(() => {
+    slot.userData.streamState = "frame-1";
     deferFrameId = requestAnimationFrame(() => {
-      timeoutId = window.setTimeout(start, 2200);
+      slot.userData.streamState = "waiting";
+      timeoutId = window.setTimeout(start, heroPriorityDelay);
     });
   });
 
@@ -1270,8 +1841,7 @@ function streamTripoOracle(slot: THREE.Group, fallback: THREE.Group | null): () 
     cancelled = true;
     if (timeoutId) clearTimeout(timeoutId);
     if (deferFrameId) cancelAnimationFrame(deferFrameId);
-    if (frameId) cancelAnimationFrame(frameId);
-    if (loaded) disposeLoadedGraph(loaded);
+    if (loaded) disposeLoadedGraph(loaded, new Set([renderMaterial]));
     loaded = null;
   };
 }
@@ -1287,22 +1857,45 @@ interface WardenStream {
 function streamTripoWardens(
   slot: THREE.Group,
   matrices: THREE.Matrix4[],
+  renderMaterial: THREE.Material,
   options: { url: string; name: string; triangles: number; delay: number },
 ): WardenStream {
   let cancelled = false;
   let timeoutId = 0;
   let deferFrameId = 0;
-  let frameId = 0;
-  let instances: THREE.InstancedMesh | null = null;
-  const ownedTextures = new Set<THREE.Texture>();
+  let renderMesh: THREE.Mesh | null = null;
+  let sourceGeometry: THREE.BufferGeometry | null = null;
+  let renderGeometry: THREE.BufferGeometry | null = null;
 
   const sync = () => {
-    if (!instances) return;
-    // Fill every allocated row before the mesh can enter a render list. This
-    // is the invariant that prevents the prior WebGPU instance-range overrun.
-    for (let i = 0; i < matrices.length; i++) instances.setMatrixAt(i, matrices[i]);
-    instances.instanceMatrix.needsUpdate = true;
-    instances.computeBoundingSphere();
+    if (!sourceGeometry) return;
+    const copies = matrices.map((matrix) => {
+      const copy = sourceGeometry!.clone();
+      copy.applyMatrix4(matrix);
+      return copy;
+    });
+    const merged = BufferGeometryUtils.mergeGeometries(copies, false);
+    for (const copy of copies) copy.dispose();
+    if (!merged) return;
+    merged.computeBoundingBox();
+    merged.computeBoundingSphere();
+    const previous = renderGeometry;
+    renderGeometry = merged;
+    if (renderMesh) {
+      renderMesh.geometry = merged;
+      previous?.dispose();
+    } else {
+      renderMesh = new THREE.Mesh(merged, renderMaterial);
+      renderMesh.name = options.name;
+      renderMesh.castShadow = false;
+      renderMesh.receiveShadow = false;
+      renderMesh.frustumCulled = true;
+      renderMesh.userData.source = "tripo-v3.1-20260211-static-merged-rank";
+      renderMesh.userData.renderTrianglesPerInstance = options.triangles;
+      renderMesh.userData.instances = matrices.length;
+      renderMesh.userData.destructionProxyUrl = TRIPO_WARDEN_DESTRUCTION_PROXY;
+      slot.add(renderMesh);
+    }
   };
 
   const start = () => {
@@ -1326,71 +1919,15 @@ function streamTripoWardens(
       const sourceMesh = source as THREE.Mesh;
       const geometry = sourceMesh.geometry.clone();
       geometry.applyMatrix4(sourceMesh.matrixWorld);
+      stripUnusedLandmarkAttributes(geometry);
       geometry.computeBoundingBox();
       geometry.computeBoundingSphere();
-
-      const prepareMaterial = (original: THREE.Material) => {
-        const material = original.clone();
-        for (const value of Object.values(material)) if (value instanceof THREE.Texture) ownedTextures.add(value);
-        const stoneMaterial = material as THREE.MeshStandardMaterial;
-        if (stoneMaterial.isMeshStandardMaterial) {
-          // Cool the baked neutral-grey albedo into the same blue-black family
-          // as the oracle while retaining the authored edge/value texture.
-          stoneMaterial.color.multiply(new THREE.Color(0.76, 0.9, 1.08));
-          stoneMaterial.metalness = 0;
-          stoneMaterial.roughness = Math.max(0.88, stoneMaterial.roughness);
-          stoneMaterial.emissive.set(0x0c1a2d);
-          stoneMaterial.emissiveIntensity = 0.64;
-        }
-        material.transparent = true;
-        material.opacity = 0;
-        material.depthWrite = false;
-        return material;
-      };
-      const materials = Array.isArray(sourceMesh.material)
-        ? sourceMesh.material.map(prepareMaterial)
-        : prepareMaterial(sourceMesh.material);
-      instances = new THREE.InstancedMesh(geometry, materials, matrices.length);
-      instances.name = options.name;
-      instances.castShadow = false;
-      instances.receiveShadow = false;
-      instances.frustumCulled = true;
-      instances.userData.source = "tripo-v3.1-20260211";
-      instances.userData.renderTrianglesPerInstance = options.triangles;
-      instances.userData.destructionProxyUrl = TRIPO_WARDEN_DESTRUCTION_PROXY;
+      paintDragonStone(geometry, 0x303840, 0x697681);
+      sourceGeometry = geometry;
       sync();
-      slot.add(instances);
 
-      // Source geometry/material wrappers are no longer needed. Texture data
-      // remains owned by the cloned render material above.
-      gltf.scene.traverse((object) => {
-        const mesh = object as THREE.Mesh;
-        if (!mesh.isMesh) return;
-        mesh.geometry.dispose();
-        const sourceMaterials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-        for (const material of sourceMaterials) material.dispose();
-      });
-
-      const fadeStart = performance.now();
-      const fade = (now: number) => {
-        if (cancelled || !instances) return;
-        const alpha = THREE.MathUtils.smoothstep((now - fadeStart) / 520, 0, 1);
-        const liveMaterials = Array.isArray(instances.material) ? instances.material : [instances.material];
-        for (const material of liveMaterials) material.opacity = alpha;
-        if (alpha < 1) {
-          frameId = requestAnimationFrame(fade);
-          return;
-        }
-        for (const material of liveMaterials) {
-          material.opacity = 1;
-          material.transparent = false;
-          material.depthWrite = true;
-          material.needsUpdate = true;
-        }
-        slot.userData.streamState = "ready";
-      };
-      slot.userData.streamState = "fading";
-      frameId = requestAnimationFrame(fade);
+      disposeLoadedGraph(gltf.scene);
+      slot.userData.streamState = "ready";
     }, undefined, (error) => {
       slot.userData.streamState = "failed";
       console.warn("Deferred Tripo warden load failed; leaving rejected procedural guards absent", error);
@@ -1411,15 +1948,12 @@ function streamTripoWardens(
       cancelled = true;
       if (timeoutId) clearTimeout(timeoutId);
       if (deferFrameId) cancelAnimationFrame(deferFrameId);
-      if (frameId) cancelAnimationFrame(frameId);
-      if (instances) {
-        instances.removeFromParent();
-        instances.geometry.dispose();
-        const materials = Array.isArray(instances.material) ? instances.material : [instances.material];
-        for (const material of materials) material.dispose();
-      }
-      for (const texture of ownedTextures) texture.dispose();
-      instances = null;
+      renderMesh?.removeFromParent();
+      sourceGeometry?.dispose();
+      renderGeometry?.dispose();
+      renderMesh = null;
+      sourceGeometry = null;
+      renderGeometry = null;
     },
   };
 }
@@ -1428,25 +1962,28 @@ function streamTripoWardens(
  * instead of a distance LOD ladder: for a single hero silhouette the saved
  * triangles are not worth wing/head pop. The ~320 KB Draco+skin artifact is
  * retained for deployment experiments, but Three's decoder worker could be
- * starved for seconds under WebGPU load. The 2.2 MB uncompressed runtime shell
- * parses immediately and is streamed only after first paint. */
-function streamTripoDragon(slot: THREE.Group): () => void {
+ * starved for seconds under WebGPU load. The 1 MB runtime shell transfers and
+ * parses in parallel with boot. */
+function streamTripoDragon(
+  slot: THREE.Group,
+  dragonStone: THREE.Material,
+  onPrepared?: (loaded: THREE.Group) => void,
+): () => void {
   let cancelled = false;
-  let timeoutId = 0;
-  let deferFrameId = 0;
-  let frameId = 0;
   let loaded: THREE.Group | null = null;
   let disposeLegIk: () => void = () => {};
 
   const start = () => {
     if (cancelled) return;
     slot.userData.streamState = "loading";
-    dragonGltfLoader.load(TRIPO_DRAGON_RENDER, (gltf) => {
+    slot.userData.streamStartedAt = performance.now();
+    const accept = (gltf: Awaited<ReturnType<GLTFLoader["parseAsync"]>>) => {
       if (cancelled) {
         disposeLoadedGraph(gltf.scene);
         return;
       }
       loaded = gltf.scene;
+      loaded.visible = false;
       loaded.name = "tripo-v3.1-colossal-perched-abyss-dragon";
       // Blender-normalized shell is ten units high. Keep the landmark giant,
       // but at 70% of the former 24.6× treatment so the rock reads as a
@@ -1460,17 +1997,23 @@ function streamTripoDragon(slot: THREE.Group): () => void {
       // needs a restrained settling offset. This keeps the front knees near
       // their authored pose instead of splaying them sideways to absorb the
       // former 44-unit body drop.
-      loaded.position.set(5.6, -25, 0);
+      //
+      // The drop is solved for the feet and nothing else. Every vertex of the
+      // head and snout is weighted 100% to `dragon_root`, so the neck IK below
+      // cannot move them — the head's height is this constant and nothing
+      // else. At -25 the snout finished 21 units inside the skull it perches
+      // on, because the crown the slot samples is ~10 units higher than the
+      // surface under where the head actually reaches. -1 clears it by ~2.6
+      // units and still leaves the leg chains solvable (hip→target ≈74.9
+      // against ≈78.7 of reach), which a nose-up pitch would not: pitching to
+      // free the snout buries the tail and wingtips instead.
+      loaded.position.set(5.6, -1, 0);
       loaded.userData.source = "tripo-v3.1-20260211";
       loaded.userData.renderTriangles = 45_000;
       loaded.userData.lodPolicy = "stable-hero-shell-no-pop";
       loaded.userData.rigPolicy = "four-leg-contact-plus-neck-look-ccd-ik";
       loaded.userData.rigBones = 22;
       loaded.userData.compressionPolicy = "uncompressed-runtime-fast-parse";
-      const dragonStone = makeHandPaintedLandmarkStoneMaterial();
-      dragonStone.transparent = true;
-      dragonStone.opacity = 0;
-      dragonStone.depthWrite = false;
       const sourceTextures = new Set<THREE.Texture>();
       const sourceMaterials = new Set<THREE.Material>();
       loaded.traverse((object) => {
@@ -1490,48 +2033,50 @@ function streamTripoDragon(slot: THREE.Group): () => void {
       for (const texture of sourceTextures) texture.dispose();
       slot.add(loaded);
       disposeLegIk = configureDragonLegIk(slot, loaded);
-      const fadeStart = performance.now();
-      const fade = (now: number) => {
-        if (cancelled || !loaded) return;
-        const alpha = THREE.MathUtils.smoothstep((now - fadeStart) / 620, 0, 1);
-        dragonStone.opacity = alpha;
-        if (alpha < 1) {
-          frameId = requestAnimationFrame(fade);
-          return;
-        }
-        dragonStone.opacity = 1;
-        dragonStone.transparent = false;
-        dragonStone.depthWrite = true;
-        dragonStone.needsUpdate = true;
+      slot.userData.streamState = "prepared";
+      slot.userData.streamPreparedAt = performance.now();
+      if (onPrepared) onPrepared(loaded);
+      else {
+        bakeSolvedDragonPose(loaded);
+        loaded.visible = true;
         slot.userData.streamState = "ready";
-      };
-      slot.userData.streamState = "fading";
-      frameId = requestAnimationFrame(fade);
-    }, undefined, (error) => {
+      }
+    };
+    const reject = (error: unknown) => {
       slot.userData.streamState = "failed";
       console.warn("Deferred Tripo dragon load failed", error);
-    });
+    };
+    if (dragonRenderBuffer && dragonPrefetchEntry?.state !== "failed") {
+      void dragonRenderBuffer.then((bytes) => {
+        if (cancelled) return;
+        dragonPrefetchEntry!.state = "parsing";
+        dragonGltfLoader.parse(bytes, "", (gltf) => {
+          dragonPrefetchEntry!.state = "loaded";
+          dragonPrefetchEntry!.loadedAt = performance.now();
+          accept(gltf);
+        }, reject);
+      }).catch(() => {
+        if (!cancelled) dragonGltfLoader.load(TRIPO_DRAGON_RENDER, accept, undefined, reject);
+      });
+    } else {
+      dragonGltfLoader.load(TRIPO_DRAGON_RENDER, accept, undefined, reject);
+    }
   };
 
   slot.userData.streamState = "deferred";
   slot.userData.renderUrl = TRIPO_DRAGON_RENDER;
-  deferFrameId = requestAnimationFrame(() => {
-    deferFrameId = requestAnimationFrame(() => {
-      // Load during the direct-render warm window. The shell then realizes its
-      // one skinned draw before bloom/AO takes over instead of introducing a
-      // cold hero render object into the expensive cinematic graph.
-      timeoutId = window.setTimeout(start, 350);
-    });
-  });
+  // Transfer and parse are asynchronous. Start immediately so they overlap
+  // renderer initialisation and CPU forging; the first coarse render never
+  // awaits this work. On the measured default route the buffer finishes before
+  // the coarse paint and the solved shell is ready before the cinematic pass,
+  // eliminating the empty-skull intermediate composition.
+  start();
   return () => {
     cancelled = true;
-    if (timeoutId) clearTimeout(timeoutId);
-    if (deferFrameId) cancelAnimationFrame(deferFrameId);
-    if (frameId) cancelAnimationFrame(frameId);
     disposeLegIk();
     if (loaded) {
       loaded.removeFromParent();
-      disposeLoadedGraph(loaded);
+      disposeLoadedGraph(loaded, new Set([dragonStone]));
     }
     loaded = null;
   };
@@ -1541,6 +2086,31 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
   const root = new THREE.Group();
   root.name = "abyss-landmarks-img2three";
   const stone = new THREE.MeshLambertNodeMaterial({ vertexColors: true, flatShading: true, emissive: 0x09111f });
+  // Streamed hero shells share one lit pass. An unlit shell kept the deferred
+  // GLBs out of the lighting graph, but it also froze one baked key direction
+  // into the sculpt: the dragon, skull and oracle read as flat cutouts pasted
+  // over a scene whose moon and teal hemisphere were moving without them.
+  // Smooth-shaded, so the organic sculpts keep their form where the faceted
+  // resident `stone` would shatter them.
+  const heroStone = new THREE.MeshLambertNodeMaterial({
+    vertexColors: true,
+    emissive: 0x09111f,
+  });
+  // The vertex ramp below was authored as a FINAL value for an unlit shell.
+  // Lit, it is an albedo, and the abyss is dim enough that reading it as one
+  // put the dragon a full value step BELOW the skull it perches on — the exact
+  // inversion the ramp's own comment was written to avoid. Measured against
+  // the unlit build at the same seed and framing: the hero's highlights sat at
+  // 0.257 rendered luminance against 0.439 before. 2.6 restores that peak
+  // while the shaded side stays dark, which is the whole point of lighting it.
+  heroStone.color.setScalar(2.6);
+  // The warden ranks populate the basin rim, which the dragon/skull/oracle
+  // trio alone leaves empty. They were opt-in while they cost multiple seconds
+  // entering an already-live WebGPU post graph; they now share the lit hero
+  // pass, so the batches land on a pipeline the resident landmarks already
+  // compiled. `?wardens=0` restores the empty rim for composition review.
+  const streamRemoteWardens = typeof window !== "undefined"
+    && new URLSearchParams(window.location.search).get("wardens") !== "0";
   const abyss = new THREE.MeshBasicNodeMaterial();
   abyss.colorNode = color(0x010308);
   const wardGlow = new THREE.MeshBasicNodeMaterial({ color: 0x6a8da8, transparent: true, opacity: 0.78 });
@@ -1550,32 +2120,23 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
   root.add(wardenSlot);
   const wardenMatrices = [new THREE.Matrix4(), new THREE.Matrix4()];
   const wardenRankMatrices = Array.from({ length: 6 }, () => new THREE.Matrix4());
-  const wardenStream = streamTripoWardens(wardenSlot, wardenMatrices, {
-    url: TRIPO_WARDEN_RENDER,
-    name: "tripo-v3.1-colossal-oathbound-wardens",
-    triangles: 29_999,
-    delay: 4200,
-  });
-  const wardenRankStream = streamTripoWardens(wardenSlot, wardenRankMatrices, {
-    url: TRIPO_WARDEN_RANK_RENDER,
-    name: "tripo-v3.1-oathbound-warden-rank",
-    triangles: 8_000,
-    delay: 6000,
-  });
-
-  const skullStoneGeo = dragonSkullStoneGeometry();
-  const skullTeethGeo = dragonSkullTeethGeometry();
-  const skullVoidGeo = dragonSkullVoidGeometry();
-  const skull = new THREE.Group();
-  skull.name = "buried-dragon-skull";
-  const skullMesh = new THREE.Mesh(skullStoneGeo, stone);
-  const skullTeeth = new THREE.Mesh(skullTeethGeo, stone);
-  const skullVoid = new THREE.Mesh(skullVoidGeo, abyss);
-  skullMesh.castShadow = false;
-  skullTeeth.castShadow = false;
-  skullVoid.renderOrder = 1;
-  skull.add(skullMesh, skullTeeth, skullVoid);
-  root.add(skull);
+  const dormantWardenStream: WardenStream = { sync: () => {}, dispose: () => {} };
+  const wardenStream = streamRemoteWardens
+    ? streamTripoWardens(wardenSlot, wardenMatrices, heroStone, {
+      url: TRIPO_WARDEN_RENDER,
+      name: "tripo-v3.1-colossal-oathbound-wardens",
+      triangles: 29_999,
+      delay: 4200,
+    })
+    : dormantWardenStream;
+  const wardenRankStream = streamRemoteWardens
+    ? streamTripoWardens(wardenSlot, wardenRankMatrices, heroStone, {
+      url: TRIPO_WARDEN_RANK_RENDER,
+      name: "tripo-v3.1-oathbound-warden-rank",
+      triangles: 8_000,
+      delay: 6000,
+    })
+    : dormantWardenStream;
 
   const oracle = new THREE.Group();
   oracle.name = "abyssal-cephalopod-oracle";
@@ -1585,15 +2146,199 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
   oracleWall.castShadow = false;
   oracleWall.receiveShadow = false;
   root.add(oracleWall, oracle);
-  const cancelOracleStream = streamTripoOracle(oracle, null);
+  // Abyssal gaze: teal ghost-fire burning INSIDE the oracle's eye sockets.
+  // The rig (two crossed-quad flame pairs + one teal point light) is created
+  // HERE, before the first compile — a light added later would change the
+  // scene light count and recompile every pipeline. It stays invisible until
+  // the streamed Tripo shell arrives; then a raycast finds the actual socket
+  // surface on the loaded mesh and the rig is attached INTO the model, so it
+  // inherits every later transform. Flame quads output >1 linear values so
+  // bloom halos the gaze exactly like the torch flames.
+  const oracleEyeFlameMat = makeEyeFireMat();
+  const oracleEyeGlowMat = makeEyeGlowMat();
+  const oracleEyePlane = new THREE.PlaneGeometry(0.34, 0.52);
+  oracleEyePlane.translate(0, 0.2, 0); // flame base sits at the anchor point
+  const oracleEyeGlowPlane = new THREE.PlaneGeometry(0.62, 0.62);
+  oracleEyeGlowPlane.translate(0, 0.14, 0);
+  const oracleEyeCoreGeo = new THREE.SphereGeometry(0.085, 12, 10);
+  const oracleEyeCoreMat = new THREE.MeshBasicNodeMaterial();
+  oracleEyeCoreMat.colorNode = color(0xd9fff4).mul(sin(time.mul(2.1)).mul(0.3).add(3.0));
+  const oracleEyes = new THREE.Group();
+  oracleEyes.name = "oracle-abyssal-gaze";
+  oracleEyes.visible = false;
+  // Two sockets used to be ten separate render objects (two crossed halo
+  // quads, two flame tongues and a core apiece). The transforms are static in
+  // oracle-local space, so three instanced batches preserve the exact crossed
+  // silhouette while avoiding seven cold WebGPU render-object realizations.
+  const oracleEyeHalos = new THREE.InstancedMesh(oracleEyeGlowPlane, oracleEyeGlowMat, 4);
+  oracleEyeHalos.name = "oracle-eye-halo-batch";
+  const oracleEyeTongues = new THREE.InstancedMesh(oracleEyePlane, oracleEyeFlameMat, 4);
+  oracleEyeTongues.name = "oracle-eye-flame-batch";
+  const oracleEyeCores = new THREE.InstancedMesh(oracleEyeCoreGeo, oracleEyeCoreMat, 2);
+  oracleEyeCores.name = "oracle-eye-core-batch";
+  const eyeSocketMatrix = new THREE.Matrix4();
+  const eyeChildMatrix = new THREE.Matrix4();
+  const eyeMatrix = new THREE.Matrix4();
+  const eyePosition = new THREE.Vector3();
+  const eyeQuaternion = new THREE.Quaternion();
+  const eyeScale = new THREE.Vector3(1.25, 0.55, 1.25);
+  let eyePlaneIndex = 0;
+  for (let side = 0; side < 2; side++) {
+    eyeSocketMatrix.compose(
+      eyePosition.set(1.051, 7.586, side === 0 ? -0.542 : 0.542),
+      eyeQuaternion.identity(),
+      eyeScale,
+    );
+    for (let cross = 0; cross < 2; cross++) {
+      eyeChildMatrix.makeRotationY(cross * Math.PI / 2);
+      eyeMatrix.multiplyMatrices(eyeSocketMatrix, eyeChildMatrix);
+      oracleEyeHalos.setMatrixAt(eyePlaneIndex, eyeMatrix);
+      oracleEyeTongues.setMatrixAt(eyePlaneIndex, eyeMatrix);
+      eyePlaneIndex++;
+    }
+    eyeChildMatrix.makeTranslation(0, 0.11, 0);
+    eyeMatrix.multiplyMatrices(eyeSocketMatrix, eyeChildMatrix);
+    oracleEyeCores.setMatrixAt(side, eyeMatrix);
+  }
+  for (const batch of [oracleEyeHalos, oracleEyeTongues, oracleEyeCores]) {
+    batch.instanceMatrix.needsUpdate = true;
+    batch.computeBoundingSphere();
+    batch.castShadow = false;
+    batch.receiveShadow = false;
+    oracleEyes.add(batch);
+  }
+  const oracleGaze = new THREE.PointLight(0x3fe6c6, 0, 95, 2);
+  oracleGaze.name = "oracle-abyssal-gaze-light";
+  oracleGaze.castShadow = false;
+  // Keep the light itself permanently parented under the landmark root. The
+  // streamed shell may reparent the flame meshes, but moving a Light in/out of
+  // the scene graph changes Three's lights-node cache and forced every lit
+  // render object (~1,070 on the default chain) to rebuild its WebGPU state.
+  root.add(oracleEyes, oracleGaze);
+  // Separate discs, not one shared geometry: each carries its own baked
+  // per-vertex water depth, and the two sheets sit at different radii over
+  // different stretches of bed.
+  const abyssPoolMat = makeAbyssPoolMat();
+  const abyssPool = new THREE.Mesh(poolDiscGeometry(), abyssPoolMat);
+  // Drowned briar carpeting the basin bed. Four clump variants keep the
+  // silhouette from repeating; one InstancedMesh keeps it to one draw call.
+  // Capacity is a hard cap, not a target — the scatter fills what the basin
+  // radius supports and the rest stay off-screen behind the bounding sphere.
+  const brambleGeos = [0, 1, 2, 3].map((v) => brambleClumpGeometry(seed, v));
+  const brambleGeo = BufferGeometryUtils.mergeGeometries(brambleGeos);
+  for (const g of brambleGeos) g.dispose();
+  const brambleMat = makeBrambleMat();
+  const brambles = new THREE.InstancedMesh(brambleGeo, brambleMat, 1500);
+  brambles.name = "basin-drowned-briar";
+  brambles.castShadow = false;      // a thicket of thin canes costs more in the
+  brambles.receiveShadow = false;   // shadow pass than it returns on screen
+  brambles.frustumCulled = true;
+  root.add(brambles);
+
+  abyssPool.name = "oracle-bioluminescent-pool";
+  const abyssBasinPool = new THREE.Mesh(poolDiscGeometry(), makeAbyssBasinMat());
+  abyssBasinPool.name = "maze-basin-bioluminescent-pool";
+  const abyssRingGeo = new THREE.RingGeometry(0.74, 1, 48);
+  abyssRingGeo.rotateX(-Math.PI / 2);
+  const abyssShoreRing = new THREE.Mesh(abyssRingGeo, makeAbyssShoreMat());
+  abyssShoreRing.name = "oracle-shoreline-glow-ring";
+  // shallow dome of luminous air over the basin — one draw, no lights
+  const hazeGeo = new THREE.SphereGeometry(1, 28, 10, 0, Math.PI * 2, 0, Math.PI / 2);
+  const abyssHaze = new THREE.Mesh(hazeGeo, makeWaterHazeMat());
+  abyssHaze.name = "basin-luminous-haze";
+  const abyssDabGeo = new THREE.PlaneGeometry(1, 1);
+  abyssDabGeo.rotateX(-Math.PI / 2);
+  const abyssDabs = new THREE.InstancedMesh(abyssDabGeo, makeEyeGlowMat(), 16);
+  abyssDabs.name = "bioluminescent-algae-dabs";
+  abyssDabs.frustumCulled = false; // one tiny draw; scattered by fit below
+  // explicit draw order: the one dark water body first, then the additive
+  // accents — distance sorting between coplanar transparent sheets flips
+  // with camera motion and reads as flicker
+  const glowLayers: Array<[THREE.Object3D, number]> = [
+    [abyssBasinPool, 1], [abyssPool, 2], [abyssShoreRing, 3], [abyssDabs, 4],
+    [abyssHaze, 5],
+  ];
+  for (const [glowMesh, order] of glowLayers) {
+    glowMesh.castShadow = false;
+    glowMesh.receiveShadow = false;
+    glowMesh.renderOrder = order;
+    root.add(glowMesh);
+  }
+
+  // Warm brazier fires at the warden ranks' feet: the painted reference dots
+  // the outer ruins with small warm lights so the teal basin has counter-
+  // sparks. Same layered fire shader as the gaze, ember-orange ramp; one
+  // shared material, twelve tiny quads, no lights.
+  const brazierMat = makeEyeFireMat(0xfff3d8, 0xffb054, 0x9c4a12);
+  const brazierPlane = new THREE.PlaneGeometry(0.34, 0.52);
+  brazierPlane.translate(0, 0.2, 0);
+  const wardenBraziers = new THREE.Group();
+  wardenBraziers.name = "warden-rank-braziers";
+  wardenBraziers.visible = streamRemoteWardens;
+  for (let i = 0; i < 6; i++) {
+    const brazier = new THREE.Group();
+    for (let cross = 0; cross < 2; cross++) {
+      const quad = new THREE.Mesh(brazierPlane, brazierMat);
+      quad.rotation.y = cross * Math.PI / 2;
+      quad.castShadow = false;
+      quad.receiveShadow = false;
+      brazier.add(quad);
+    }
+    wardenBraziers.add(brazier);
+  }
+  root.add(wardenBraziers);
+  const attachOracleGaze = (loaded: THREE.Group) => {
+    // Socket anchors hand-tuned with the in-page gizmo (2026-08-08), in the
+    // streamed GLB's local frame (10 units tall, faces +X before the parent
+    // -π/2 yaw). The model and its import transform are fixed, so these local
+    // coordinates land in the eye hollows for every seed and every fit.
+    loaded.add(oracleEyes);
+    // Convert the authored asset-space light point into the stable landmark
+    // root frame instead of parenting the PointLight to the streamed model.
+    const gazePoint = new THREE.Vector3(1.3, 7.586, 0);
+    loaded.updateWorldMatrix(true, false);
+    loaded.localToWorld(gazePoint);
+    root.worldToLocal(gazePoint);
+    oracleGaze.position.copy(gazePoint);
+    oracleGaze.intensity = 320;
+    oracleEyes.visible = true;
+  };
+  const cancelOracleStream = streamTripoOracle(oracle, null, heroStone, attachOracleGaze);
 
   const dragonLandmark = new THREE.Group();
   dragonLandmark.name = "dragon-slate-spire-landmark";
   dragonLandmark.position.fromArray(DRAGON_LANDMARK_DEFAULT_OFFSET);
   dragonLandmark.userData.generatedPlacement = [...DRAGON_LANDMARK_DEFAULT_OFFSET];
   root.add(dragonLandmark);
-  const dragonPerchGeo = dragonPerchColumnGeometry(DRAGON_PERCH_STRATA);
-  const dragonPerch = new THREE.Mesh(dragonPerchGeo, stone);
+  const dragonPerchGeo = erodeGeometry(
+    subdivideGeometry(
+      dragonPerchColumnGeometry(DRAGON_PERCH_STRATA),
+      legacyLandmarkGeometry ? 3 : 1,
+    ),
+    {
+      seed: DRAGON_PERCH_STRATA.seed, amplitude: 0.8, frequency: 0.06,
+      octaves: legacyLandmarkGeometry ? 4 : 3, strata: 0.7,
+    },
+  );
+  const perchStone = stone.clone();
+  perchStone.name = "titan-skull-resident-stone";
+  // A restrained cool self-fill keeps the eye sockets, nasal cavity and crown
+  // plane legible in the establishing shot. The former 1.8 multiplier crossed
+  // the cinematic bloom threshold across most upward-facing facets, flattening
+  // the streamed skull into a white cutout. Keep the same hue but below that
+  // threshold so the cavities stay dark and the planted dragon owns the value
+  // hierarchy. The exact former value remains available for visual A/B.
+  const legacyPerchFill = typeof window !== "undefined"
+    && new URLSearchParams(window.location.search).get("perchFill") === "legacy";
+  perchStone.emissive.set(0x233943);
+  perchStone.emissiveIntensity = legacyPerchFill ? 1.8 : 0.58;
+  // The support uses the already-resident lit landmark stone, not the dragon's
+  // unlit shell material. Sharing one MeshBasic material across the streamed
+  // dragon and a geometry-swapped skull exposed a Chrome/WebGPU cold-cache bug
+  // where the skull occasionally lost its vertex-colour binding and rendered
+  // as a flat white bloom shape. This Lambert pass is already warm on the
+  // backing cliffs and restores both reliable colour and dragon/skull depth.
+  const dragonPerch = new THREE.Mesh(dragonPerchGeo, perchStone);
   dragonPerch.name = "colossal-dragon-slate-spire";
   dragonPerch.castShadow = false;
   dragonPerch.receiveShadow = false;
@@ -1615,11 +2360,62 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
   };
   dragonLandmark.add(dragonPerch);
   let refitDragonPerchContact = () => {};
-  const cancelDragonPerchStream = streamTripoDragonPerch(dragonPerch, () => refitDragonPerchContact());
+  let dragonPerchSettled = false;
+  let preparedDragon: THREE.Group | null = null;
+  const revealPreparedDragon = () => {
+    if (!dragonPerchSettled || !preparedDragon) return;
+    // The final skull geometry changes the sampled crown. Solve once against
+    // that surface, bake the result, then reveal only the static shell.
+    refitDragonPerchContact();
+    bakeSolvedDragonPose(preparedDragon);
+    preparedDragon.visible = true;
+    dragonSlot.userData.streamState = "ready";
+    dragonSlot.userData.streamReadyAt = performance.now();
+  };
+  const cancelDragonPerchStream = streamTripoDragonPerch(dragonPerch, () => {
+    refitDragonPerchContact();
+    dragonPerchSettled = true;
+    revealPreparedDragon();
+  });
+
+  // Camera clearance. The perch is deliberately pulled in so the dragon
+  // overhangs the maze silhouette — good composition, but it means one arc of
+  // the orbit puts the camera INSIDE a 325-unit rock, and measuring the sweep
+  // showed it covering 100% of frame at one bearing. Hide it while the camera
+  // is in it: by then nothing is visible anyway, so the pop costs nothing,
+  // and toggling `visible` avoids the pipeline rebuild that flipping
+  // `material.transparent` at runtime would trigger.
+  const perchBounds = new THREE.Box3();
+  let perchBoundsFresh = false;
+  const clearCamera = (camera: THREE.Camera) => {
+    if (!perchBoundsFresh) {
+      // Bound the PERCH, not the landmark. The landmark also holds the rigged
+      // dragon, and Box3.setFromObject on a skinned mesh returns its bind-pose
+      // extent — measured at 7322 × 3938 × 7398 here, which put the camera
+      // permanently "inside" and hid the dragon even from a 500-unit wide
+      // shot. The rock is the thing the camera actually collides with.
+      dragonPerch.updateWorldMatrix(true, true);
+      perchBounds.setFromObject(dragonPerch);
+      perchBoundsFresh = true;
+    }
+    // The box is an axis-aligned superset of an elongated rock, so its
+    // distance is only a LOWER bound on the distance to real geometry — a
+    // tight threshold (14) still left the rock filling 72% of frame at one
+    // bearing. 30 covers it, and is far inside the ~500 units the wide
+    // framings keep between camera and dragon, so those still show it.
+    const distance = perchBounds.distanceToPoint(camera.position);
+    // hysteresis band so a camera hovering on the boundary can't strobe
+    const wanted = distance < 30 ? false : distance > 42 ? true : dragonLandmark.visible;
+    if (dragonLandmark.visible !== wanted) dragonLandmark.visible = wanted;
+  };
+  const invalidatePerchBounds = () => { perchBoundsFresh = false; };
   const dragonSlot = new THREE.Group();
   dragonSlot.name = "streamed-colossal-perched-dragon-slot";
   dragonLandmark.add(dragonSlot);
-  const cancelDragonStream = streamTripoDragon(dragonSlot);
+  const cancelDragonStream = streamTripoDragon(dragonSlot, heroStone, (loaded) => {
+    preparedDragon = loaded;
+    revealPreparedDragon();
+  });
 
   const hoardGateGeo = dragonHoardGateGeometry();
   const hoardGateVoidGeo = dragonHoardVoidGeometry();
@@ -1680,16 +2476,6 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
   arches.name = "distant-broken-arches";
   root.add(arches);
 
-  // IcosahedronGeometry detail 0 is already non-indexed in this Three build.
-  const cragGeo = new THREE.IcosahedronGeometry(1, 0);
-  paintFacets(cragGeo, 0x172238, 0x40516b, 271);
-  // Only the eight grounded burial rocks remain. The former 26 randomly
-  // suspended chunks read as generator debris and had no structural support.
-  const crags = new THREE.InstancedMesh(cragGeo, stone, 8);
-  crags.castShadow = false;
-  crags.name = "floating-abyss-rubble";
-  root.add(crags);
-
   const chainPoints: number[] = [];
   for (let k = 0; k < 10; k++) {
     const x = (hash2(seed, k, 340) - 0.5) * 180;
@@ -1747,28 +2533,17 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
         q.setFromEuler(new THREE.Euler(0, Math.atan2(z, -x), 0)),
         s.setScalar(rankScale),
       );
+      // ember brazier in front of each warden's pedestal: inset by the
+      // pedestal depth (~2.6× the warden scale) so the fire sits on open
+      // floor at their feet instead of inside the base rock
+      const brazier = wardenBraziers.children[i];
+      const inset = (radius - rankScale * 2.6 - 4) / radius;
+      brazier.position.set(x * inset, ABYSS * TH - 6, z * inset);
+      brazier.scale.setScalar(5);
     }
     wardenRankStream.sync();
 
-    const skullScale = Math.max(1.2, Math.min(2.2, 1.08 + top / 145));
     const burialY = ABYSS * TH - 12;
-    skull.scale.setScalar(skullScale);
-    skull.position.set(-half * 0.32, burialY - skullScale * 4.4, -(half + 52));
-    skull.rotation.set(-0.28, 0.22, -0.54);
-
-    // Dedicated burial rubble wraps the lower jaw/rear cranium after each fit.
-    for (let k = 0; k < crags.count; k++) {
-      const qk = k + 20;
-      const u = k / 7;
-      const a = -0.35 + u * Math.PI * 1.3;
-      const radius = skullScale * (9 + hash2(seed, qk, 350) * 8);
-      const sc = skullScale * (1.5 + hash2(seed, qk, 351) * 2.1);
-      crags.setMatrixAt(k, matrix.compose(
-        p.set(skull.position.x + Math.cos(a) * radius, burialY - sc * 0.45 + hash2(seed, qk, 352), skull.position.z + Math.sin(a) * radius),
-        q.setFromEuler(new THREE.Euler(hash2(seed, qk, 353) * 2, hash2(seed, qk, 354) * 3, hash2(seed, qk, 355) * 2)),
-        s.set(sc * 1.35, sc * 0.7, sc),
-      ));
-    }
 
     // The gigantic oracle occupies the highest, closed side of the horseshoe
     // wall (-Z). Local +Z faces the maze; the separate cliff overlaps its back
@@ -1799,6 +2574,93 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
       .addScaledVector(oracleForward, oracleScale * 36)
       .addScaledVector(oracleRight, -oracleScale * 24)
       .add(new THREE.Vector3(0, oracleScale * 10, 0));
+    // glowing water: a tight pool lapping the tentacle roots, a broad basin
+    // sheet reaching under the maze, a hot shoreline band where water meets
+    // the statue, and scattered algae dabs breaking the perfect circles
+    const floorY = oracle.position.y;
+    // glow accent floats just above the basin surface near the statue
+    abyssPool.position.copy(oracle.position)
+      .addScaledVector(oracleForward, oracleScale * 5)
+      .add(new THREE.Vector3(0, 1.3, 0));
+    abyssPool.scale.setScalar(oracleScale * 26);
+    // the single dark water body sits slightly ABOVE the flat abyss plane so
+    // plane-seated ruins (graves, arches) get their feet wet instead of
+    // hovering, while bedrock relief still pierces it as shores
+    abyssBasinPool.position.set(
+      oracle.position.x * 0.3, floorY + 0.6, oracle.position.z * 0.3);
+    const basinRadius = Math.max(oracleScale * 40, half * 1.25);
+    abyssBasinPool.scale.setScalar(basinRadius);
+    // the haze sits ON the water and is deliberately shallow: a tall dome
+    // reads as a bubble, a flat one as a layer of lit air
+    // Seat the briar on the bed, just under the water sheet — the basin sits at
+    // floorY + 0.6, so the canes break the surface at their crowns and stay
+    // rooted below it.
+    scatterBrambles(
+      brambles, seed,
+      new THREE.Vector3(abyssBasinPool.position.x, floorY, abyssBasinPool.position.z),
+      basinRadius * 0.85,
+    );
+    abyssHaze.position.copy(abyssBasinPool.position).add(new THREE.Vector3(0, -1, 0));
+    abyssHaze.scale.set(basinRadius * 0.92, basinRadius * 0.16, basinRadius * 0.92);
+
+    // The basin lights the world back. In the reference the statue's roots
+    // and the surrounding rock are visibly washed from BELOW by the water —
+    // an emissive plane can never do that on its own, because emission is not
+    // illumination. Two upward point lights, claimed from the shared pool so
+    // the scene's light count never changes.
+    root.userData.basinLights = [
+      {
+        x: abyssBasinPool.position.x, y: floorY + 12, z: abyssBasinPool.position.z,
+        color: 0x2fd8b4, dist: basinRadius * 1.15, base: 46, ph: 0.4,
+      },
+      {
+        x: oracle.position.x, y: floorY + 16,
+        z: oracle.position.z + oracleForward.z * oracleScale * 8,
+        color: 0x39e6c2, dist: oracleScale * 62, base: 34, ph: 2.1,
+      },
+    ];
+    // Bake how deep the water stands over its own bed, per vertex, so the
+    // sheets can fade out before the bed cuts through them. Landmark x/z and
+    // bedrock x/z differ only by the ring scale, and both groups sit at y = 0,
+    // so a landmark-local Y is already the world Y the bedrock reports.
+    const ringScale = abyssFloorRingScale(half);
+    const bakePoolDepth = (mesh: THREE.Mesh) => {
+      const position = mesh.geometry.getAttribute("position");
+      let depth = mesh.geometry.getAttribute("waterDepth");
+      if (!depth || depth.count !== position.count) {
+        depth = new THREE.BufferAttribute(new Float32Array(position.count), 1);
+        mesh.geometry.setAttribute("waterDepth", depth);
+      }
+      for (let i = 0; i < position.count; i++) {
+        const x = position.getX(i) * mesh.scale.x + mesh.position.x;
+        const z = position.getZ(i) * mesh.scale.z + mesh.position.z;
+        const bed = ABYSS_FLOOR_BASE_Y
+          + abyssFloorHeight(seed, x / ringScale, z / ringScale);
+        depth.setX(i, mesh.position.y - bed);
+      }
+      depth.needsUpdate = true;
+    };
+    bakePoolDepth(abyssBasinPool);
+    bakePoolDepth(abyssPool);
+
+    abyssShoreRing.position.copy(oracle.position)
+      .addScaledVector(oracleForward, oracleScale * 4)
+      .add(new THREE.Vector3(0, 2.9, 0));
+    abyssShoreRing.scale.setScalar(oracleScale * 15);
+    const dabMatrix = new THREE.Matrix4();
+    for (let i = 0; i < 16; i++) {
+      const angle = hash2(11, i, 931) * Math.PI * 2;
+      const radius = oracleScale * (9 + hash2(11, i, 932) * 13);
+      const size = 2.5 + hash2(11, i, 933) * 4.5;
+      dabMatrix.makeScale(size, 1, size);
+      dabMatrix.setPosition(
+        oracle.position.x + Math.cos(angle) * radius + oracleForward.x * oracleScale * 4,
+        floorY + 1.9,
+        oracle.position.z + Math.sin(angle) * radius + oracleForward.z * oracleScale * 4,
+      );
+      abyssDabs.setMatrixAt(i, dabMatrix);
+    }
+    abyssDabs.instanceMatrix.needsUpdate = true;
 
     // Counter-landmark at the open (+Z) side: a monumental fan of diagonal
     // slate blades rises into one broken dragon shelf outside the maze.
@@ -1825,7 +2687,8 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
     // straight down the camera axis. The support point is solved explicitly,
     // so this silhouette rotation never drags the dragon back over the maze.
     const platformBoundaryInset = 18 * perchScaleXZ;
-    const localFrame = dragonPerchFrameAt(DRAGON_PERCH_STRATA);
+    const localFrame = dragonPerchFrameAt(DRAGON_PERCH_STRATA, dragonPerch.geometry);
+    const usesTitanSkull = dragonPerch.geometry.userData.source === "tripo-v3.1-titan-skull-direct-30k";
     const perchYaw = -0.54;
     dragonPerch.rotation.y = perchYaw;
     const supportOffset = localFrame.point.clone()
@@ -1857,7 +2720,7 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
     const oracleInDragonLandmark = oracle.position.clone().sub(dragonLandmark.position);
     dragonSlot.userData.faceTarget = oracleInDragonLandmark.toArray();
     dragonSlot.userData.faceAxis = "local-positive-x";
-    dragonSlot.userData.supportMode = "slate-spear-distal-shelf";
+    dragonSlot.userData.supportMode = usesTitanSkull ? "titan-skull-crown" : "slate-spear-distal-shelf";
     const perchTopY = supportPoint.y;
     const footForward = 18 * perchNarrativeScale;
     const footSide = 15 * perchNarrativeScale;
@@ -1871,12 +2734,23 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
     // The old shared plane made a solved ankle look suspended whenever Tripo's
     // asymmetric strata dipped under one foot.
     const inversePerchMatrix = dragonPerch.matrix.clone().invert();
-    const legIkTargets: DragonLegTarget[] = DRAGON_LEG_CONTACTS.map((contact) => {
+    const plannedContacts = DRAGON_LEG_CONTACTS.map((contact) => {
       const plannedSurfaceRoot = supportPoint.clone()
         .addScaledVector(dragonForward, contact.forward * DRAGON_RENDER_SCALE * dragonSlot.scale.x)
         .addScaledVector(dragonRight, -contact.lateral * DRAGON_RENDER_SCALE * dragonSlot.scale.x);
       const queryLocal = plannedSurfaceRoot.clone().applyMatrix4(inversePerchMatrix);
-      const surfaceHit = samplePerchSurfaceXZ(dragonPerch.geometry, queryLocal.x, queryLocal.z);
+      return { contact, plannedSurfaceRoot, queryLocal };
+    });
+    const surfaceSampleStartedAt = performance.now();
+    const surfaceHits = BATCHED_PERCH_SAMPLER
+      ? samplePerchSurfacesXZ(dragonPerch.geometry, plannedContacts.map(({ queryLocal }) => queryLocal))
+      : plannedContacts.map(({ queryLocal }) => samplePerchSurfaceXZ(
+        dragonPerch.geometry, queryLocal.x, queryLocal.z,
+      ));
+    dragonSlot.userData.surfaceSampleMs = performance.now() - surfaceSampleStartedAt;
+    dragonSlot.userData.surfaceSampleMode = BATCHED_PERCH_SAMPLER ? "batched" : "legacy";
+    const legIkTargets: DragonLegTarget[] = plannedContacts.map(({ contact, plannedSurfaceRoot }, index) => {
+      const surfaceHit = surfaceHits[index];
       const surfacePoint = surfaceHit
         ? surfaceHit.point.clone().applyMatrix4(dragonPerch.matrix)
         : plannedSurfaceRoot;
@@ -1899,7 +2773,7 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
     dragonSlot.userData.neckIkTarget = neckIkTarget.toArray();
     (dragonSlot.userData.syncLegIK as (() => void) | undefined)?.();
     dragonPerch.userData.perch = {
-      shape: "monumental-diagonal-slate-blade-fan",
+      shape: usesTitanSkull ? "titan-skull-crown" : "monumental-diagonal-slate-blade-fan",
       profile: { ...DRAGON_PERCH_STRATA },
       mazeTopY: top,
       adaptiveClearance: mazeClearance,
@@ -1940,9 +2814,16 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
       .add(dragonLandmark.position)
       .addScaledVector(dragonForward, 72 * perchNarrativeScale)
       .addScaledVector(dragonUp, 86 * perchNarrativeScale);
-    const hoardBounce = dragonFocus.clone()
-      .addScaledVector(dragonRight, -18 * perchNarrativeScale)
-      .addScaledVector(dragonForward, -18 * perchNarrativeScale);
+    // Put the warm bounce on the authored camera side of the contact patch.
+    // The old point sat behind the torso from the establishing view, leaving
+    // planted feet and the skull crown as one unreadable black silhouette.
+    // This remains a real light (the dragon material is still non-emissive),
+    // and the cool rear rim below continues to separate the wing profile.
+    const authoredViewSide = new THREE.Vector3(0.608, 0.228, 0.76).normalize();
+    const hoardBounce = supportPoint.clone()
+      .add(dragonLandmark.position)
+      .addScaledVector(authoredViewSide, 148 * perchNarrativeScale)
+      .addScaledVector(dragonUp, 32 * perchNarrativeScale);
     const dragonRimPosition = dragonFocus.clone()
       .addScaledVector(dragonForward, 168 * perchNarrativeScale)
       .addScaledVector(dragonRight, 54 * perchNarrativeScale)
@@ -1958,7 +2839,7 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
         targetX: oracleFace.x,
         targetY: oracleFace.y,
         targetZ: oracleFace.z,
-        color: 0x78a6ca,
+        color: 0x66c2b8,
         base: 7200,
         dist: Math.max(220, oracleScale * 132),
         ph: 0,
@@ -1972,8 +2853,8 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
         y: hoardBounce.y,
         z: hoardBounce.z,
         color: 0xc86f3f,
-        base: 2850,
-        dist: Math.max(175, perchNarrativeScale * 205),
+        base: 3400,
+        dist: Math.max(220, perchNarrativeScale * 255),
         ph: 0,
       },
       {
@@ -2048,11 +2929,13 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
     arcade.instanceMatrix.needsUpdate = true;
     arcade.computeBoundingSphere();
 
-    crags.instanceMatrix.needsUpdate = true;
-    crags.computeBoundingSphere();
   };
   refitDragonPerchContact = () => fit(lastFitHalf, lastFitTop);
-  (root.userData as { fit?: (half: number, top: number) => void }).fit = fit;
+  (root.userData as { fit?: (half: number, top: number) => void }).fit = (half, top) => {
+    fit(half, top);
+    invalidatePerchBounds(); // the perch just moved; its bounds are stale
+  };
+  (root.userData as { clearCamera?: (camera: THREE.Camera) => void }).clearCamera = clearCamera;
   (root.userData as { dispose?: () => void }).dispose = () => {
     cancelOracleStream();
     cancelDragonStream();
@@ -2065,11 +2948,10 @@ export function buildAbyssLandmarks(seed: number): THREE.Group {
     guardianStreamedBytes: 1_235_916,
     guardianDestructionProxyTriangles: 2_500,
     guardianDestructionProxyBytes: 45_356,
-    guardianHeroInstances: 2,
+    guardianHeroInstances: streamRemoteWardens ? 2 : 0,
     guardianRankTrianglesPerInstance: 8_000,
-    guardianRankInstances: 6,
+    guardianRankInstances: streamRemoteWardens ? 6 : 0,
     guardianRankStreamedBytes: 369_540,
-    dragonSkullTriangles: triangleCount(skullStoneGeo) + triangleCount(skullTeethGeo) + triangleCount(skullVoidGeo),
     oracleTriangles: 0,
     oracleStreamedTriangles: 30_000,
     oracleDestructionProxyTriangles: 2_500,

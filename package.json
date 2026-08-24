@@ -1,8 +1,33 @@
 {
   "name": "dungeonforge",
-  "private": true,
   "version": "0.1.0",
+  "description": "Procedurally generated stone-labyrinth fortress worlds — three.js WebGPU + TSL, deterministic per seed, end-to-end in the browser.",
+  "keywords": [
+    "procedural-generation",
+    "webgpu",
+    "threejs",
+    "tsl",
+    "dungeon-generator",
+    "maze",
+    "roguelike",
+    "gamedev"
+  ],
+  "homepage": "https://dungeonforge.pajama.studio",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pajama-studio/dungeonforge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/pajama-studio/dungeonforge/issues"
+  },
+  "license": "MIT",
+  "author": "Pajama Studio",
   "type": "module",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "//private": "An application, not a package — this keeps `npm publish` from ever firing. The source is MIT; see LICENSE.",
+  "private": true,
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -12,7 +37,12 @@
     "bench:markov": "vite-node scripts/markov-benchmark.ts",
     "bench:wasm": "vite-node scripts/wasm-maze-benchmark.ts",
     "build:wasm": "wasm-pack build rust/dungeon-core --release --target web --out-dir ../../src/gen/wasm-pkg && node scripts/keep-wasm-package.mjs",
-    "bench:report": "node scripts/perf-report.mjs"
+    "bench:report": "node scripts/perf-report.mjs",
+    "assets:sync": "node scripts/sync-asset-urls.mjs",
+    "assets:check": "node scripts/sync-asset-urls.mjs --check",
+    "assets:pull": "node scripts/pull-assets.mjs",
+    "dev:offline": "VITE_ASSETS_LOCAL=1 vite",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "three": "^0.185.1"
